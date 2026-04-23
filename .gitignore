@@ -1,0 +1,16 @@
+# OS artifacts
+Thumbs.db
+Desktop.ini
+
+# Editor settings
+.idea/
+*.code-workspace
+
+# Lua tooling and temp output
+*.tmp
+*.bak
+*.log
+
+# Keep VS Code settings out unless intentionally tracked
+.vscode/*
+!.vscode/settings.json
