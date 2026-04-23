@@ -117,6 +117,8 @@ TA.dfModeRecentCells = {}  -- Track recently visited cells for breadcrumb trail
 TA.dfModeLastFacing = nil
 TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
 TA.dfModeShowLevelFilter = nil  -- nil = show all, number = threshold
+TA.dfModeLastNearestMarkID = nil
+TA.dfModeLastNearestMarkDist = nil
 
 local GRID_SIZE_LEGACY_DEFAULT = 12
 local GRID_SIZE_STANDARD = 80
@@ -4283,26 +4285,20 @@ local function BuildDFModeDisplay()
   for _, mark in pairs(TA.markedCells or {}) do
     if mark.mapID == mapID and mark.cellX and mark.cellY then
       local dx_yards, dy_yards
-      -- Prefer world coordinates when available so mark heading aligns with true movement direction.
-      if continentID and mark.continentID and continentID == mark.continentID and type(continentX) == "number" and type(continentY) == "number" and type(mark.continentX) == "number" and type(mark.continentY) == "number" then
-        dx_yards = mark.continentX - continentX
-        dy_yards = mark.continentY - continentY
-      else
-        local markGridX = ClampGridSize(tonumber(mark.gridX) or tonumber(mark.gridSize) or GRID_SIZE_DEFAULT)
-        local markGridY = ClampGridSize(tonumber(mark.gridY) or tonumber(mark.gridSize) or GRID_SIZE_DEFAULT)
-        local markOffsetX = NormalizePeriodicOffset(mark.anchorOffsetX, 1 / markGridX)
-        local markOffsetY = NormalizePeriodicOffset(mark.anchorOffsetY, 1 / markGridY)
-        local playerCellX, playerCellY, playerInCellX, playerInCellY = ComputeCellForPosition(x, y, markGridX, markGridY, markOffsetX, markOffsetY)
+      local markGridX = ClampGridSize(tonumber(mark.gridX) or tonumber(mark.gridSize) or GRID_SIZE_DEFAULT)
+      local markGridY = ClampGridSize(tonumber(mark.gridY) or tonumber(mark.gridSize) or GRID_SIZE_DEFAULT)
+      local markOffsetX = NormalizePeriodicOffset(mark.anchorOffsetX, 1 / markGridX)
+      local markOffsetY = NormalizePeriodicOffset(mark.anchorOffsetY, 1 / markGridY)
+      local playerCellX, playerCellY, playerInCellX, playerInCellY = ComputeCellForPosition(x, y, markGridX, markGridY, markOffsetX, markOffsetY)
 
-        -- Fallback: continuous cell position (cell index + in-cell offset) to avoid snapping.
-        local markCenterX = mark.cellX + 0.5
-        local markCenterY = mark.cellY + 0.5
-        local playerPosX = playerCellX + playerInCellX
-        local playerPosY = playerCellY + playerInCellY
-        local markCellYards = tonumber(mark.targetYards) or defaultCellYards
-        dx_yards = (markCenterX - playerPosX) * markCellYards
-        dy_yards = (markCenterY - playerPosY) * markCellYards
-      end
+      -- Keep mark math in one coordinate system (map-cell space) to avoid drift when rotating view.
+      local markCenterX = mark.cellX + 0.5
+      local markCenterY = mark.cellY + 0.5
+      local playerPosX = playerCellX + playerInCellX
+      local playerPosY = playerCellY + playerInCellY
+      local markCellYards = tonumber(mark.targetYards) or defaultCellYards
+      dx_yards = (markCenterX - playerPosX) * markCellYards
+      dy_yards = (markCenterY - playerPosY) * markCellYards
 
       local markDist = math.sqrt((dx_yards * dx_yards) + (dy_yards * dy_yards))
       local mx = dx_yards >= 0 and math.floor((dx_yards / yardsPerCell) + 0.5) or math.ceil((dx_yards / yardsPerCell) - 0.5)
@@ -4387,7 +4383,21 @@ local function BuildDFModeDisplay()
     else
       relDir = "on top of you"
     end
-    TA.dfModeNavHint = string.format("Mark [%d] %s: %dyd %s", nearestMarkID, nearestMarkName, math.floor(nearestMarkDist + 0.5), relDir)
+    local approachIndicator = ""
+    local prevDist = (TA.dfModeLastNearestMarkID == nearestMarkID) and TA.dfModeLastNearestMarkDist or nil
+    if prevDist then
+      local delta = nearestMarkDist - prevDist
+      if delta < -1 then
+        approachIndicator = " >>>"
+      elseif delta > 1 then
+        approachIndicator = " <<<"
+      else
+        approachIndicator = " ---"
+      end
+    end
+    TA.dfModeLastNearestMarkID = nearestMarkID
+    TA.dfModeLastNearestMarkDist = nearestMarkDist
+    TA.dfModeNavHint = string.format("Mark [%d] %s: %dyd %s%s", nearestMarkID, nearestMarkName, math.floor(nearestMarkDist + 0.5), relDir, approachIndicator)
   end
 
   for y = radius, -radius, -1 do
@@ -4821,14 +4831,24 @@ function TA_CompassDir(dx, dy)
   return dirs[math.floor((deg + 22.5) / 45) % 8 + 1]
 end
 
+local DF_YARDS_PER_CELL = 6
+
 local function BuildNearbyLine(kind, units)
   if #units == 0 then return nil end
   local parts = {}
   for _, u in ipairs(units) do
-    if u.dist and u.dir then
-      parts[#parts + 1] = u.name .. " (" .. u.dist .. "yd " .. u.dir .. ")"
+    local label = u.isTarget and ("[T]" .. u.name) or u.name
+    if u.dist then
+      local cells = math.max(1, math.floor(u.dist / DF_YARDS_PER_CELL + 0.5))
+      local cellWord = cells == 1 and "cell" or "cells"
+      local approxMark = u.distApprox and "~" or ""
+      if u.dir then
+        parts[#parts + 1] = label .. " (" .. approxMark .. cells .. " " .. cellWord .. " " .. u.dir .. ")"
+      else
+        parts[#parts + 1] = label .. " (" .. approxMark .. cells .. " " .. cellWord .. " away)"
+      end
     else
-      parts[#parts + 1] = u.name
+      parts[#parts + 1] = label
     end
   end
   return string.format("%s nearby: %s", kind, table.concat(parts, ", "))
@@ -4845,7 +4865,7 @@ local function GetNearbyUnitsSummary()
       local name = UnitName(unit)
       if name and not seen[name] then
         seen[name] = true
-        local dist, dir = nil, nil
+        local dist, dir, distApprox = nil, nil, false
         if playerX and playerY then
           local ux, uy = UnitPosition(unit)
           if ux and uy then
@@ -4854,7 +4874,15 @@ local function GetNearbyUnitsSummary()
             dir = TA_CompassDir(dx, dy)
           end
         end
-        local entry = { name = name, dist = dist, dir = dir }
+        -- Fallback: CheckInteractDistance gives bracketed range when UnitPosition is unavailable
+        if not dist and CheckInteractDistance then
+          if CheckInteractDistance(unit, 1) then dist = 3      -- ~0 cells (right next to you)
+          elseif CheckInteractDistance(unit, 2) then dist = 9  -- ~1-2 cells
+          elseif CheckInteractDistance(unit, 3) then dist = 24 -- ~4 cells
+          else dist = 48 end                                    -- ~8 cells
+          distApprox = true
+        end
+        local entry = { name = name, dist = dist, dir = dir, distApprox = distApprox, isTarget = UnitIsUnit(unit, "target") }
         if UnitCanAttack("player", unit) then
           table.insert(hostiles, entry)
         else
