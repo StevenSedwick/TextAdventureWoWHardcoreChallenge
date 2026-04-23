@@ -1,0 +1,7 @@
+## Interface: 11599
+## Title: Text Adventurer
+## Notes: Outputs clean text events
+## Author: You
+## Version: 0.1
+## SavedVariablesPerCharacter: TextAdventurerDB
+TextAdventurer.lua
