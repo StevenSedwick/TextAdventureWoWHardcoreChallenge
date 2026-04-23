@@ -281,7 +281,7 @@ inputBox:Hide()
 panel.inputBox = inputBox
 
 local dfModeFrame = CreateFrame("Frame", "TextAdventurerDFModeFrame", UIParent, "BackdropTemplate")
-dfModeFrame:SetSize(200, 600)
+dfModeFrame:SetSize(300, 600)
 dfModeFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -20, -20)
 dfModeFrame:SetFrameStrata("TOOLTIP")
 dfModeFrame:SetFrameLevel(11000)
