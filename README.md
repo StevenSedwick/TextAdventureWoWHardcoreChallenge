@@ -38,7 +38,7 @@ This addon is intentionally extreme for Hardcore challenge play.
 
 ## Project Notes
 
-- TOC interface currently targets Classic Era interface `11599`.
+- TOC interface currently targets Classic Era interface `11508`.
 - Core metadata is in `TextAdventurer.toc`.
 - Primary implementation is in `textadventurer.lua`.
 

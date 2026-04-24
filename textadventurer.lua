@@ -1,4 +1,4 @@
--- TextAdventurer.lua
+﻿-- TextAdventurer.lua
 ---@diagnostic disable: undefined-global, undefined-field, deprecated
 -- Put this file in:
 -- World of Warcraft/_classic_/Interface/AddOns/TextAdventurer/
@@ -82,12 +82,14 @@ TA.inputDraft = ""
 TA.lastSubzone = nil
 TA.vendorOpen = false
 TA.questObjectiveSnapshot = {}
+TA.skillSnapshot = {}
 TA.dpsSessionStart = 0
 TA.dpsTotalDamage = 0
 TA.dpsCombatStart = 0
 TA.dpsCombatDamage = 0
 TA.lastCombatDamage = 0
 TA.lastCombatDuration = 0
+TA.mlFightSnapshot = nil
 TA.pendingItemTextRead = nil
 TA.lastItemTextSignature = nil
 TA.gridSize = nil
@@ -328,16 +330,16 @@ dfModeFrame:SetBackdrop({
 dfModeFrame:SetBackdropColor(0.05, 0.08, 0.10, 0.96)
 dfModeFrame:Hide()
 
-local dfTitle = dfModeFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-dfTitle:SetPoint("TOPLEFT", 14, -12)
-dfTitle:SetText("Tactical Map (DF Mode)")
+local dfTitle = dfModeFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+dfTitle:SetPoint("TOPLEFT", 8, -8)
+dfTitle:SetText("threat")
 
 dfModeFrame.resizeHandle = CreateFrame("Button", nil, dfModeFrame)
 dfModeFrame.resizeHandle:SetPoint("BOTTOMRIGHT", -6, 6)
 dfModeFrame.resizeHandle:SetSize(16, 16)
-dfModeFrame.resizeHandle:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-dfModeFrame.resizeHandle:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-dfModeFrame.resizeHandle:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+dfModeFrame.resizeHandle:SetNormalTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Up")
+dfModeFrame.resizeHandle:SetHighlightTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Highlight")
+dfModeFrame.resizeHandle:SetPushedTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Down")
 dfModeFrame.resizeHandle:SetScript("OnMouseDown", function(self, button)
   if button == "LeftButton" and self:GetParent().StartSizing then
     self:GetParent():StartSizing("BOTTOMRIGHT")
@@ -372,7 +374,7 @@ if ChatFrame1 then
   ChatFrame1:SetFrameLevel(1)
 end
 
-local function AddLine(kind, msg)
+function AddLine(kind, msg)
   if not msg or msg == "" then return end
   local c = COLORS[kind] or COLORS.system
   local line = {
@@ -392,20 +394,24 @@ local function AddLine(kind, msg)
   panel.text:ScrollToBottom()
 end
 
-local function TA_BroadcastDangerWarningToChat()
+function TA_BroadcastDangerWarningToChat()
   local chat = DEFAULT_CHAT_FRAME
   if chat and chat.AddMessage then
     chat:AddMessage("|cffff4040[Text Adventurer WARNING]|r This addon is extremely dangerous for Hardcore play and WILL eventually get your character killed.")
-    chat:AddMessage("|cffff4040[Text Adventurer WARNING]|r First-run safety is ON: autostart is disabled. Use /ta autostart on only after you understand the risks.")
+    if not (TextAdventurerDB and TextAdventurerDB.autoEnable) then
+      chat:AddMessage("|cffff4040[Text Adventurer WARNING]|r Autostart is OFF. Use /ta autostart on to enable auto-open on login.")
+    else
+      chat:AddMessage("|cff00ff00[Text Adventurer]|r Autostart is ON. Panel will auto-open on login.")
+    end
   end
 end
 
-local function BagLabel(bag)
+function BagLabel(bag)
   if bag == 0 then return "Backpack" end
   return string.format("Bag %d", bag)
 end
 
-local function SnapshotBags()
+function SnapshotBags()
   local snapshot = {}
   for bag = 0, 4 do
     snapshot[bag] = {}
@@ -424,7 +430,7 @@ local function SnapshotBags()
   return snapshot
 end
 
-local function FormatMoney(copper)
+function FormatMoney(copper)
   local gold = math.floor(copper / 10000)
   local silver = math.floor((copper % 10000) / 100)
   local cop = copper % 100
@@ -437,7 +443,7 @@ local function FormatMoney(copper)
   end
 end
 
-local function FindBagChanges(oldState, newState)
+function FindBagChanges(oldState, newState)
   local changes = {}
   for bag = 0, 4 do
     local oldBag = oldState[bag] or {}
@@ -475,22 +481,148 @@ local function FindBagChanges(oldState, newState)
   return changes
 end
 
-local function SpellLabel(spellName)
+function ReportLootWindowPreview()
+  if not GetNumLootItems or not GetLootSlotInfo then
+    AddLine("loot", "Loot preview API unavailable on this client.")
+    return
+  end
+
+  local numItems = GetNumLootItems() or 0
+  if numItems <= 0 then
+    AddLine("loot", "No loot found on this target.")
+    return
+  end
+
+  AddLine("loot", string.format("Loot preview (%d slot(s)):", numItems))
+  for slot = 1, numItems do
+    local _, itemName, quantity, quality, _, isQuestItem, _, isCoin = GetLootSlotInfo(slot)
+    local qty = tonumber(quantity) or 1
+    local link = GetLootSlotLink and GetLootSlotLink(slot)
+    local label = link or itemName or "Unknown"
+    if isCoin then
+      AddLine("loot", string.format("  [%d] %s", slot, label))
+    else
+      local questTag = isQuestItem and " [quest]" or ""
+      local qualityTag = quality and quality > -1 and string.format(" [q%d]", quality) or ""
+      AddLine("loot", string.format("  [%d] %s x%d%s%s", slot, label, qty, qualityTag, questTag))
+    end
+  end
+end
+
+function TA_BuildSkillSnapshot()
+  local snapshot = {}
+  if not GetNumSkillLines or not GetSkillLineInfo then
+    return snapshot
+  end
+
+  local count = GetNumSkillLines() or 0
+  for i = 1, count do
+    local skillName, isHeader, _, skillRank, _, skillModifier, skillMaxRank = GetSkillLineInfo(i)
+    if skillName and skillName ~= "" and not isHeader and tonumber(skillMaxRank or 0) > 0 then
+      snapshot[skillName] = {
+        rank = tonumber(skillRank) or 0,
+        max = tonumber(skillMaxRank) or 0,
+        modifier = tonumber(skillModifier) or 0,
+      }
+    end
+  end
+  return snapshot
+end
+
+function TA_GetSkillCategory(name)
+  if not name then return "other" end
+  local lower = string.lower(name)
+  local WEAPON_SKILLS = {
+    axes = true, swords = true, maces = true, daggers = true, staves = true,
+    polearms = true, bows = true, guns = true, crossbows = true, fist = true,
+    thrown = true, unarmed = true,
+  }
+  WEAPON_SKILLS["two-handed swords"] = true
+  WEAPON_SKILLS["two-handed maces"] = true
+  WEAPON_SKILLS["two-handed axes"] = true
+  local PROF_SKILLS = {
+    alchemy = true, blacksmithing = true, enchanting = true, engineering = true,
+    herbalism = true, mining = true, skinning = true, tailoring = true,
+    leatherworking = true, cooking = true, fishing = true, firstaid = true,
+  }
+  PROF_SKILLS["first aid"] = true
+  local SECONDARY_SKILLS = {
+    cooking = true, fishing = true, firstaid = true,
+  }
+  SECONDARY_SKILLS["first aid"] = true
+
+  if WEAPON_SKILLS[lower] or lower:find("two%-handed") then return "weapon" end
+  if lower == "defense" or lower == "defence" then return "defense" end
+  if SECONDARY_SKILLS[lower] then return "secondary" end
+  if PROF_SKILLS[lower] then return "profession" end
+  return "other"
+end
+
+function TA_ReportSkillLevels(force, filter)
+  filter = (filter or "all"):lower()
+  local current = TA_BuildSkillSnapshot()
+  if not next(current) then
+    if force then
+      AddLine("system", "Skill API unavailable or no skill lines found.")
+    end
+    TA.skillSnapshot = current
+    return
+  end
+
+  if force then
+    local names = {}
+    for name in pairs(current) do
+      local cat = TA_GetSkillCategory(name)
+      if filter == "all"
+        or (filter == "weapon" and cat == "weapon")
+        or (filter == "weapons" and cat == "weapon")
+        or (filter == "profession" and cat == "profession")
+        or (filter == "professions" and cat == "profession")
+        or (filter == "secondary" and cat == "secondary")
+        or (filter == "defense" and cat == "defense") then
+        table.insert(names, name)
+      end
+    end
+    table.sort(names)
+    AddLine("status", string.format("Skills tracked (%s): %d", filter, #names))
+    for i = 1, #names do
+      local name = names[i]
+      local row = current[name]
+      local modText = (row.modifier and row.modifier ~= 0) and string.format(" (%+d)", row.modifier) or ""
+      AddLine("status", string.format("  %s: %d/%d%s [%s]", name, row.rank or 0, row.max or 0, modText, TA_GetSkillCategory(name)))
+    end
+    TA.skillSnapshot = current
+    return
+  end
+
+  local previous = TA.skillSnapshot or {}
+  for name, now in pairs(current) do
+    local before = previous[name]
+    if not before then
+      AddLine("status", string.format("Skill learned: %s (%d/%d)", name, now.rank or 0, now.max or 0))
+    elseif (now.rank or 0) ~= (before.rank or 0) or (now.max or 0) ~= (before.max or 0) or (now.modifier or 0) ~= (before.modifier or 0) then
+      AddLine("status", string.format("Skill update: %s %d/%d -> %d/%d", name, before.rank or 0, before.max or 0, now.rank or 0, now.max or 0))
+    end
+  end
+  TA.skillSnapshot = current
+end
+
+function SpellLabel(spellName)
   if spellName and spellName ~= "" then return spellName end
   return "an ability"
 end
 
-local function IsSourcePlayerOrPet(sourceFlags)
+function IsSourcePlayerOrPet(sourceFlags)
   return CombatLog_Object_IsA(sourceFlags, COMBATLOG_FILTER_ME)
       or CombatLog_Object_IsA(sourceFlags, COMBATLOG_FILTER_MY_PET)
 end
 
-local function IsDestPlayerOrPet(destFlags)
+function IsDestPlayerOrPet(destFlags)
   return CombatLog_Object_IsA(destFlags, COMBATLOG_FILTER_ME)
       or CombatLog_Object_IsA(destFlags, COMBATLOG_FILTER_MY_PET)
 end
 
-local function FormatDamageEvent(subevent, sourceName, destName, spellName, amount)
+function FormatDamageEvent(subevent, sourceName, destName, spellName, amount)
   local actor = sourceName or "Unknown"
   local target = destName or "Unknown"
   local ability = SpellLabel(spellName)
@@ -503,7 +635,7 @@ local function FormatDamageEvent(subevent, sourceName, destName, spellName, amou
   end
 end
 
-local function FormatMissEvent(subevent, sourceName, destName, spellName, missType)
+function FormatMissEvent(subevent, sourceName, destName, spellName, missType)
   local actor = sourceName or "Unknown"
   local target = destName or "Unknown"
   local ability = SpellLabel(spellName)
@@ -516,7 +648,7 @@ local function FormatMissEvent(subevent, sourceName, destName, spellName, missTy
 end
 
 
-local function HandleCombatLog()
+function HandleCombatLog()
   local _, subevent, _, _, sourceName, sourceFlags, _, _, destName, destFlags, _, param1, param2, _, param4 = CombatLogGetCurrentEventInfo()
   if subevent == "SWING_DAMAGE" then
     if IsSourcePlayerOrPet(sourceFlags) or IsDestPlayerOrPet(destFlags) then
@@ -576,13 +708,13 @@ local function HandleCombatLog()
   end
 end
 
-local function DescribeUnit(unit)
+function DescribeUnit(unit)
   if unit == "player" then return "You" end
   if UnitIsUnit(unit, "target") then return UnitName(unit) or "Your target" end
   return UnitName(unit) or unit
 end
 
-local function ReportCastStart(unit, spellID, isChannel)
+function ReportCastStart(unit, spellID, isChannel)
   if not unit or not UnitExists(unit) then return end
   local name, _, _, startTimeMs, endTimeMs
   if isChannel and UnitChannelInfo then
@@ -607,7 +739,7 @@ local function ReportCastStart(unit, spellID, isChannel)
   end
 end
 
-local function ReportCastStop(unit, spellID, reason, isChannel)
+function ReportCastStop(unit, spellID, reason, isChannel)
   if not unit then return end
   local name = nil
   if spellID and GetSpellInfo then name = GetSpellInfo(spellID) end
@@ -632,7 +764,7 @@ local function ReportCastStop(unit, spellID, reason, isChannel)
   end
 end
 
-local function DescribeTargetHealthBucket(unit)
+function DescribeTargetHealthBucket(unit)
   if not unit or not UnitExists(unit) then return nil end
   local hp = UnitHealth(unit) or 0
   local hpMax = UnitHealthMax(unit) or 1
@@ -653,7 +785,7 @@ local function DescribeTargetHealthBucket(unit)
   end
 end
 
-local function ReportTargetCondition(force)
+function ReportTargetCondition(force)
   if not UnitExists("target") or UnitIsDeadOrGhost("target") then
     TA.lastTargetHealthBucket = nil
     return
@@ -666,7 +798,7 @@ local function ReportTargetCondition(force)
   end
 end
 
-local function CheckTarget()
+function CheckTarget()
   if not UnitExists("target") then
     if TA.lastTargetGUID then
       AddLine("target", "You clear your target.")
@@ -695,7 +827,7 @@ local function CheckTarget()
   end
 end
 
-local function FacingToCardinal(facing)
+function FacingToCardinal(facing)
   if not facing then return nil end
   local deg = math.deg(facing) % 360
   if deg < 22.5 then return "north" end
@@ -709,7 +841,7 @@ local function FacingToCardinal(facing)
   return "north"
 end
 
-local function SpeedCategory(speed)
+function SpeedCategory(speed)
   speed = speed or 0
   if speed <= 0 then return "still" end
   if speed < 7.5 then return "walking" end
@@ -717,13 +849,13 @@ local function SpeedCategory(speed)
   return "fast"
 end
 
-local function GetFacingDegrees()
+function GetFacingDegrees()
   local f = GetPlayerFacing()
   if not f then return nil end
   return math.deg(f) % 360
 end
 
-local function GetTargetFacingDegrees()
+function GetTargetFacingDegrees()
   if not UnitExists("target") or UnitIsDeadOrGhost("target") then return nil end
   if not UnitFacing then return nil end
   local f = UnitFacing("target")
@@ -731,18 +863,18 @@ local function GetTargetFacingDegrees()
   return math.deg(f) % 360
 end
 
-local function AngleDiff(a, b)
+function AngleDiff(a, b)
   local diff = math.abs(a - b)
   if diff > 180 then diff = 360 - diff end
   return diff
 end
 
-local function EstimateSpacing(angleDeg)
+function EstimateSpacing(angleDeg)
   local radians = math.rad(angleDeg / 2)
   return 2 * SPACING_ASSUMED_RANGE * math.sin(radians)
 end
 
-local function DescribeSpacing(angle, distance)
+function DescribeSpacing(angle, distance)
   if angle < 15 or distance < 7 then
     return "tightly clustered", "high"
   elseif angle < 30 or distance < 13 then
@@ -752,7 +884,7 @@ local function DescribeSpacing(angle, distance)
   end
 end
 
-local function ReportTargetPositioning()
+function ReportTargetPositioning()
   if not UnitExists("target") then
     AddLine("system", "No target selected.")
     return
@@ -795,7 +927,7 @@ local function ReportTargetPositioning()
     else
       facingText = "Target is facing away from you."
     end
-    AddLine("system", string.format("%s facing: %.0f°, you facing: %.0f°, relative heading: %.0f°.", UnitName("target") or "Target", targetFacing, playerFacing, relative))
+    AddLine("system", string.format("%s facing: %.0fÂ°, you facing: %.0fÂ°, relative heading: %.0fÂ°.", UnitName("target") or "Target", targetFacing, playerFacing, relative))
     AddLine("system", facingText)
     if relative > 150 then
       AddLine("system", "Rear attack likely possible if you are in melee range.")
@@ -824,7 +956,7 @@ local function ReportTargetPositioning()
   end
 end
 
-local function MarkFacingA()
+function MarkFacingA()
   local facing = GetFacingDegrees()
   if not facing then AddLine("system", "Could not read facing."); return end
   TA.markA = {
@@ -832,10 +964,10 @@ local function MarkFacingA()
     target = UnitName("target") or "unknown target",
     reaction = UnitCanAttack("player", "target") and "hostile" or "non-hostile",
   }
-  AddLine("system", string.format("Marked A at %.1f° toward %s.", facing, TA.markA.target))
+  AddLine("system", string.format("Marked A at %.1fÂ° toward %s.", facing, TA.markA.target))
 end
 
-local function MarkFacingB()
+function MarkFacingB()
   local facing = GetFacingDegrees()
   if not facing then AddLine("system", "Could not read facing."); return end
   TA.markB = {
@@ -843,10 +975,10 @@ local function MarkFacingB()
     target = UnitName("target") or "unknown target",
     reaction = UnitCanAttack("player", "target") and "hostile" or "non-hostile",
   }
-  AddLine("system", string.format("Marked B at %.1f° toward %s.", facing, TA.markB.target))
+  AddLine("system", string.format("Marked B at %.1fÂ° toward %s.", facing, TA.markB.target))
 end
 
-local function ReportSpacingEstimate()
+function ReportSpacingEstimate()
   if not TA.markA or not TA.markB then
     AddLine("system", "You must mark both directions first with marka and markb.")
     return
@@ -854,13 +986,13 @@ local function ReportSpacingEstimate()
   local angle = AngleDiff(TA.markA.facing, TA.markB.facing)
   local dist = EstimateSpacing(angle)
   local desc, risk = DescribeSpacing(angle, dist)
-  AddLine("system", string.format("Angle between marks: %.1f°", angle))
+  AddLine("system", string.format("Angle between marks: %.1fÂ°", angle))
   AddLine("system", string.format("Estimated spacing at %.0f-yard range: %.1f yards", SPACING_ASSUMED_RANGE, dist))
   AddLine("system", string.format("%s and %s appear %s. Pull risk is %s.", TA.markA.target, TA.markB.target, desc, risk))
   AddLine("system", "This is a geometric estimate, not a guaranteed safe-pull measurement.")
 end
 
-local function GetGridSize()
+function GetGridSize()
   local size = tonumber(TA.gridSize) or GRID_SIZE_DEFAULT
   size = math.floor(size)
   if size < GRID_SIZE_MIN then size = GRID_SIZE_MIN end
@@ -868,21 +1000,21 @@ local function GetGridSize()
   return size
 end
 
-local function ClampGridSize(n)
+function ClampGridSize(n)
   n = math.floor(tonumber(n) or GRID_SIZE_DEFAULT)
   if n < GRID_SIZE_MIN then n = GRID_SIZE_MIN end
   if n > GRID_SIZE_MAX then n = GRID_SIZE_MAX end
   return n
 end
 
-local function NormalizePeriodicOffset(offset, step)
+function NormalizePeriodicOffset(offset, step)
   if not step or step <= 0 then return 0 end
   offset = tonumber(offset) or 0
   offset = offset % step
   return offset
 end
 
-local function IsAnchorCompatible(anchor, gridX, gridY)
+function IsAnchorCompatible(anchor, gridX, gridY)
   if type(anchor) ~= "table" then return false end
   if tonumber(anchor.gridX) ~= tonumber(gridX) or tonumber(anchor.gridY) ~= tonumber(gridY) then
     return false
@@ -900,7 +1032,7 @@ local function IsAnchorCompatible(anchor, gridX, gridY)
   return true
 end
 
-local function GetCellGridForMap(mapID)
+function GetCellGridForMap(mapID)
   local mode = TA.cellSizeMode == "yards" and "yards" or "grid"
   local targetYards = tonumber(TA.cellSizeYards)
   if mode == "yards" then
@@ -916,7 +1048,7 @@ local function GetCellGridForMap(mapID)
   return gridSize, gridSize, mode, targetYards
 end
 
-local function GetMapAnchor(mapID, gridX, gridY)
+function GetMapAnchor(mapID, gridX, gridY)
   local stepX = 1 / gridX
   local stepY = 1 / gridY
   local anchors = TA.cellAnchors or {}
@@ -927,7 +1059,7 @@ local function GetMapAnchor(mapID, gridX, gridY)
   return NormalizePeriodicOffset(anchor.offsetX, stepX), NormalizePeriodicOffset(anchor.offsetY, stepY)
 end
 
-local function ComputeCellForPosition(x, y, gridX, gridY, offsetX, offsetY)
+function ComputeCellForPosition(x, y, gridX, gridY, offsetX, offsetY)
   local shiftedX = (x - (offsetX or 0)) % 1
   local shiftedY = (y - (offsetY or 0)) % 1
   local scaledX = shiftedX * gridX
@@ -943,7 +1075,7 @@ local function ComputeCellForPosition(x, y, gridX, gridY, offsetX, offsetY)
   return cellX, cellY, inCellX, inCellY
 end
 
-local function GetCellBounds(cellX, cellY, gridX, gridY, offsetX, offsetY)
+function GetCellBounds(cellX, cellY, gridX, gridY, offsetX, offsetY)
   local stepX = 1 / gridX
   local stepY = 1 / gridY
   local minX = ((offsetX or 0) + (cellX * stepX)) % 1
@@ -953,7 +1085,7 @@ local function GetCellBounds(cellX, cellY, gridX, gridY, offsetX, offsetY)
   return minX, maxX, minY, maxY, stepX, stepY
 end
 
-local function RecenterCurrentCellAnchor(silent)
+function RecenterCurrentCellAnchor(silent)
   local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
   if not mapID then
     if not silent then AddLine("system", "Could not center grid: map is unavailable.") end
@@ -1030,7 +1162,7 @@ ReportCurrentCell = function(force)
   end
 end
 
-local function SetGridSize(newSize, label)
+function SetGridSize(newSize, label)
   local n = tonumber(newSize)
   if not n then
     AddLine("system", "Usage: cellsize <number|standard|inn>")
@@ -1057,7 +1189,7 @@ local function SetGridSize(newSize, label)
   end
 end
 
-local function SetCellSizeYards(newYards)
+function SetCellSizeYards(newYards)
   local yards = tonumber(newYards)
   if not yards then
     AddLine("system", "Usage: cellyards <yards>|off")
@@ -1079,7 +1211,7 @@ local function SetCellSizeYards(newYards)
   AddLine("system", string.format("Cell sizing set to fixed %d-yard mode.", yards))
 end
 
-local function DisableCellSizeYardsMode()
+function DisableCellSizeYardsMode()
   TA.cellSizeMode = "grid"
   TA.cellSizeYards = nil
   TextAdventurerDB = TextAdventurerDB or {}
@@ -1175,12 +1307,12 @@ function TA_ReportCellYardsCalibration(arg)
   AddLine("system", "Use /ta cellcal <n1 n2 n3 ...> to test your own yard list.")
 end
 
-local function GetWorldMapOverlayParent()
+function GetWorldMapOverlayParent()
   if not WorldMapFrame or not WorldMapFrame.ScrollContainer then return nil end
   return WorldMapFrame.ScrollContainer.Child or WorldMapFrame.ScrollContainer
 end
 
-local function EnsureMapCellOverlay()
+function EnsureMapCellOverlay()
   if TA.mapCellOverlay then return TA.mapCellOverlay end
   local parent = GetWorldMapOverlayParent()
   if not parent then return nil end
@@ -1217,7 +1349,7 @@ local function EnsureMapCellOverlay()
   return container
 end
 
-local function SetOverlayRect(frame, parent, minX, maxX, minY, maxY, label)
+function SetOverlayRect(frame, parent, minX, maxX, minY, maxY, label)
   if not frame or not parent then return end
   minX = math.max(0, math.min(1, minX))
   maxX = math.max(0, math.min(1, maxX))
@@ -1234,7 +1366,7 @@ local function SetOverlayRect(frame, parent, minX, maxX, minY, maxY, label)
   frame:Show()
 end
 
-local function GetMarkedCellByID(markID)
+function GetMarkedCellByID(markID)
   if not markID then return nil end
   return TA.markedCells and TA.markedCells[markID] or nil
 end
@@ -1313,11 +1445,11 @@ GetPlayerMapCell = function()
   return mapID, cellX, cellY, x, y, continentX, continentY, continentID, gridX, gridY, offsetX, offsetY, inCellX, inCellY
 end
 
-local function CellKey(x, y)
+function CellKey(x, y)
   return tostring(x) .. "," .. tostring(y)
 end
 
-local function MarkCurrentCell(name)
+function MarkCurrentCell(name)
   local mapID, cellX, cellY, x, y, continentX, continentY, continentID, gridX, gridY, offsetX, offsetY = GetPlayerMapCell()
   if not mapID then 
     AddLine("system", "Could not determine current location - mapID is nil.")
@@ -1355,7 +1487,7 @@ local function MarkCurrentCell(name)
   UpdateMapCellOverlay()
 end
 
-local function ListMarkedCells()
+function ListMarkedCells()
   if not next(TA.markedCells) then
     AddLine("system", "No cells marked.")
     return
@@ -1367,7 +1499,7 @@ local function ListMarkedCells()
   end
 end
 
-local function ShowMarkedCellOnMap(markID)
+function ShowMarkedCellOnMap(markID)
   local mark = GetMarkedCellByID(markID)
   if not mark then
     AddLine("system", string.format("No marked cell found with ID %d.", tonumber(markID) or -1))
@@ -1390,11 +1522,30 @@ function TA_RenameMarkedCell(markID, newName)
   AddLine("system", string.format("Renamed marked cell [%d] from '%s' to '%s'.", markID, oldName, newName))
 end
 
-local function ClearMarkedCells()
+function ClearMarkedCells()
   wipe(TA.markedCells)
   TA.activeMapMarkID = nil
   UpdateMapCellOverlay()
   AddLine("system", "All marked cells cleared.")
+end
+
+function DeleteMarkedCell(markID)
+  local mark = GetMarkedCellByID(markID)
+  if not mark then
+    AddLine("system", string.format("No marked cell found with ID %d.", markID))
+    return
+  end
+  local name = mark.name or "Unnamed"
+  TA.markedCells[markID] = nil
+  if TA.activeMapMarkID == markID then
+    TA.activeMapMarkID = nil
+  end
+  if TA.lastMarkedCellNotification == markID then
+    TA.lastMarkedCellNotification = nil
+  end
+  TextAdventurerDB.markedCells = TA.markedCells
+  UpdateMapCellOverlay()
+  AddLine("system", string.format("Deleted marked cell [%d] '%s'.", markID, name))
 end
 
 local LANDMARK_FLAVOR = {
@@ -1887,6 +2038,798 @@ local function ReportDPS()
 
   AddLine("playerCombat", string.format("Session DPS: %.1f (%d damage over %.1fs)", sessionDPS, math.floor(totalDamage + 0.5), sessionDuration))
   ReportWeaponDPS()
+end
+
+function TA_EnsureSealDpsModelTable()
+  TextAdventurerDB = TextAdventurerDB or {}
+  if type(TextAdventurerDB.sealDpsModel) ~= "table" then
+    TextAdventurerDB.sealDpsModel = {}
+  end
+  return TextAdventurerDB.sealDpsModel
+end
+
+function TA_GetSealDpsRowsSorted()
+  local model = TA_EnsureSealDpsModelTable()
+  local rows = {}
+  for rawLevel, row in pairs(model) do
+    local level = tonumber(rawLevel)
+    if level and type(row) == "table" then
+      local sor = tonumber(row.sor)
+      local soc = tonumber(row.soc)
+      if sor and soc then
+        table.insert(rows, { level = level, sor = sor, soc = soc })
+      end
+    end
+  end
+  table.sort(rows, function(a, b) return a.level < b.level end)
+  return rows
+end
+
+function TA_ReportSealDpsModelRows()
+  local rows = TA_GetSealDpsRowsSorted()
+  if #rows == 0 then
+    AddLine("playerCombat", "Seal DPS model is empty. Use: sealdps set <level> <sorDps> <socDps>")
+    AddLine("system", "Bulk import: sealdps import <level:sor:soc,level:sor:soc,...>")
+    return
+  end
+
+  AddLine("playerCombat", string.format("Seal DPS model rows: %d", #rows))
+  for i = 1, #rows do
+    local row = rows[i]
+    AddLine("playerCombat", string.format("  L%d -> SoR %.1f, SoC %.1f", row.level, row.sor, row.soc))
+  end
+end
+
+function TA_SetSealDpsModelRow(level, sor, soc)
+  level = math.floor(tonumber(level) or 0)
+  sor = tonumber(sor)
+  soc = tonumber(soc)
+  if level < 1 or level > 60 or not sor or not soc then
+    AddLine("system", "Usage: sealdps set <level 1-60> <sorDps> <socDps>")
+    return
+  end
+
+  local model = TA_EnsureSealDpsModelTable()
+  model[level] = { sor = sor, soc = soc }
+  AddLine("playerCombat", string.format("Saved seal model row L%d: SoR %.1f, SoC %.1f", level, sor, soc))
+end
+
+function TA_ClearSealDpsModel()
+  local model = TA_EnsureSealDpsModelTable()
+  wipe(model)
+  AddLine("playerCombat", "Seal DPS model cleared.")
+end
+
+function TA_ImportSealDpsModel(payload)
+  local raw = (payload or ""):match("^%s*(.-)%s*$")
+  if raw == "" then
+    AddLine("system", "Usage: sealdps import <level:sor:soc,level:sor:soc,...>")
+    return
+  end
+
+  local model = TA_EnsureSealDpsModelTable()
+  local added = 0
+  local skipped = 0
+  for token in string.gmatch(raw, "[^,]+") do
+    local part = token:match("^%s*(.-)%s*$")
+    local level, sor, soc = part:match("^(%d+)%s*:%s*([%-]?[%d%.]+)%s*:%s*([%-]?[%d%.]+)$")
+    level = tonumber(level)
+    sor = tonumber(sor)
+    soc = tonumber(soc)
+    if level and level >= 1 and level <= 60 and sor and soc then
+      model[level] = { sor = sor, soc = soc }
+      added = added + 1
+    else
+      skipped = skipped + 1
+    end
+  end
+
+  AddLine("playerCombat", string.format("Seal DPS import complete: %d row(s) saved, %d skipped.", added, skipped))
+  if added > 0 then
+    TA_ReportSealDpsModelRows()
+  end
+end
+
+function TA_GetSealDpsEstimate(level)
+  local rows = TA_GetSealDpsRowsSorted()
+  if #rows == 0 then return nil end
+  if #rows == 1 then
+    return {
+      level = level,
+      sor = rows[1].sor,
+      soc = rows[1].soc,
+      source = string.format("single row L%d", rows[1].level),
+    }
+  end
+
+  if level <= rows[1].level then
+    return {
+      level = level,
+      sor = rows[1].sor,
+      soc = rows[1].soc,
+      source = string.format("clamped to lowest row L%d", rows[1].level),
+    }
+  end
+
+  for i = 1, (#rows - 1) do
+    local a = rows[i]
+    local b = rows[i + 1]
+    if level == a.level then
+      return {
+        level = level,
+        sor = a.sor,
+        soc = a.soc,
+        source = string.format("exact row L%d", a.level),
+      }
+    end
+    if level >= a.level and level <= b.level then
+      local span = b.level - a.level
+      local t = span > 0 and ((level - a.level) / span) or 0
+      return {
+        level = level,
+        sor = a.sor + ((b.sor - a.sor) * t),
+        soc = a.soc + ((b.soc - a.soc) * t),
+        source = string.format("interpolated between L%d and L%d", a.level, b.level),
+      }
+    end
+  end
+
+  local last = rows[#rows]
+  return {
+    level = level,
+    sor = last.sor,
+    soc = last.soc,
+    source = string.format("clamped to highest row L%d", last.level),
+  }
+end
+
+function TA_ReportSealDpsComparison(levelArg)
+  local level = math.floor(tonumber(levelArg) or (UnitLevel("player") or 1))
+  if level < 1 then level = 1 end
+  if level > 60 then level = 60 end
+
+  local estimate = TA_GetSealDpsEstimate(level)
+  if not estimate then
+    AddLine("playerCombat", "No seal DPS model data loaded.")
+    AddLine("system", "Add rows: sealdps set <level> <sorDps> <socDps>")
+    AddLine("system", "Bulk import: sealdps import <level:sor:soc,level:sor:soc,...>")
+    return
+  end
+
+  local delta = estimate.sor - estimate.soc
+  local best = "Seal of Righteousness"
+  if delta < 0 then
+    best = "Seal of the Crusader"
+  end
+
+  AddLine("playerCombat", string.format("Seal model at L%d -> SoR %.1f DPS, SoC %.1f DPS", level, estimate.sor, estimate.soc))
+  AddLine("playerCombat", string.format("Recommendation: %s (delta %.1f DPS)", best, math.abs(delta)))
+  AddLine("system", "Model source: " .. estimate.source)
+end
+
+local TA_SEAL_RANK_DATA = {
+  sor = {
+    spellNames = { "Seal of Righteousness" },
+    ranks = {
+      { rank = 1, level = 1, min = 32.88696412, max = 32.88696412, coeff = 0.0359375 },
+      { rank = 2, level = 10, min = 38.49514012, max = 38.49514012, coeff = 0.078125 },
+      { rank = 3, level = 18, min = 45.55517212, max = 45.55517212, coeff = 0.115625 },
+      { rank = 4, level = 26, min = 55.36654012, max = 55.36654012, coeff = 0.125 },
+      { rank = 5, level = 34, min = 68.03306812, max = 68.03306812, coeff = 0.125 },
+      { rank = 6, level = 42, min = 83.45084812, max = 83.45084812, coeff = 0.125 },
+      { rank = 7, level = 50, min = 100.3222481, max = 100.3222481, coeff = 0.125 },
+      { rank = 8, level = 58, min = 119.9971481, max = 119.9971481, coeff = 0.125 },
+    },
+  },
+  jor = {
+    spellNames = { "Judgement of Righteousness", "Judgment of Righteousness" },
+    ranks = {
+      { rank = 1, level = 1, min = 15.0, max = 15.0, coeff = 0.20536125 },
+      { rank = 2, level = 10, min = 25.0, max = 27.0, coeff = 0.4464375 },
+      { rank = 3, level = 18, min = 39.0, max = 43.0, coeff = 0.6607275 },
+      { rank = 4, level = 26, min = 57.0, max = 63.0, coeff = 0.7143 },
+      { rank = 5, level = 34, min = 78.0, max = 86.0, coeff = 0.7143 },
+      { rank = 6, level = 42, min = 102.0, max = 112.0, coeff = 0.7143 },
+      { rank = 7, level = 50, min = 131.0, max = 143.0, coeff = 0.7143 },
+      { rank = 8, level = 58, min = 162.0, max = 178.0, coeff = 0.7143 },
+    },
+  },
+  soc = {
+    spellNames = { "Seal of Command" },
+    ranks = {
+      { rank = 1, level = 20, weaponCoeff = 0.70, coeff = 0.29 },
+      { rank = 2, level = 30, weaponCoeff = 0.70, coeff = 0.29 },
+      { rank = 3, level = 40, weaponCoeff = 0.70, coeff = 0.29 },
+      { rank = 4, level = 50, weaponCoeff = 0.70, coeff = 0.29 },
+      { rank = 5, level = 60, weaponCoeff = 0.70, coeff = 0.29 },
+    },
+  },
+  joc = {
+    spellNames = { "Judgement of Command", "Judgment of Command" },
+    ranks = {
+      { rank = 1, level = 20, min = 46.5, max = 50.5, coeff = 0.4286 },
+      { rank = 2, level = 30, min = 73.0, max = 80.0, coeff = 0.4286 },
+      { rank = 3, level = 40, min = 102.0, max = 112.0, coeff = 0.4286 },
+      { rank = 4, level = 50, min = 130.5, max = 143.5, coeff = 0.4286 },
+      { rank = 5, level = 60, min = 169.5, max = 186.5, coeff = 0.4286 },
+    },
+  },
+}
+
+function TA_GetSealLiveConfig()
+  TextAdventurerDB = TextAdventurerDB or {}
+  if type(TextAdventurerDB.sealDpsLiveConfig) ~= "table" then
+    TextAdventurerDB.sealDpsLiveConfig = {}
+  end
+  local cfg = TextAdventurerDB.sealDpsLiveConfig
+  if type(cfg.targetLevel) ~= "number" then cfg.targetLevel = UnitLevel("player") or 60 end
+  if type(cfg.judgementCD) ~= "number" then cfg.judgementCD = 8 end
+  if type(cfg.socPPM) ~= "number" then cfg.socPPM = 7 end
+  if type(cfg.hybridWindow) ~= "number" then cfg.hybridWindow = 60 end
+  if type(cfg.resealGCD) ~= "number" then cfg.resealGCD = 1.5 end
+  if cfg.attackFromBehind == nil then cfg.attackFromBehind = true end
+  return cfg
+end
+
+function TA_SetSealLiveNumber(key, value, minValue, maxValue, label)
+  local n = tonumber(value)
+  if not n then
+    AddLine("system", string.format("Usage: sealdps live %s <%s-%s>", key, tostring(minValue), tostring(maxValue)))
+    return
+  end
+  n = math.floor((n * 100) + 0.5) / 100
+  if n < minValue then n = minValue end
+  if n > maxValue then n = maxValue end
+  local cfg = TA_GetSealLiveConfig()
+  cfg[key] = n
+  AddLine("playerCombat", string.format("Live seal setting: %s = %s", label, tostring(n)))
+end
+
+function TA_SetSealLiveBehind(arg)
+  local v = (arg or ""):match("^%s*(.-)%s*$"):lower()
+  local cfg = TA_GetSealLiveConfig()
+  if v == "on" or v == "true" or v == "1" or v == "behind" then
+    cfg.attackFromBehind = true
+  elseif v == "off" or v == "false" or v == "0" or v == "front" then
+    cfg.attackFromBehind = false
+  else
+    AddLine("system", "Usage: sealdps live behind <on|off>")
+    return
+  end
+  AddLine("playerCombat", string.format("Live seal setting: attackFromBehind = %s", cfg.attackFromBehind and "true" or "false"))
+end
+
+function TA_ReportSealLiveAssumptions()
+  local cfg = TA_GetSealLiveConfig()
+  AddLine("playerCombat", "sealdps live assumptions:")
+  AddLine("playerCombat", string.format("  target level: %d", cfg.targetLevel or 63))
+  AddLine("playerCombat", string.format("  judgement CD: %.1fs", cfg.judgementCD or 8))
+  AddLine("playerCombat", string.format("  SoC proc rate: %.2f PPM", cfg.socPPM or 7))
+  AddLine("playerCombat", string.format("  hybrid test window: %.0fs", cfg.hybridWindow or 60))
+  AddLine("playerCombat", string.format("  reseal GCD penalty: %.1fs", cfg.resealGCD or 1.5))
+  AddLine("playerCombat", string.format("  attacking from behind: %s", cfg.attackFromBehind and "yes" or "no"))
+  AddLine("playerCombat", "  tip: set target to your current level while leveling")
+  AddLine("playerCombat", "  source: Despotus v0.3.6 Skills table rank coefficients")
+end
+
+function TA_SetSealLiveHybridWindow(seconds)
+  TA_SetSealLiveNumber("hybridWindow", seconds, 15, 300, "hybridWindow")
+end
+
+function TA_SetSealLiveResealGCD(seconds)
+  TA_SetSealLiveNumber("resealGCD", seconds, 0.5, 2.5, "resealGCD")
+end
+
+function TA_GetHighestKnownRank(spellNames)
+  if type(spellNames) ~= "table" or #spellNames == 0 then return nil end
+  local wanted = {}
+  for i = 1, #spellNames do
+    wanted[spellNames[i]:lower()] = true
+  end
+
+  local bestRank = nil
+  local numTabs = GetNumSpellTabs and GetNumSpellTabs() or 0
+  for tab = 1, numTabs do
+    local _, _, offset, numSpells = GetSpellTabInfo(tab)
+    offset = offset or 0
+    numSpells = numSpells or 0
+    for i = 1, numSpells do
+      local idx = offset + i
+      local name, subText = GetSpellBookItemName(idx, BOOKTYPE_SPELL)
+      if name and wanted[name:lower()] then
+        local parsedRank = nil
+        if subText and subText ~= "" then
+          parsedRank = tonumber((subText:match("(%d+)") or ""))
+        end
+        if parsedRank then
+          bestRank = math.max(bestRank or 0, parsedRank)
+        else
+          bestRank = bestRank or 1
+        end
+      end
+    end
+  end
+  return bestRank
+end
+
+function TA_SelectRankByLevel(rankRows, level)
+  if type(rankRows) ~= "table" or #rankRows == 0 then return nil end
+  local pick = nil
+  for i = 1, #rankRows do
+    local row = rankRows[i]
+    if (row.level or 1) <= level then
+      pick = row
+    end
+  end
+  return pick or rankRows[1]
+end
+
+function TA_SelectRankByNumber(rankRows, rank)
+  if not rank then return nil end
+  for i = 1, #rankRows do
+    if rankRows[i].rank == rank then
+      return rankRows[i]
+    end
+  end
+  return nil
+end
+
+function TA_GetLiveSpellRankRow(dataKey)
+  local data = TA_SEAL_RANK_DATA[dataKey]
+  if not data then return nil, nil end
+  local playerLevel = UnitLevel("player") or 60
+  local knownRank = TA_GetHighestKnownRank(data.spellNames)
+  local row = TA_SelectRankByNumber(data.ranks, knownRank) or TA_SelectRankByLevel(data.ranks, playerLevel)
+  return row, knownRank
+end
+
+function TA_GetSpellPowerHoly()
+  if GetSpellBonusDamage then
+    local okSchool, vSchool = pcall(GetSpellBonusDamage, 2)
+    if okSchool and tonumber(vSchool) then
+      return tonumber(vSchool)
+    end
+    local okGeneric, vGeneric = pcall(GetSpellBonusDamage)
+    if okGeneric and tonumber(vGeneric) then
+      return tonumber(vGeneric)
+    end
+  end
+  return 0
+end
+
+function TA_GetMeleeConnectChance(targetLevel, attackFromBehind)
+  local level = UnitLevel("player") or 60
+  local diff = math.max(0, (targetLevel or 63) - level)
+  local baseMiss = 0.05 + (0.01 * diff)
+  if baseMiss > 0.09 then baseMiss = 0.09 end
+  local hitBonus = (GetHitModifier and (GetHitModifier() or 0) or 0) / 100
+  local miss = math.max(0, baseMiss - hitBonus)
+  local dodge = 0.065
+  local parry = attackFromBehind and 0 or 0.14
+  local block = attackFromBehind and 0 or 0.05
+  local connect = 1 - miss - dodge - parry - block
+  if connect < 0.05 then connect = 0.05 end
+  if connect > 1 then connect = 1 end
+  return connect
+end
+
+function TA_GetJudgementConnectChance(targetLevel)
+  local level = UnitLevel("player") or 60
+  local diff = math.max(0, (targetLevel or 63) - level)
+  local miss = 0.04 + (0.01 * diff)
+  if miss > 0.17 then miss = 0.17 end
+  local connect = 1 - miss
+  if connect < 0.5 then connect = 0.5 end
+  return connect
+end
+
+function TA_ReportLiveSealDpsComparison()
+  local cfg = TA_GetSealLiveConfig()
+  local minMain, maxMain = UnitDamage("player")
+  local mainSpeed = UnitAttackSpeed("player")
+  if not minMain or not maxMain or not mainSpeed or mainSpeed <= 0 then
+    AddLine("playerCombat", "Live seal model unavailable: no valid main-hand weapon data.")
+    return
+  end
+
+  local spellPower = TA_GetSpellPowerHoly()
+  local avgWeaponHit = (minMain + maxMain) / 2
+  local meleeConnect = TA_GetMeleeConnectChance(cfg.targetLevel, cfg.attackFromBehind)
+  local judgeConnect = TA_GetJudgementConnectChance(cfg.targetLevel)
+  local swingsPerSec = 1 / mainSpeed
+
+  local sorRow, sorKnownRank = TA_GetLiveSpellRankRow("sor")
+  local jorRow, jorKnownRank = TA_GetLiveSpellRankRow("jor")
+  local socRow, socKnownRank = TA_GetLiveSpellRankRow("soc")
+  local jocRow, jocKnownRank = TA_GetLiveSpellRankRow("joc")
+
+  if not sorRow and not socRow then
+    AddLine("playerCombat", "Live seal model unavailable: no seal ranks found in spellbook.")
+    return
+  end
+
+  local sorBase = sorRow and (((sorRow.min or 0) + (sorRow.max or 0)) / 2) or 0
+  local jorBase = jorRow and (((jorRow.min or 0) + (jorRow.max or 0)) / 2) or 0
+  local jocBase = jocRow and (((jocRow.min or 0) + (jocRow.max or 0)) / 2) or 0
+
+  local sorCoeff = sorRow and (sorRow.coeff or 0) or 0
+  local jorCoeff = jorRow and (jorRow.coeff or 0) or 0
+  local socCoeff = socRow and (socRow.coeff or 0) or 0.29
+  local socWeaponCoeff = socRow and (socRow.weaponCoeff or 0.70) or 0.70
+  local jocCoeff = jocRow and (jocRow.coeff or 0) or 0
+
+  local sorHit = sorBase + (spellPower * sorCoeff)
+  local sorDps = sorHit * swingsPerSec * meleeConnect
+
+  local jorHit = jorBase + (spellPower * jorCoeff)
+  local jorDps = (jorHit / math.max(1, cfg.judgementCD)) * judgeConnect
+
+  local socHit = (avgWeaponHit * socWeaponCoeff) + (spellPower * socCoeff)
+  local socConnects = (math.max(0.5, cfg.socPPM) / 60) * meleeConnect
+  local socDps = socHit * socConnects
+
+  local jocHit = jocBase + (spellPower * jocCoeff)
+  local jocDps = (jocHit / math.max(1, cfg.judgementCD)) * judgeConnect
+
+  local totalSor = sorDps + jorDps
+  local totalSoc = socDps + jocDps
+  local delta = totalSor - totalSoc
+  local best = delta >= 0 and "Seal of Righteousness" or "Seal of Command"
+
+  AddLine("playerCombat", string.format("Live seal model (%s):", cfg.attackFromBehind and "behind" or "front"))
+  AddLine("playerCombat", string.format("  SoR path: Seal %.1f + JoR %.1f = %.1f DPS", sorDps, jorDps, totalSor))
+  AddLine("playerCombat", string.format("  SoC path: Seal %.1f + JoC %.1f = %.1f DPS", socDps, jocDps, totalSoc))
+  AddLine("system", string.format("Ranks: SoR %d, JoR %d, SoC %d, JoC %d", sorKnownRank or (sorRow and sorRow.rank or 0), jorKnownRank or (jorRow and jorRow.rank or 0), socKnownRank or (socRow and socRow.rank or 0), jocKnownRank or (jocRow and jocRow.rank or 0)))
+  AddLine("playerCombat", string.format("Recommendation: %s (delta %.1f DPS)", best, math.abs(delta)))
+  AddLine("system", string.format("Inputs: SP %.0f, weapon %.0f-%.0f @ %.2fs, melee connect %.1f%%, judge connect %.1f%%", spellPower, minMain, maxMain, mainSpeed, meleeConnect * 100, judgeConnect * 100))
+  AddLine("system", "Tip: run 'sealdps assumptions' to inspect or tune live model settings.")
+end
+
+function TA_ReportLiveSealHybridComparison(windowArg)
+  local cfg = TA_GetSealLiveConfig()
+  local window = tonumber(windowArg) or tonumber(cfg.hybridWindow) or 60
+  if window < 15 then window = 15 end
+  if window > 300 then window = 300 end
+  local resealGCD = tonumber(cfg.resealGCD) or 1.5
+
+  local minMain, maxMain = UnitDamage("player")
+  local mainSpeed = UnitAttackSpeed("player")
+  if not minMain or not maxMain or not mainSpeed or mainSpeed <= 0 then
+    AddLine("playerCombat", "Hybrid test unavailable: no valid main-hand weapon data.")
+    return
+  end
+
+  local spellPower = TA_GetSpellPowerHoly()
+  local avgWeaponHit = (minMain + maxMain) / 2
+  local meleeConnect = TA_GetMeleeConnectChance(cfg.targetLevel, cfg.attackFromBehind)
+  local judgeConnect = TA_GetJudgementConnectChance(cfg.targetLevel)
+  local swingsPerSec = 1 / mainSpeed
+
+  local sorRow = TA_GetLiveSpellRankRow("sor")
+  local jorRow = TA_GetLiveSpellRankRow("jor")
+  local socRow = TA_GetLiveSpellRankRow("soc")
+  local jocRow = TA_GetLiveSpellRankRow("joc")
+
+  if not sorRow or not jorRow or not jocRow then
+    AddLine("playerCombat", "Hybrid test unavailable: missing SoR/JoR/JoC ranks in spellbook.")
+    return
+  end
+
+  local sorBase = ((sorRow.min or 0) + (sorRow.max or 0)) / 2
+  local jorBase = ((jorRow.min or 0) + (jorRow.max or 0)) / 2
+  local jocBase = ((jocRow.min or 0) + (jocRow.max or 0)) / 2
+
+  local sorHit = sorBase + (spellPower * (sorRow.coeff or 0))
+  local sorDps = sorHit * swingsPerSec * meleeConnect
+
+  local jorHit = jorBase + (spellPower * (jorRow.coeff or 0))
+  local jorDps = (jorHit / math.max(1, cfg.judgementCD)) * judgeConnect
+
+  local socWeaponCoeff = socRow and (socRow.weaponCoeff or 0.70) or 0.70
+  local socCoeff = socRow and (socRow.coeff or 0.29) or 0.29
+  local socHit = (avgWeaponHit * socWeaponCoeff) + (spellPower * socCoeff)
+  local socConnects = (math.max(0.5, cfg.socPPM) / 60) * meleeConnect
+  local socDps = socHit * socConnects
+
+  local jocHit = jocBase + (spellPower * (jocRow.coeff or 0))
+  local jocDps = (jocHit / math.max(1, cfg.judgementCD)) * judgeConnect
+
+  local pureSorDps = sorDps + jorDps
+  local pureSocDps = socDps + jocDps
+
+  local oneJudgeDeltaDmg = (jocHit - jorHit) * judgeConnect
+  local resealPenaltyDmg = sorDps * resealGCD
+  local hybridDps = pureSorDps + ((oneJudgeDeltaDmg - resealPenaltyDmg) / window)
+  local hybridDelta = hybridDps - pureSorDps
+
+  AddLine("playerCombat", string.format("Hybrid test over %.0fs:", window))
+  AddLine("playerCombat", string.format("  Pure SoR loop: %.1f DPS", pureSorDps))
+  AddLine("playerCombat", string.format("  SoC judge -> reseal SoR: %.1f DPS", hybridDps))
+  AddLine("playerCombat", string.format("  Pure SoC loop (reference): %.1f DPS", pureSocDps))
+  if hybridDelta >= 0 then
+    AddLine("playerCombat", string.format("Result: JoC opener improves SoR path by %.1f DPS.", math.abs(hybridDelta)))
+  else
+    AddLine("playerCombat", string.format("Result: JoC opener lowers SoR path by %.1f DPS.", math.abs(hybridDelta)))
+  end
+  AddLine("system", string.format("Assumptions: one JoC replaces one JoR per window; reseal penalty %.1fs", resealGCD))
+end
+
+function TA_GetMLStore()
+  TextAdventurerDB = TextAdventurerDB or {}
+  if type(TextAdventurerDB.ml) ~= "table" then
+    TextAdventurerDB.ml = {}
+  end
+  local ml = TextAdventurerDB.ml
+  if type(ml.logs) ~= "table" then ml.logs = {} end
+  if type(ml.model) ~= "table" then ml.model = {} end
+  if ml.loggingEnabled == nil then ml.loggingEnabled = true end
+  if type(ml.maxLogs) ~= "number" then ml.maxLogs = 200 end
+  return ml
+end
+
+function TA_CaptureMLFeatures()
+  local cfg = TA_GetSealLiveConfig()
+  local playerLevel = UnitLevel("player") or 60
+  local targetLevel = tonumber(cfg.targetLevel) or playerLevel
+  local minMain, maxMain = UnitDamage("player")
+  local mainSpeed = UnitAttackSpeed("player")
+  local avgWeaponHit = 0
+  if minMain and maxMain then
+    avgWeaponHit = (minMain + maxMain) / 2
+  end
+  local baseAP, posAP, negAP = UnitAttackPower("player")
+  local ap = (baseAP or 0) + (posAP or 0) + (negAP or 0)
+  local powerType = UnitPowerType("player") or 0
+  local mana = UnitPower("player", powerType) or 0
+  local manaMax = UnitPowerMax("player", powerType) or 0
+  local manaPct = manaMax > 0 and (mana / manaMax) * 100 or 0
+  local spellPower = TA_GetSpellPowerHoly()
+  local crit = (GetCritChance and (GetCritChance() or 0)) or 0
+  local hit = (GetHitModifier and (GetHitModifier() or 0)) or 0
+  local meleeConnect = TA_GetMeleeConnectChance(targetLevel, cfg.attackFromBehind)
+  local judgeConnect = TA_GetJudgementConnectChance(targetLevel)
+
+  return {
+    playerLevel = playerLevel,
+    targetLevel = targetLevel,
+    levelDiff = targetLevel - playerLevel,
+    weaponSpeed = tonumber(mainSpeed) or 0,
+    avgWeaponHit = avgWeaponHit,
+    ap = ap,
+    spellPower = spellPower,
+    crit = crit,
+    hit = hit,
+    manaPct = manaPct,
+    attackFromBehind = cfg.attackFromBehind and 1 or 0,
+    meleeConnect = meleeConnect,
+    judgeConnect = judgeConnect,
+  }
+end
+
+function TA_LogMLFightResult(duration, damage)
+  local ml = TA_GetMLStore()
+  if not ml.loggingEnabled then return end
+  if not TA.mlFightSnapshot then return end
+
+  local dur = math.max(0.001, tonumber(duration) or 0.001)
+  local dmg = tonumber(damage) or 0
+  local dps = dmg / dur
+
+  local row = {
+    t = date and date("%Y-%m-%d %H:%M:%S") or tostring(GetTime()),
+    playerLevel = TA.mlFightSnapshot.playerLevel,
+    targetLevel = TA.mlFightSnapshot.targetLevel,
+    levelDiff = TA.mlFightSnapshot.levelDiff,
+    weaponSpeed = TA.mlFightSnapshot.weaponSpeed,
+    avgWeaponHit = TA.mlFightSnapshot.avgWeaponHit,
+    ap = TA.mlFightSnapshot.ap,
+    spellPower = TA.mlFightSnapshot.spellPower,
+    crit = TA.mlFightSnapshot.crit,
+    hit = TA.mlFightSnapshot.hit,
+    manaPct = TA.mlFightSnapshot.manaPct,
+    attackFromBehind = TA.mlFightSnapshot.attackFromBehind,
+    meleeConnect = TA.mlFightSnapshot.meleeConnect,
+    judgeConnect = TA.mlFightSnapshot.judgeConnect,
+    fightDuration = dur,
+    fightDamage = dmg,
+    fightDps = dps,
+  }
+
+  table.insert(ml.logs, row)
+  local maxLogs = math.max(20, math.floor(tonumber(ml.maxLogs) or 200))
+  while #ml.logs > maxLogs do
+    table.remove(ml.logs, 1)
+  end
+end
+
+function TA_SetMLLogging(enabled)
+  local ml = TA_GetMLStore()
+  ml.loggingEnabled = enabled and true or false
+  AddLine("system", string.format("ML fight logging %s.", ml.loggingEnabled and "enabled" or "disabled"))
+end
+
+function TA_ClearMLLogs()
+  local ml = TA_GetMLStore()
+  wipe(ml.logs)
+  AddLine("system", "ML logs cleared.")
+end
+
+function TA_SetMLMaxLogs(n)
+  local v = math.floor(tonumber(n) or 0)
+  if v < 20 then v = 20 end
+  if v > 2000 then v = 2000 end
+  local ml = TA_GetMLStore()
+  ml.maxLogs = v
+  AddLine("system", string.format("ML max logs set to %d.", v))
+end
+
+function TA_FormatCSVField(v)
+  v = tostring(v or "")
+  if v:find('[,\"]') then
+    v = '"' .. v:gsub('"', '""') .. '"'
+  end
+  return v
+end
+
+function TA_ExportMLLogs(countArg)
+  local ml = TA_GetMLStore()
+  if #ml.logs == 0 then
+    AddLine("system", "No ML logs to export yet.")
+    return
+  end
+
+  local count = math.floor(tonumber(countArg) or 20)
+  if count < 1 then count = 1 end
+  if count > 100 then count = 100 end
+  if count > #ml.logs then count = #ml.logs end
+
+  local header = "t,playerLevel,targetLevel,levelDiff,weaponSpeed,avgWeaponHit,ap,spellPower,crit,hit,manaPct,attackFromBehind,meleeConnect,judgeConnect,fightDuration,fightDamage,fightDps"
+  AddLine("system", "ML CSV export (newest last):")
+  AddLine("system", header)
+
+  local startIdx = #ml.logs - count + 1
+  for i = startIdx, #ml.logs do
+    local row = ml.logs[i]
+    local csv = table.concat({
+      TA_FormatCSVField(row.t),
+      TA_FormatCSVField(string.format("%.0f", row.playerLevel or 0)),
+      TA_FormatCSVField(string.format("%.0f", row.targetLevel or 0)),
+      TA_FormatCSVField(string.format("%.0f", row.levelDiff or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.weaponSpeed or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.avgWeaponHit or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.ap or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.spellPower or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.crit or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.hit or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.manaPct or 0)),
+      TA_FormatCSVField(string.format("%.0f", row.attackFromBehind or 0)),
+      TA_FormatCSVField(string.format("%.6f", row.meleeConnect or 0)),
+      TA_FormatCSVField(string.format("%.6f", row.judgeConnect or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.fightDuration or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.fightDamage or 0)),
+      TA_FormatCSVField(string.format("%.4f", row.fightDps or 0)),
+    }, ",")
+    AddLine("system", csv)
+  end
+end
+
+function TA_EvalMLTreeNode(node, features, trace)
+  if not node then return { sor = 0, soc = 0, hybrid = 0 }, "empty" end
+  if node.leaf then
+    return node.leaf, "leaf"
+  end
+
+  local f = tonumber(features[node.feature] or 0) or 0
+  local threshold = tonumber(node.value or 0) or 0
+  local op = node.op or "<="
+  local pass = false
+  if op == "<" then pass = (f < threshold)
+  elseif op == "<=" then pass = (f <= threshold)
+  elseif op == ">" then pass = (f > threshold)
+  elseif op == ">=" then pass = (f >= threshold)
+  else pass = (f <= threshold)
+  end
+
+  local branch = pass and node.left or node.right
+  local leaf, leafTrace = TA_EvalMLTreeNode(branch, features, trace)
+  local step = string.format("%s %.4f %s %.4f -> %s", node.feature or "?", f, op, threshold, pass and "left" or "right")
+  if leafTrace and leafTrace ~= "" then
+    return leaf, step .. " | " .. leafTrace
+  end
+  return leaf, step
+end
+
+function TA_RecommendWithML(explain)
+  local ml = TA_GetMLStore()
+  if type(ml.model) ~= "table" or type(ml.model.trees) ~= "table" or #ml.model.trees == 0 then
+    AddLine("system", "No ML model loaded. Use: ml model sample")
+    return
+  end
+
+  local features = TA_CaptureMLFeatures()
+  local scores = { sor = 0, soc = 0, hybrid = 0 }
+  local traces = {}
+  for i = 1, #ml.model.trees do
+    local tree = ml.model.trees[i]
+    local leaf, trace = TA_EvalMLTreeNode(tree, features)
+    local weight = tonumber(tree.weight) or 1
+    scores.sor = scores.sor + (tonumber(leaf.sor) or 0) * weight
+    scores.soc = scores.soc + (tonumber(leaf.soc) or 0) * weight
+    scores.hybrid = scores.hybrid + (tonumber(leaf.hybrid) or 0) * weight
+    traces[i] = trace
+  end
+
+  local bestKey = "sor"
+  if scores.soc > scores[bestKey] then bestKey = "soc" end
+  if scores.hybrid > scores[bestKey] then bestKey = "hybrid" end
+
+  local labels = {
+    sor = "Pure SoR loop",
+    soc = "Pure SoC loop",
+    hybrid = "JoC opener -> SoR",
+  }
+
+  AddLine("playerCombat", string.format("ML recommendation: %s", labels[bestKey] or bestKey))
+  AddLine("system", string.format("ML scores: SoR %.3f | SoC %.3f | Hybrid %.3f", scores.sor, scores.soc, scores.hybrid))
+  if explain then
+    AddLine("system", string.format("Features: lvlDiff %.0f, speed %.2f, AP %.0f, SP %.0f, mana %.1f%%, connect %.1f%%", features.levelDiff or 0, features.weaponSpeed or 0, features.ap or 0, features.spellPower or 0, features.manaPct or 0, (features.meleeConnect or 0) * 100))
+    for i = 1, #traces do
+      AddLine("system", string.format("  tree %d: %s", i, traces[i] or ""))
+    end
+  end
+end
+
+function TA_LoadSampleMLModel()
+  local ml = TA_GetMLStore()
+  ml.model = {
+    name = "ta-seal-sample-v1",
+    labels = { "sor", "soc", "hybrid" },
+    trees = {
+      {
+        feature = "levelDiff",
+        op = ">=",
+        value = 2,
+        left = { leaf = { sor = 0.75, soc = 0.10, hybrid = 0.15 } },
+        right = { leaf = { sor = 0.35, soc = 0.40, hybrid = 0.25 } },
+      },
+      {
+        feature = "weaponSpeed",
+        op = ">=",
+        value = 3.3,
+        left = { leaf = { sor = 0.20, soc = 0.55, hybrid = 0.25 } },
+        right = { leaf = { sor = 0.55, soc = 0.20, hybrid = 0.25 } },
+      },
+      {
+        feature = "manaPct",
+        op = "<=",
+        value = 20,
+        left = { leaf = { sor = 0.20, soc = 0.60, hybrid = 0.20 } },
+        right = {
+          feature = "spellPower",
+          op = ">=",
+          value = 180,
+          left = { leaf = { sor = 0.60, soc = 0.10, hybrid = 0.30 } },
+          right = { leaf = { sor = 0.35, soc = 0.30, hybrid = 0.35 } },
+        },
+      },
+    },
+  }
+  AddLine("system", "Sample ML model loaded. Use 'ml recommend' or 'ml recommend explain'.")
+end
+
+function TA_ClearMLModel()
+  local ml = TA_GetMLStore()
+  ml.model = {}
+  AddLine("system", "ML model cleared.")
+end
+
+function TA_ReportMLStatus()
+  local ml = TA_GetMLStore()
+  local treeCount = (ml.model and ml.model.trees and #ml.model.trees) or 0
+  AddLine("system", string.format("ML status: logging=%s logs=%d/%d trees=%d", ml.loggingEnabled and "on" or "off", #ml.logs, ml.maxLogs or 200, treeCount))
+  if ml.model and ml.model.name then
+    AddLine("system", "ML model: " .. tostring(ml.model.name))
+  end
 end
 
 local function ReportCharacterStats()
@@ -3133,7 +4076,7 @@ end
 
 local function SellCurrentTarget()
   -- Sells the item currently moused-over or last opened via merchant; WoW Classic
-  -- exposes this via merchant sell slot — we instead sell by item link from bags.
+  -- exposes this via merchant sell slot â€” we instead sell by item link from bags.
   AddLine("system", "To sell an item, use /ta sell <bag> <slot>. Example: /ta sell 0 3")
 end
 
@@ -4046,6 +4989,18 @@ local function ReportExplorationMemory(force)
   end
 end
 
+local function TA_TryInteractDistance(unit, checkType)
+  if not unit or not CheckInteractDistance then
+    return false
+  end
+  -- This API can be protected in combat when execution is tainted.
+  if InCombatLockdown and InCombatLockdown() then
+    return false
+  end
+  local ok, result = pcall(CheckInteractDistance, unit, checkType)
+  return ok and result or false
+end
+
 local function GetNearbyUnitsWithPositions()
   local units = { hostile = {}, neutral = {}, friendly = {} }
   local nameplates = C_NamePlate.GetNamePlates()
@@ -4073,7 +5028,7 @@ local function GetNearbyUnitsWithPositions()
         if CheckInteractDistance then
           -- Try to get approximate distance
           for i = 1, 4 do
-            if CheckInteractDistance(unit, i) then
+            if TA_TryInteractDistance(unit, i) then
               distance = i * 5
               break
             end
@@ -4340,10 +5295,10 @@ local function BuildDFModeDisplay()
       ty = math.floor(math.sin(angle) * 2)
 
       if CheckInteractDistance then
-        if CheckInteractDistance("target", 1) then targetDistance = 10
-        elseif CheckInteractDistance("target", 2) then targetDistance = 11
-        elseif CheckInteractDistance("target", 3) then targetDistance = 28
-        elseif CheckInteractDistance("target", 4) then targetDistance = 30
+        if TA_TryInteractDistance("target", 1) then targetDistance = 10
+        elseif TA_TryInteractDistance("target", 2) then targetDistance = 11
+        elseif TA_TryInteractDistance("target", 3) then targetDistance = 28
+        elseif TA_TryInteractDistance("target", 4) then targetDistance = 30
         end
       end
     end
@@ -4531,7 +5486,7 @@ local function BuildDFModeDisplay()
     end
     TA.dfModeLastNearestMarkID = nearestMarkID
     TA.dfModeLastNearestMarkDist = nearestMarkDist
-    TA.dfModeNavHint = string.format("Mark [%d] %s: %dyd %s%s", nearestMarkID, nearestMarkName, math.floor(nearestMarkDist + 0.5), relDir, approachIndicator)
+    TA.dfModeNavHint = nil
   end
 
   for y = radius, -radius, -1 do
@@ -4777,11 +5732,8 @@ function TA_UpdateDFMode()
   for j = i, #mapLines do
     mapLines[j]:SetText("")
   end
-  if TA.dfModeNavHint and TA.dfModeNavHint ~= "" then
-    dfTitle:SetText("Tactical Map (DF Mode) - " .. TA.dfModeNavHint)
-  else
-    dfTitle:SetText("Tactical Map (DF Mode)")
-  end
+  local viewMode = TA.dfModeViewMode or "threat"
+  dfTitle:SetText(viewMode)
 end
 
 function TA_ToggleDFMode()
@@ -5011,9 +5963,9 @@ local function GetNearbyUnitsSummary()
         end
         -- Fallback: CheckInteractDistance gives bracketed range when UnitPosition is unavailable
         if not dist and CheckInteractDistance then
-          if CheckInteractDistance(unit, 1) then dist = 3      -- ~0 cells (right next to you)
-          elseif CheckInteractDistance(unit, 2) then dist = 9  -- ~1-2 cells
-          elseif CheckInteractDistance(unit, 3) then dist = 24 -- ~4 cells
+          if TA_TryInteractDistance(unit, 1) then dist = 3      -- ~0 cells (right next to you)
+          elseif TA_TryInteractDistance(unit, 2) then dist = 9  -- ~1-2 cells
+          elseif TA_TryInteractDistance(unit, 3) then dist = 24 -- ~4 cells
           else dist = 48 end                                    -- ~8 cells
           distApprox = true
         end
@@ -5746,9 +6698,23 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "Help: Combat & Stats")
     AddLine("system", "  status - health and current resource summary.")
     AddLine("system", "  stats - full character stat breakdown.")
+    AddLine("system", "  skills - current skill line levels (weapon/profession/defense).")
+    AddLine("system", "  skills weapons|professions|secondary|defense - filtered skill views.")
     AddLine("system", "  dps - fight DPS, session DPS, and weapon DPS.")
     AddLine("system", "  dps reset - clear recorded DPS history.")
     AddLine("system", "  weapondps - main-hand and off-hand auto-attack DPS.")
+    AddLine("system", "  sealdps - compare spreadsheet model DPS for SoR vs SoC.")
+    AddLine("system", "  sealdps <level> - evaluate model at a specific level.")
+    AddLine("system", "  sealdps set <lvl> <sor> <soc> - save one spreadsheet row.")
+    AddLine("system", "  sealdps import <lvl:sor:soc,...> - bulk import spreadsheet rows.")
+    AddLine("system", "  sealdps list / sealdps clear - inspect or wipe model rows.")
+    AddLine("system", "  sealdps live - compute live SoR vs SoC from current character stats.")
+    AddLine("system", "  sealdps live hybrid [seconds] - test JoC opener then SoR loop vs pure SoR.")
+    AddLine("system", "  sealdps assumptions - view/tune live model assumptions.")
+    AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
+    AddLine("system", "  ml model sample/clear - load or clear built-in ML model.")
+    AddLine("system", "  ml log on/off/status/clear/max <n> - manage feature logs.")
+    AddLine("system", "  ml export [n] - print recent fight logs as CSV rows.")
     AddLine("system", "  range - approximate distance to your target.")
     AddLine("system", "  behind/backstab - positional check for rear attacks.")
     AddLine("system", "  marka, markb, spacing - geometric pull spacing estimate.")
@@ -5762,6 +6728,7 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "  markedcells/listmarks - list saved cell marks.")
     AddLine("system", "  renamemark/renamecell <id> <name> - rename a marked cell.")
     AddLine("system", "  showmark <id> - highlight one mark on world map overlay.")
+    AddLine("system", "  deletemark <id> - delete a specific marked cell.")
     AddLine("system", "  clearmarks - delete all saved marks.")
     AddLine("system", "  cell - current cell bounds and position-in-cell.")
     AddLine("system", "  cellsize <n|standard|inn> - grid-based cell sizing.")
@@ -5823,6 +6790,7 @@ function TA_ShowHelpTopic(topicArg)
   if key == "economy" then
     AddLine("system", "Help: Inventory & Economy")
     AddLine("system", "  inventory/bags - bag contents and free space.")
+    AddLine("system", "  lootpreview - inspect corpse loot slots before taking items.")
     AddLine("system", "  gear/equipment - equipped items summary.")
     AddLine("system", "  equip <item name> - equip an item by name.")
     AddLine("system", "  equip <bag> <slot> - equip a specific bag item.")
@@ -5893,11 +6861,33 @@ TA.EXACT_INPUT_HANDLERS = {
   ["rage"] = function() ReportStatus(true) end,
   ["status"] = function() ReportStatus(true) end,
   ["stats"] = function() ReportCharacterStats() end,
+  ["skills"] = function() TA_ReportSkillLevels(true) end,
+  ["skill"] = function() TA_ReportSkillLevels(true) end,
+  ["lootpreview"] = function() ReportLootWindowPreview() end,
+  ["loot preview"] = function() ReportLootWindowPreview() end,
   ["money"] = function() ReportMoney() end,
   ["gold"] = function() ReportMoney() end,
   ["coins"] = function() ReportMoney() end,
   ["dps"] = function() ReportDPS() end,
   ["dps reset"] = function() ResetDPSStats() end,
+  ["sealdps"] = function() TA_ReportSealDpsComparison(nil) end,
+  ["seal dps"] = function() TA_ReportSealDpsComparison(nil) end,
+  ["sealdps live"] = function() TA_ReportLiveSealDpsComparison() end,
+  ["sealdps live hybrid"] = function() TA_ReportLiveSealHybridComparison(nil) end,
+  ["sealdps assumptions"] = function() TA_ReportSealLiveAssumptions() end,
+  ["ml status"] = function() TA_ReportMLStatus() end,
+  ["ml recommend"] = function() TA_RecommendWithML(false) end,
+  ["ml recommend explain"] = function() TA_RecommendWithML(true) end,
+  ["ml model sample"] = function() TA_LoadSampleMLModel() end,
+  ["ml model clear"] = function() TA_ClearMLModel() end,
+  ["ml log on"] = function() TA_SetMLLogging(true) end,
+  ["ml log off"] = function() TA_SetMLLogging(false) end,
+  ["ml log clear"] = function() TA_ClearMLLogs() end,
+  ["ml export"] = function() TA_ExportMLLogs(20) end,
+  ["sealdps list"] = function() TA_ReportSealDpsModelRows() end,
+  ["sealdps clear"] = function() TA_ClearSealDpsModel() end,
+  ["sealdps set"] = function() AddLine("system", "Usage: sealdps set <level> <sorDps> <socDps>") end,
+  ["sealdps import"] = function() AddLine("system", "Usage: sealdps import <level:sor:soc,level:sor:soc,...>") end,
   ["weapondps"] = function() ReportWeaponDPS() end,
   ["weapon dps"] = function() ReportWeaponDPS() end,
   ["where"] = function() ReportLocation(true) end,
@@ -5952,6 +6942,7 @@ TA.EXACT_INPUT_HANDLERS = {
   ["markedcells"] = function() ListMarkedCells() end,
   ["listmarks"] = function() ListMarkedCells() end,
   ["renamemark"] = function() AddLine("system", "Usage: renamemark <id> <name>") end,
+  ["deletemark"] = function() AddLine("system", "Usage: deletemark <id>") end,
   ["clearmarks"] = function() ClearMarkedCells() end,
   ["ta input"] = function() TA_FocusTerminalInput() end,
   ["input"] = function() TA_FocusTerminalInput() end,
@@ -5974,6 +6965,17 @@ TA.EXACT_INPUT_HANDLERS = {
   ["chat off"] = function()
     TA.captureChat = false
     AddLine("chat", "Chat capture disabled.")
+  end,
+  ["autostart on"] = function()
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.autoEnable = true
+    TextAdventurerDB.firstRunSafetyAcknowledged = true
+    AddLine("system", "Autostart enabled.")
+  end,
+  ["autostart off"] = function()
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.autoEnable = false
+    AddLine("system", "Autostart disabled.")
   end,
   ["gossip"] = function() ReportGossipOptions() end,
   ["complete"] = function() CompleteQuestFromTerminal() end,
@@ -6007,6 +7009,20 @@ TA.EXACT_INPUT_HANDLERS = {
 
 TA.PATTERN_INPUT_HANDLERS = {
   { "^help%s+(.+)$", function(topic) TA_ShowHelpTopic(topic) end },
+  { "^skills%s+(%a+)$", function(which) TA_ReportSkillLevels(true, which) end },
+  { "^skill%s+(%a+)$", function(which) TA_ReportSkillLevels(true, which) end },
+  { "^sealdps%s+live%s+target%s+(%d+)$", function(level) TA_SetSealLiveNumber("targetLevel", level, 1, 63, "targetLevel") end },
+  { "^sealdps%s+live%s+cd%s+([%d%.]+)$", function(seconds) TA_SetSealLiveNumber("judgementCD", seconds, 6, 10, "judgementCD") end },
+  { "^sealdps%s+live%s+socppm%s+([%d%.]+)$", function(ppm) TA_SetSealLiveNumber("socPPM", ppm, 4, 12, "socPPM") end },
+  { "^sealdps%s+live%s+window%s+([%d%.]+)$", function(seconds) TA_SetSealLiveHybridWindow(seconds) end },
+  { "^sealdps%s+live%s+resealgcd%s+([%d%.]+)$", function(seconds) TA_SetSealLiveResealGCD(seconds) end },
+  { "^sealdps%s+live%s+hybrid%s+([%d%.]+)$", function(seconds) TA_ReportLiveSealHybridComparison(seconds) end },
+  { "^sealdps%s+live%s+behind%s+(%a+)$", function(flag) TA_SetSealLiveBehind(flag) end },
+  { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
+  { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
+  { "^sealdps%s+(%d+)$", function(level) TA_ReportSealDpsComparison(tonumber(level)) end },
+  { "^sealdps%s+set%s+(%d+)%s+([%-]?[%d%.]+)%s+([%-]?[%d%.]+)$", function(level, sor, soc) TA_SetSealDpsModelRow(level, sor, soc) end },
+  { "^sealdps%s+import%s+(.+)$", function(payload) TA_ImportSealDpsModel(payload) end },
   { "^questinfo%s+(.+)$", function(arg) ReportQuestInfo(arg) end },
   { "^macroinfo%s+(%d+)$", function(idx) ShowMacroInfo(tonumber(idx)) end },
   { "^macro%s+(%d+)$", function(idx) CastMacroByIndex(tonumber(idx)) end },
@@ -6033,6 +7049,7 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^cellyards%s+([%d%.]+)$", function(yards) SetCellSizeYards(tonumber(yards)) end },
   { "^showmark%s+(%d+)$", function(markID) ShowMarkedCellOnMap(tonumber(markID)) end },
   { "^renamemark%s+(%d+)%s+(.+)$", function(markID, newName) TA_RenameMarkedCell(tonumber(markID), newName) end },
+  { "^deletemark%s+(%d+)$", function(markID) DeleteMarkedCell(tonumber(markID)) end },
   { "^choose%s+(%d+)$", function(idx) ChooseGossipOption(tonumber(idx)) end },
   { "^select%s+(%d+)$", function(idx) SelectQuestReward(tonumber(idx)) end },
   { "^rewardinfo%s+(%d+)$", function(idx) ReportQuestRewardInfo(tonumber(idx)) end },
@@ -6086,6 +7103,21 @@ function TA_ProcessInputCommand(msg)
   end
 
   local lower = msg:lower()
+  if lower == "autostart on" then
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.autoEnable = true
+    TextAdventurerDB.firstRunSafetyAcknowledged = true
+    AddLine("system", "Autostart enabled.")
+    return
+  elseif lower == "autostart off" then
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.autoEnable = false
+    AddLine("system", "Autostart disabled.")
+    return
+  elseif lower == "reload" or lower == "reloadui" then
+    ReloadUI()
+    return
+  end
   if lower == "renamecell" then
     lower = "renamemark"
   elseif lower:find("^renamecell%s+") then
@@ -6577,6 +7609,7 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
     DisableTextMode()
   elseif lower == "autostart on" then
     TextAdventurerDB.autoEnable = true
+    TextAdventurerDB.firstRunSafetyAcknowledged = true
     AddLine("system", "Autostart enabled.")
   elseif lower == "autostart off" then
     TextAdventurerDB.autoEnable = false
@@ -6591,6 +7624,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TextAdventurerDB = TextAdventurerDB or {}
     TextAdventurerDB.exploration = TextAdventurerDB.exploration or {}
     TextAdventurerDB.routes = type(TextAdventurerDB.routes) == "table" and TextAdventurerDB.routes or {}
+    TextAdventurerDB.sealDpsModel = type(TextAdventurerDB.sealDpsModel) == "table" and TextAdventurerDB.sealDpsModel or {}
+    TextAdventurerDB.sealDpsLiveConfig = type(TextAdventurerDB.sealDpsLiveConfig) == "table" and TextAdventurerDB.sealDpsLiveConfig or {}
+    TextAdventurerDB.ml = type(TextAdventurerDB.ml) == "table" and TextAdventurerDB.ml or {}
+    TA_GetMLStore()
     TextAdventurerDB.markedCells = TextAdventurerDB.markedCells or {}
     TextAdventurerDB.cellAnchors = type(TextAdventurerDB.cellAnchors) == "table" and TextAdventurerDB.cellAnchors or {}
     local savedGridSize = tonumber(TextAdventurerDB.gridSize)
@@ -6686,7 +7723,9 @@ TA:SetScript("OnEvent", function(self, event, ...)
       end
     end
     if isFirstRunSafeMode then
-      TextAdventurerDB.autoEnable = false
+      if TextAdventurerDB.autoEnable == nil then
+        TextAdventurerDB.autoEnable = false
+      end
       TextAdventurerDB.firstRunSafetyAcknowledged = true
     elseif TextAdventurerDB.autoEnable == nil then
       TextAdventurerDB.autoEnable = false
@@ -6701,6 +7740,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
       panel:Hide()
     end
     TA.bagState = SnapshotBags()
+    TA.skillSnapshot = TA_BuildSkillSnapshot()
     TA.lastBuffSnapshot = SnapshotBuffs()
     TA.questObjectiveSnapshot = BuildQuestObjectiveSnapshot()
     TA.dpsSessionStart = GetTime()
@@ -6712,7 +7752,11 @@ TA:SetScript("OnEvent", function(self, event, ...)
     ResetSwingTimer()
     AddLine("system", "You enter the world.")
     AddLine("system", "WARNING: This addon is extremely dangerous and WILL eventually get your character killed.")
-    AddLine("system", "WARNING: First-run safety mode starts with autostart OFF. Use /ta autostart on only after reviewing /ta help.")
+    if TextAdventurerDB.autoEnable then
+      AddLine("system", "Autostart is ON. Type 'autostart off' to disable.")
+    else
+      AddLine("system", "Autostart is OFF. Type 'autostart on' to auto-open on login.")
+    end
     AddLine("system", "Type /ta textmode on for full black-screen text mode.")
     AddLine("system", "Type /ta status for health and rage.")
     AddLine("system", "Type /ta xp for experience.")
@@ -6812,6 +7856,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "PLAYER_REGEN_DISABLED" then
     TA.dpsCombatStart = GetTime()
     TA.dpsCombatDamage = 0
+    TA.mlFightSnapshot = TA_CaptureMLFeatures()
     AddLine("playerCombat", "You enter combat.")
     ShowWarningMessage("UNDER ATTACK!")
     ReportStatus(true)
@@ -6820,10 +7865,12 @@ TA:SetScript("OnEvent", function(self, event, ...)
       local dur = math.max(0.001, GetTime() - TA.dpsCombatStart)
       TA.lastCombatDuration = dur
       TA.lastCombatDamage = TA.dpsCombatDamage or 0
+      TA_LogMLFightResult(dur, TA.lastCombatDamage)
       TA.dpsCombatStart = 0
       TA.dpsCombatDamage = 0
       AddLine("playerCombat", string.format("Fight summary: %.1f DPS (%d damage over %.1fs)", (TA.lastCombatDamage or 0) / dur, math.floor((TA.lastCombatDamage or 0) + 0.5), dur))
     end
+    TA.mlFightSnapshot = nil
     AddLine("playerCombat", "You leave combat.")
     ReportStatus(true)
   elseif event == "UNIT_SPELLCAST_START" then
@@ -6858,6 +7905,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     UpdateRecentPath()
   elseif event == "LOOT_OPENED" then
     AddLine("loot", "You begin looting.")
+    ReportLootWindowPreview()
   elseif event == "CHAT_MSG_LOOT" then
     local lootText = ...
     TA.pendingLoot = true
@@ -6936,6 +7984,8 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "UNIT_POWER_UPDATE" then
     local unit = ...
     if unit == "player" then ReportStatus(false) end
+  elseif event == "SKILL_LINES_CHANGED" then
+    TA_ReportSkillLevels(false)
   end
 end)
 
@@ -6974,6 +8024,7 @@ TA:RegisterEvent("UNIT_AURA")
 TA:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 TA:RegisterEvent("UNIT_ATTACK_SPEED")
 TA:RegisterEvent("UNIT_POWER_UPDATE")
+TA:RegisterEvent("SKILL_LINES_CHANGED")
 TA:RegisterEvent("CHAT_MSG_SAY")
 TA:RegisterEvent("CHAT_MSG_YELL")
 TA:RegisterEvent("CHAT_MSG_EMOTE")
@@ -7006,3 +8057,5 @@ TA.chatKeepAlive = C_Timer.NewTicker(2, function()
     end
   end
 end)
+
+

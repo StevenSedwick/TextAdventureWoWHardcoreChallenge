@@ -1,4 +1,4 @@
-## Interface: 11599
+## Interface: 11508
 ## Title: Text Adventurer
 ## Notes: EXTREMELY DANGEROUS HARDCORE ADDON. WILL eventually get your character killed. First-run autostart is OFF for safety.
 ## Author: You
