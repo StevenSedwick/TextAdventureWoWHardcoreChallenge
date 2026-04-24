@@ -111,6 +111,7 @@ TA.dfModeGridSize = 35
 TA.dfModeLastUpdate = 0
 TA.dfModeViewMode = "tactical"  -- tactical, threat, exploration, combined
 TA.dfModeProfile = "balanced"  -- balanced, full
+TA.dfModeOrientation = "fixed"  -- fixed (north-up), rotating (heading-up)
 TA.dfModeRotationMode = "octant"  -- smooth, octant (45-degree snaps for squarer geometry)
 TA.dfModeMarkRadius = 1  -- cells around mark center to draw edge ring
 TA.dfModeRecentCells = {}  -- Track recently visited cells for breadcrumb trail
@@ -119,6 +120,9 @@ TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
 TA.dfModeShowLevelFilter = nil  -- nil = show all, number = threshold
 TA.dfModeLastNearestMarkID = nil
 TA.dfModeLastNearestMarkDist = nil
+TA.dfModeSonarContacts = {}
+TA.dfModeSonarPulseUntil = 0
+TA.dfModeSonarTTL = 8
 
 local GRID_SIZE_LEGACY_DEFAULT = 12
 local GRID_SIZE_STANDARD = 80
@@ -4035,6 +4039,7 @@ local function GetNearbyUnitsWithPositions()
   local units = { hostile = {}, neutral = {}, friendly = {} }
   local nameplates = C_NamePlate.GetNamePlates()
   if not nameplates then return units end
+  local playerX, playerY = UnitPosition("player")
   
   for _, frame in ipairs(nameplates) do
     local unit = frame.namePlateUnitToken
@@ -4053,6 +4058,7 @@ local function GetNearbyUnitsWithPositions()
         
         -- Get distance estimate from UnitDistance or calculate from coordinates
         local distance = 0
+        local unitX, unitY = UnitPosition(unit)
         if CheckInteractDistance then
           -- Try to get approximate distance
           for i = 1, 4 do
@@ -4065,8 +4071,6 @@ local function GetNearbyUnitsWithPositions()
         
         -- Fallback to trying position calculation
         if distance == 0 then
-          local unitX, unitY = UnitPosition(unit)
-          local playerX, playerY = UnitPosition("player")
           if unitX and unitY and playerX and playerY then
             local dx = unitX - playerX
             local dy = unitY - playerY
@@ -4084,12 +4088,72 @@ local function GetNearbyUnitsWithPositions()
           health = UnitHealth(unit),
           maxHealth = UnitHealthMax(unit),
           unit = unit,
+          guid = UnitGUID(unit),
+          worldX = unitX,
+          worldY = unitY,
+          hasExactPos = unitX and unitY and playerX and playerY,
         })
       end
     end
   end
   
   return units
+end
+
+local function TA_ClearDFSonar()
+  TA.dfModeSonarContacts = {}
+end
+
+local function TA_RecordDFSonarContacts(units, mapID)
+  if not units or not mapID then return end
+  local now = GetTime()
+  local ttl = tonumber(TA.dfModeSonarTTL) or 8
+  local contactTable = TA.dfModeSonarContacts or {}
+  local function ingest(kind, list)
+    for _, u in ipairs(list or {}) do
+      if u and u.hasExactPos and u.worldX and u.worldY then
+        local key = u.guid or (kind .. ":" .. (u.name or "unknown"))
+        local existing = contactTable[key] or {}
+        existing.name = u.name or existing.name or "Unknown"
+        existing.kind = kind
+        existing.mapID = mapID
+        existing.worldX = u.worldX
+        existing.worldY = u.worldY
+        existing.seenAt = now
+        existing.expiresAt = now + ttl
+        contactTable[key] = existing
+      end
+    end
+  end
+  ingest("hostile", units.hostile)
+  ingest("neutral", units.neutral)
+  ingest("friendly", units.friendly)
+  TA.dfModeSonarContacts = contactTable
+end
+
+local function TA_PruneDFSonarContacts(mapID)
+  local now = GetTime()
+  local count = 0
+  for key, c in pairs(TA.dfModeSonarContacts or {}) do
+    if type(c) ~= "table" or c.expiresAt == nil or c.expiresAt <= now or (mapID and c.mapID and c.mapID ~= mapID) then
+      TA.dfModeSonarContacts[key] = nil
+    else
+      count = count + 1
+    end
+  end
+  return count
+end
+
+local function TA_TriggerDFSonarPing(seconds)
+  local duration = tonumber(seconds) or 4
+  if duration < 1 then duration = 1 end
+  if duration > 20 then duration = 20 end
+  TA.dfModeSonarPulseUntil = GetTime() + duration
+  if TA.dfModeEnabled then
+    TA.dfModeLastUpdate = 0
+    TA_UpdateDFMode()
+  end
+  return duration
 end
 
 local function GetEntitySymbol(unit)
@@ -4116,11 +4180,14 @@ local function BuildDFModeDisplay()
   local yardsPerCell = 6
   local viewMode = TA.dfModeViewMode or "tactical"
   local profile = TA.dfModeProfile or "balanced"
+  local orientation = TA.dfModeOrientation or "fixed"
   local rotationMode = TA.dfModeRotationMode or "smooth"
   local balanced = (profile ~= "full")
 
   -- Get facing direction
   local facing = GetPlayerFacing() or 0
+  local playerWorldX, playerWorldY = UnitPosition("player")
+  local now = GetTime()
   local facingDegrees = math.floor(math.deg(facing))
   TA.dfModeNavHint = nil
 
@@ -4141,6 +4208,10 @@ local function BuildDFModeDisplay()
 
   -- Get nearby units
   local units = GetNearbyUnitsWithPositions()
+  if (tonumber(TA.dfModeSonarPulseUntil) or 0) > now then
+    TA_RecordDFSonarContacts(units, mapID)
+  end
+  TA_PruneDFSonarContacts(mapID)
 
   -- Get target
   local targetName = UnitName("target")
@@ -4167,23 +4238,41 @@ local function BuildDFModeDisplay()
     if dist <= 0 then dist = 1 end
     if dist > innerRadius then dist = innerRadius end
 
-    local nameHash = 0
-    for i = 1, #(unit.name or "") do
-      nameHash = nameHash + string.byte(unit.name, i)
+    local x, y
+    if unit.hasExactPos and unit.worldX and unit.worldY and playerWorldX and playerWorldY then
+      local dx = unit.worldX - playerWorldX
+      local dy = unit.worldY - playerWorldY
+      x = dx >= 0 and math.floor((dx / yardsPerCell) + 0.5) or math.ceil((dx / yardsPerCell) - 0.5)
+      y = dy >= 0 and math.floor((dy / yardsPerCell) + 0.5) or math.ceil((dy / yardsPerCell) - 0.5)
+      if x > innerRadius then x = innerRadius end
+      if x < -innerRadius then x = -innerRadius end
+      if y > innerRadius then y = innerRadius end
+      if y < -innerRadius then y = -innerRadius end
+    else
+      local nameHash = 0
+      for i = 1, #(unit.name or "") do
+        nameHash = nameHash + string.byte(unit.name, i)
+      end
+      local angle = math.rad(nameHash % 360)
+
+      if balanced then
+        -- Coarsen to broad sectors and distance buckets to keep awareness, not precision.
+        dist = DistanceBucket(unit.distance)
+        angle = OctantAngle(angle)
+        if unitType ~= "hostile" then
+          symbol = "?"
+        end
+      end
+
+      x = math.floor(math.cos(angle) * dist)
+      y = math.floor(math.sin(angle) * dist)
     end
-    local angle = math.rad(nameHash % 360)
 
     if balanced then
-      -- Coarsen to broad sectors and distance buckets to keep awareness, not precision.
-      dist = DistanceBucket(unit.distance)
-      angle = OctantAngle(angle)
       if unitType ~= "hostile" then
         symbol = "?"
       end
     end
-
-    local x = math.floor(math.cos(angle) * dist)
-    local y = math.floor(math.sin(angle) * dist)
 
     if math.abs(x) <= innerRadius and math.abs(y) <= innerRadius and grid[y] then
       if grid[y][x] == "." then
@@ -4298,7 +4387,8 @@ local function BuildDFModeDisplay()
       local playerPosY = playerCellY + playerInCellY
       local markCellYards = tonumber(mark.targetYards) or defaultCellYards
       dx_yards = (markCenterX - playerPosX) * markCellYards
-      dy_yards = (markCenterY - playerPosY) * markCellYards
+      -- Map-space Y grows southward; DF-space Y grows northward.
+      dy_yards = (playerPosY - markCenterY) * markCellYards
 
       local markDist = math.sqrt((dx_yards * dx_yards) + (dy_yards * dy_yards))
       local mx = dx_yards >= 0 and math.floor((dx_yards / yardsPerCell) + 0.5) or math.ceil((dx_yards / yardsPerCell) - 0.5)
@@ -4341,15 +4431,48 @@ local function BuildDFModeDisplay()
     end
   end
 
+  -- Sonar echo overlay: recent exact-contact memory to improve map definition between direct sightings.
+  for _, c in pairs(TA.dfModeSonarContacts or {}) do
+    if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
+      local dx_yards = c.worldX - playerWorldX
+      local dy_yards = c.worldY - playerWorldY
+      local sx = dx_yards >= 0 and math.floor((dx_yards / yardsPerCell) + 0.5) or math.ceil((dx_yards / yardsPerCell) - 0.5)
+      local sy = dy_yards >= 0 and math.floor((dy_yards / yardsPerCell) + 0.5) or math.ceil((dy_yards / yardsPerCell) - 0.5)
+      if math.abs(sx) <= innerRadius and math.abs(sy) <= innerRadius and grid[sy] and grid[sy][sx] and grid[sy][sx] == "." then
+        local ttl = math.max(1, (tonumber(TA.dfModeSonarTTL) or 8))
+        local age = now - (c.seenAt or now)
+        local glyph = "'"
+        if c.kind == "hostile" then
+          if age <= ttl * 0.33 then glyph = "h"
+          elseif age <= ttl * 0.66 then glyph = ":"
+          else glyph = "." end
+          threatHeat[sy][sx] = (threatHeat[sy][sx] or 0) + 1
+        elseif c.kind == "friendly" then
+          glyph = age <= ttl * 0.5 and "f" or ","
+        else
+          glyph = age <= ttl * 0.5 and "n" or ","
+        end
+        grid[sy][sx] = glyph
+      end
+    end
+  end
+
   -- Build output: grid rows only, no header or footer
   local lines = {}
-  local rotationAngle = facing - (math.pi / 2)
+  local navRotationAngle = facing - (math.pi / 2)
   if rotationMode == "octant" then
     local step = math.pi / 4
-    rotationAngle = math.floor((rotationAngle / step) + 0.5) * step
+    navRotationAngle = math.floor((navRotationAngle / step) + 0.5) * step
   end
-  local sinA = math.sin(rotationAngle)
-  local cosA = math.cos(rotationAngle)
+  local navSinA = math.sin(navRotationAngle)
+  local navCosA = math.cos(navRotationAngle)
+
+  local displayRotationAngle = 0
+  if orientation == "rotating" then
+    displayRotationAngle = navRotationAngle
+  end
+  local displaySinA = math.sin(displayRotationAngle)
+  local displayCosA = math.cos(displayRotationAngle)
 
   local function RoundNearest(n)
     if n >= 0 then
@@ -4359,8 +4482,8 @@ local function BuildDFModeDisplay()
   end
 
   if nearestMarkDist and nearestMarkMX and nearestMarkMY then
-    local sx = RoundNearest((nearestMarkMX * cosA) + (nearestMarkMY * sinA))
-    local sy = RoundNearest((-nearestMarkMX * sinA) + (nearestMarkMY * cosA))
+    local sx = RoundNearest((nearestMarkMX * navCosA) + (nearestMarkMY * navSinA))
+    local sy = RoundNearest((-nearestMarkMX * navSinA) + (nearestMarkMY * navCosA))
     local vertical = ""
     local horizontal = ""
     if sy > 0 then
@@ -4404,8 +4527,8 @@ local function BuildDFModeDisplay()
     local row = {}
     for x = -radius, radius do
       -- Rotate viewport with heading: screen coords -> world coords.
-      local wx = RoundNearest((x * cosA) - (y * sinA))
-      local wy = RoundNearest((x * sinA) + (y * cosA))
+      local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
+      local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
 
       local cell = "."
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
@@ -4547,6 +4670,7 @@ function TA_DFModeStatus()
   AddLine("system", "        T=near target  t=mid target  ?=non-hostile blob")
   AddLine("system", "        +=Trail  -=Range ring  *=Contested")
   AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 1) .. " cell(s)")
+  AddLine("system", "Orientation: " .. ((TA.dfModeOrientation or "fixed"):upper()))
   AddLine("system", "Rotation mode: " .. ((TA.dfModeRotationMode or "smooth"):upper()))
   if TA.dfModeNavHint and TA.dfModeNavHint ~= "" then
     AddLine("system", "Navigation hint: " .. TA.dfModeNavHint)
@@ -5474,14 +5598,14 @@ local function TogglePanel()
   end
 end
 
-local function FocusTerminalInput()
+function TA_FocusTerminalInput()
   panel:Show()
   panel.inputBox:Show()
   panel.inputBox:SetFocus()
   AddLine("system", "Terminal input ready.")
 end
 
-local function SendFromTerminal(msg)
+function TA_SendFromTerminal(msg)
   local cmd, rest = msg:match("^/(%S+)%s*(.*)$")
   if not cmd then return false end
   cmd = cmd:lower()
@@ -5510,7 +5634,7 @@ local function SendFromTerminal(msg)
   return true
 end
 
-local function ShowHelpOverview()
+function TA_ShowHelpOverview()
   AddLine("system", "Text Adventurer help topics:")
   AddLine("system", "  combat - damage, stats, range, spacing")
   AddLine("system", "  navigation - cells, marks, map overlay")
@@ -5522,10 +5646,10 @@ local function ShowHelpOverview()
   AddLine("system", "Type: help <topic>. Example: help navigation")
 end
 
-local function ShowHelpTopic(topicArg)
+function TA_ShowHelpTopic(topicArg)
   local raw = (topicArg or ""):match("^%s*(.-)%s*$"):lower()
   if raw == "" or raw == "all" or raw == "commands" or raw == "topics" then
-    ShowHelpOverview()
+    TA_ShowHelpOverview()
     return
   end
 
@@ -5571,12 +5695,17 @@ local function ShowHelpTopic(topicArg)
     AddLine("system", "  df tactical/threat/exploration/combined - switch DF mode view.")
     AddLine("system", "  df hybrid or df all - alias for combined view.")
     AddLine("system", "  df profile balanced|full - balanced is fuzzier, full is precise.")
+    AddLine("system", "  df orientation fixed|rotating - fixed keeps map north-up (default), rotating follows heading.")
     AddLine("system", "  df rotation smooth|octant - smooth turns freely; octant keeps geometry squarer.")
     AddLine("system", "  df square on/off - alias for octant/smooth rotation.")
     AddLine("system", "  df size <width> <height> - set DF window size by command.")
     AddLine("system", "  df grid <n> - set DF grid cell count (odd number 5-99).")
     AddLine("system", "  df markradius <0-max> - set how far mark edges extend from M.")
     AddLine("system", "  df status - print zone, facing, legend, and threat summary to chat.")
+    AddLine("system", "  df sonar - show sonar settings and active contact count.")
+    AddLine("system", "  df sonar ping [seconds] - temporarily amplify exact-contact sonar echoes (1-20s).")
+    AddLine("system", "  df sonar ttl <seconds> - keep sonar echoes longer after contact (1-60s).")
+    AddLine("system", "  df sonar clear - clear remembered sonar echoes immediately.")
     AddLine("system", "  route start <name>, route stop - record your movement path.")
     AddLine("system", "  route list/show/clear <name> - manage saved routes.")
     AddLine("system", "  route follow <name>, route follow off - text navigation prompts.")
@@ -5675,10 +5804,10 @@ local function ShowHelpTopic(topicArg)
   end
 
   AddLine("system", string.format("Unknown help topic '%s'.", topicArg or ""))
-  ShowHelpOverview()
+  TA_ShowHelpOverview()
 end
 
-local EXACT_INPUT_HANDLERS = {
+TA.EXACT_INPUT_HANDLERS = {
   ["health"] = function() ReportStatus(true) end,
   ["hp"] = function() ReportStatus(true) end,
   ["rage"] = function() ReportStatus(true) end,
@@ -5744,8 +5873,8 @@ local EXACT_INPUT_HANDLERS = {
   ["listmarks"] = function() ListMarkedCells() end,
   ["renamemark"] = function() AddLine("system", "Usage: renamemark <id> <name>") end,
   ["clearmarks"] = function() ClearMarkedCells() end,
-  ["ta input"] = function() FocusTerminalInput() end,
-  ["input"] = function() FocusTerminalInput() end,
+  ["ta input"] = function() TA_FocusTerminalInput() end,
+  ["input"] = function() TA_FocusTerminalInput() end,
   ["explore"] = function()
     ReportExplorationMemory(true)
     ReportPathMemory(true)
@@ -5793,11 +5922,11 @@ local EXACT_INPUT_HANDLERS = {
     panel.text:Clear()
     AddLine("system", "Log cleared.")
   end,
-  ["help"] = function() ShowHelpOverview() end,
+  ["help"] = function() TA_ShowHelpOverview() end,
 }
 
-local PATTERN_INPUT_HANDLERS = {
-  { "^help%s+(.+)$", function(topic) ShowHelpTopic(topic) end },
+TA.PATTERN_INPUT_HANDLERS = {
+  { "^help%s+(.+)$", function(topic) TA_ShowHelpTopic(topic) end },
   { "^questinfo%s+(.+)$", function(arg) ReportQuestInfo(arg) end },
   { "^macroinfo%s+(%d+)$", function(idx) ShowMacroInfo(tonumber(idx)) end },
   { "^macro%s+(%d+)$", function(idx) CastMacroByIndex(tonumber(idx)) end },
@@ -5868,11 +5997,11 @@ function TA_RunCVarList(filter)
   end
 end
 
-local function ProcessInputCommand(msg)
+function TA_ProcessInputCommand(msg)
   msg = (msg or ""):match("^%s*(.-)%s*$")
   if msg == "" then return end
   if msg:sub(1, 1) == "/" then
-    SendFromTerminal(msg)
+    TA_SendFromTerminal(msg)
     return
   end
 
@@ -6046,6 +6175,50 @@ local function ProcessInputCommand(msg)
     return
   end
 
+  local dfOrientation = lower:match("^df%s+orientation%s+(%w+)$") or lower:match("^dfmode%s+orientation%s+(%w+)$")
+  if dfOrientation then
+    if dfOrientation == "fixed" or dfOrientation == "rotating" then
+      TA.dfModeOrientation = dfOrientation
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeOrientation = dfOrientation
+      AddLine("system", "DF orientation set to: " .. dfOrientation)
+      if TA.dfModeEnabled then
+        TA.dfModeLastUpdate = 0
+        TA_UpdateDFMode()
+      end
+    else
+      AddLine("system", "Unknown DF orientation. Use: fixed or rotating")
+    end
+    return
+  end
+  if lower == "df orientation" or lower == "dfmode orientation" then
+    AddLine("system", "DF orientation: " .. (TA.dfModeOrientation or "fixed"))
+    AddLine("system", "Usage: /ta df orientation <fixed|rotating>")
+    return
+  end
+
+  if lower == "df fixed" or lower == "dfmode fixed" then
+    TA.dfModeOrientation = "fixed"
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.dfModeOrientation = "fixed"
+    AddLine("system", "DF orientation set to: fixed")
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
+    return
+  elseif lower == "df rotating" or lower == "dfmode rotating" then
+    TA.dfModeOrientation = "rotating"
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.dfModeOrientation = "rotating"
+    AddLine("system", "DF orientation set to: rotating")
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
+    return
+  end
+
   if lower == "df square on" or lower == "dfmode square on" then
     TA.dfModeRotationMode = "octant"
     TextAdventurerDB = TextAdventurerDB or {}
@@ -6106,6 +6279,58 @@ local function ProcessInputCommand(msg)
 
   if lower == "df status" or lower == "dfmode status" then
     TA_DFModeStatus()
+    return
+  end
+
+  if lower == "df sonar" or lower == "dfmode sonar" or lower == "df sonar status" or lower == "dfmode sonar status" then
+    local mapID = nil
+    if C_Map and C_Map.GetBestMapForUnit then
+      mapID = C_Map.GetBestMapForUnit("player")
+    end
+    local contacts = TA_PruneDFSonarContacts(mapID)
+    local ttl = math.floor(tonumber(TA.dfModeSonarTTL) or 8)
+    local pulseRemaining = math.max(0, (tonumber(TA.dfModeSonarPulseUntil) or 0) - GetTime())
+    AddLine("system", string.format("DF sonar: %d active contact(s), TTL %ds, pulse remaining %.1fs.", contacts, ttl, pulseRemaining))
+    AddLine("system", "Usage: /ta df sonar ping [seconds] | /ta df sonar ttl <seconds> | /ta df sonar clear")
+    return
+  end
+
+  local sonarPingSeconds = lower:match("^df%s+sonar%s+ping%s*(%d*)$")
+  if sonarPingSeconds == nil then
+    sonarPingSeconds = lower:match("^dfmode%s+sonar%s+ping%s*(%d*)$")
+  end
+  if sonarPingSeconds ~= nil then
+    local duration = TA_TriggerDFSonarPing(tonumber(sonarPingSeconds))
+    AddLine("system", string.format("DF sonar ping active for %d second(s).", duration))
+    return
+  end
+
+  local sonarTTLSeconds = lower:match("^df%s+sonar%s+ttl%s+(%d+)$")
+  if not sonarTTLSeconds then
+    sonarTTLSeconds = lower:match("^dfmode%s+sonar%s+ttl%s+(%d+)$")
+  end
+  if sonarTTLSeconds then
+    local ttl = math.floor(tonumber(sonarTTLSeconds) or 8)
+    if ttl < 1 then ttl = 1 end
+    if ttl > 60 then ttl = 60 end
+    TA.dfModeSonarTTL = ttl
+    TextAdventurerDB = TextAdventurerDB or {}
+    TextAdventurerDB.dfModeSonarTTL = ttl
+    AddLine("system", string.format("DF sonar TTL set to %d second(s).", ttl))
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
+    return
+  end
+
+  if lower == "df sonar clear" or lower == "dfmode sonar clear" then
+    TA_ClearDFSonar()
+    AddLine("system", "DF sonar contacts cleared.")
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
     return
   end
 
@@ -6193,14 +6418,14 @@ local function ProcessInputCommand(msg)
     end
     return
   end
-  local exactHandler = EXACT_INPUT_HANDLERS[lower]
+  local exactHandler = TA.EXACT_INPUT_HANDLERS[lower]
   if exactHandler then
     exactHandler()
     return
   end
 
-  for i = 1, #PATTERN_INPUT_HANDLERS do
-    local entry = PATTERN_INPUT_HANDLERS[i]
+  for i = 1, #TA.PATTERN_INPUT_HANDLERS do
+    local entry = TA.PATTERN_INPUT_HANDLERS[i]
     local captures = { lower:match(entry[1]) }
     if #captures > 0 then
       entry[2](unpack(captures))
@@ -6222,7 +6447,7 @@ panel.inputBox:SetScript("OnEnterPressed", function(self)
     TA.inputDraft = ""
   end
   self:SetText("")
-  ProcessInputCommand(msg)
+  TA_ProcessInputCommand(msg)
   self:SetFocus()
 end)
 panel.inputBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -6255,12 +6480,12 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
   local original = (msg or ""):match("^%s*(.-)%s*$")
   local lower = original:lower()
   if lower == "" then
-    FocusTerminalInput()
+    TA_FocusTerminalInput()
   elseif lower == "show" then
     panel:Show()
     AddLine("system", "Text Adventurer opened.")
   elseif lower == "input" or lower == "i" or lower == "t" then
-    FocusTerminalInput()
+    TA_FocusTerminalInput()
   elseif lower == "hide" then
     panel:Hide()
     if ChatFrame1 then ChatFrame1:Show() end
@@ -6277,7 +6502,7 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
     TextAdventurerDB.autoEnable = false
     AddLine("system", "Autostart disabled.")
   else
-    ProcessInputCommand(original)
+    TA_ProcessInputCommand(original)
   end
 end)
 
@@ -6336,6 +6561,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeProfile = "balanced"
     end
     TA.dfModeProfile = TextAdventurerDB.dfModeProfile
+    if TextAdventurerDB.dfModeOrientation ~= "fixed" and TextAdventurerDB.dfModeOrientation ~= "rotating" then
+      TextAdventurerDB.dfModeOrientation = "fixed"
+    end
+    TA.dfModeOrientation = TextAdventurerDB.dfModeOrientation
     if TextAdventurerDB.dfModeRotationMode ~= "smooth" and TextAdventurerDB.dfModeRotationMode ~= "octant" then
       TextAdventurerDB.dfModeRotationMode = "octant"
     end
