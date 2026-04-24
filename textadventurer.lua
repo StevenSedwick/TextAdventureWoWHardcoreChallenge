@@ -109,11 +109,11 @@ TA.dfModeEnabled = false
 TA.lastNearbyUnits = {}
 TA.dfModeGridSize = 35
 TA.dfModeLastUpdate = 0
-TA.dfModeViewMode = "tactical"  -- tactical, threat, exploration, combined
-TA.dfModeProfile = "balanced"  -- balanced, full
+TA.dfModeViewMode = "threat"  -- tactical, threat, exploration, combined
+TA.dfModeProfile = "full"  -- balanced, full
 TA.dfModeOrientation = "fixed"  -- fixed (north-up), rotating (heading-up)
-TA.dfModeRotationMode = "octant"  -- smooth, octant (45-degree snaps for squarer geometry)
-TA.dfModeMarkRadius = 1  -- cells around mark center to draw edge ring
+TA.dfModeRotationMode = "smooth"  -- smooth, octant (45-degree snaps for squarer geometry)
+TA.dfModeMarkRadius = 3  -- cells around mark center to draw edge ring
 TA.dfModeRecentCells = {}  -- Track recently visited cells for breadcrumb trail
 TA.dfModeLastFacing = nil
 TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
@@ -284,8 +284,11 @@ inputBox:SetMaxLetters(200)
 inputBox:Hide()
 panel.inputBox = inputBox
 
+local DF_MODE_DEFAULT_WIDTH = 300
+local DF_MODE_DEFAULT_HEIGHT = 600
+
 local dfModeFrame = CreateFrame("Frame", "TextAdventurerDFModeFrame", UIParent, "BackdropTemplate")
-dfModeFrame:SetSize(300, 600)
+dfModeFrame:SetSize(DF_MODE_DEFAULT_WIDTH, DF_MODE_DEFAULT_HEIGHT)
 dfModeFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -20, -20)
 dfModeFrame:SetFrameStrata("TOOLTIP")
 dfModeFrame:SetFrameLevel(11000)
@@ -4186,8 +4189,8 @@ local function BuildDFModeDisplay()
   -- Each DF grid cell represents this many in-game yards. Must be a whole number
   -- so mark and unit positions map cleanly: N yards = exactly N/yardsPerCell cells.
   local yardsPerCell = 6
-  local viewMode = TA.dfModeViewMode or "tactical"
-  local profile = TA.dfModeProfile or "balanced"
+  local viewMode = TA.dfModeViewMode or "threat"
+  local profile = TA.dfModeProfile or "full"
   local orientation = TA.dfModeOrientation or "fixed"
   local rotationMode = TA.dfModeRotationMode or "smooth"
   local balanced = (profile ~= "full")
@@ -4649,9 +4652,9 @@ function TA_DFModeStatus()
     return
   end
 
-  local profile = TA.dfModeProfile or "balanced"
+  local profile = TA.dfModeProfile or "full"
   local balanced = (profile ~= "full")
-  local viewMode = TA.dfModeViewMode or "tactical"
+  local viewMode = TA.dfModeViewMode or "threat"
 
   local facing = GetPlayerFacing() or 0
   local facingDegrees = math.floor(math.deg(facing))
@@ -5081,30 +5084,60 @@ local function HandleChatEvent(event, message, sender, _, _, _, _, _, _, channel
 end
 
 local function TryAutoQuestFromGossip()
-  if not TA.autoQuests or not C_GossipInfo then return end
-  if C_GossipInfo.GetAvailableQuests and C_GossipInfo.SelectAvailableQuest then
-    local available = C_GossipInfo.GetAvailableQuests()
-    if available then
-      for _, info in ipairs(available) do
-        local optionID = info.questID or rawget(info, "optionID")
-        if optionID then
-          AddLine("quest", string.format("Auto-accepting quest: %s", info.title or "Unknown quest"))
-          C_GossipInfo.SelectAvailableQuest(optionID)
-          return
+  if not TA.autoQuests then return end
+  if C_GossipInfo then
+    if C_GossipInfo.GetAvailableQuests and C_GossipInfo.SelectAvailableQuest then
+      local available = C_GossipInfo.GetAvailableQuests()
+      if available then
+        for _, info in ipairs(available) do
+          local optionID = info.questID or rawget(info, "optionID")
+          if optionID then
+            AddLine("quest", string.format("Auto-accepting quest: %s", info.title or "Unknown quest"))
+            C_GossipInfo.SelectAvailableQuest(optionID)
+            return
+          end
+        end
+      end
+    end
+    if C_GossipInfo.GetActiveQuests and C_GossipInfo.SelectActiveQuest then
+      local active = C_GossipInfo.GetActiveQuests()
+      if active then
+        for _, info in ipairs(active) do
+          local optionID = info.questID or rawget(info, "optionID")
+          if optionID and info.isComplete then
+            AddLine("quest", string.format("Auto-turning in quest: %s", info.title or "Unknown quest"))
+            C_GossipInfo.SelectActiveQuest(optionID)
+            return
+          end
         end
       end
     end
   end
-  if C_GossipInfo.GetActiveQuests and C_GossipInfo.SelectActiveQuest then
-    local active = C_GossipInfo.GetActiveQuests()
-    if active then
-      for _, info in ipairs(active) do
-        local optionID = info.questID or rawget(info, "optionID")
-        if optionID and info.isComplete then
-          AddLine("quest", string.format("Auto-turning in quest: %s", info.title or "Unknown quest"))
-          C_GossipInfo.SelectActiveQuest(optionID)
-          return
+
+  if GetNumAvailableQuests and GetAvailableTitle and SelectAvailableQuest then
+    local availableCount = tonumber(GetNumAvailableQuests()) or 0
+    for i = 1, availableCount do
+      local title = GetAvailableTitle(i)
+      if title and title ~= "" then
+        AddLine("quest", string.format("Auto-accepting quest: %s", title))
+        if not pcall(SelectAvailableQuest, i) then
+          pcall(SelectAvailableQuest)
         end
+        return
+      end
+    end
+  end
+
+  if GetNumActiveQuests and GetActiveTitle and SelectActiveQuest then
+    local activeCount = tonumber(GetNumActiveQuests()) or 0
+    for i = 1, activeCount do
+      local title, isComplete = GetActiveTitle(i)
+      if title and title ~= "" and isComplete then
+        AddLine("quest", string.format("Auto-turning in quest: %s", title))
+        if not pcall(SelectActiveQuest, i) then
+          pcall(SelectActiveQuest)
+        end
+        return
       end
     end
   end
@@ -5112,46 +5145,75 @@ end
 
 local function BuildGossipOptionPool()
   local pool = {}
-  if not C_GossipInfo then return pool end
+  if C_GossipInfo then
+    if C_GossipInfo.GetAvailableQuests then
+      local available = C_GossipInfo.GetAvailableQuests() or {}
+      for _, info in ipairs(available) do
+        local optionID = info.questID or rawget(info, "optionID")
+        if optionID then
+          table.insert(pool, {
+            kind = "availableQuest",
+            id = optionID,
+            title = info.title or "Available quest",
+          })
+        end
+      end
+    end
 
-  if C_GossipInfo.GetAvailableQuests then
-    local available = C_GossipInfo.GetAvailableQuests() or {}
-    for _, info in ipairs(available) do
-      local optionID = info.questID or rawget(info, "optionID")
-      if optionID then
+    if C_GossipInfo.GetActiveQuests then
+      local active = C_GossipInfo.GetActiveQuests() or {}
+      for _, info in ipairs(active) do
+        local optionID = info.questID or rawget(info, "optionID")
+        if optionID then
+          table.insert(pool, {
+            kind = "activeQuest",
+            id = optionID,
+            title = info.title or "Active quest",
+            isComplete = info.isComplete and true or false,
+          })
+        end
+      end
+    end
+
+    if C_GossipInfo.GetOptions then
+      local options = C_GossipInfo.GetOptions() or {}
+      for _, info in ipairs(options) do
+        local optionID = info.gossipOptionID or info.optionID
+        if optionID then
+          table.insert(pool, {
+            kind = "gossipOption",
+            id = optionID,
+            title = info.name or info.title or "Dialogue option",
+          })
+        end
+      end
+    end
+  end
+
+  if #pool == 0 and GetNumAvailableQuests and GetAvailableTitle then
+    local availableCount = tonumber(GetNumAvailableQuests()) or 0
+    for i = 1, availableCount do
+      local title = GetAvailableTitle(i)
+      if title and title ~= "" then
         table.insert(pool, {
-          kind = "availableQuest",
-          id = optionID,
-          title = info.title or "Available quest",
+          kind = "availableQuestLegacy",
+          id = i,
+          title = title,
         })
       end
     end
   end
 
-  if C_GossipInfo.GetActiveQuests then
-    local active = C_GossipInfo.GetActiveQuests() or {}
-    for _, info in ipairs(active) do
-      local optionID = info.questID or rawget(info, "optionID")
-      if optionID then
+  if #pool == 0 and GetNumActiveQuests and GetActiveTitle then
+    local activeCount = tonumber(GetNumActiveQuests()) or 0
+    for i = 1, activeCount do
+      local title, isComplete = GetActiveTitle(i)
+      if title and title ~= "" then
         table.insert(pool, {
-          kind = "activeQuest",
-          id = optionID,
-          title = info.title or "Active quest",
-          isComplete = info.isComplete and true or false,
-        })
-      end
-    end
-  end
-
-  if C_GossipInfo.GetOptions then
-    local options = C_GossipInfo.GetOptions() or {}
-    for _, info in ipairs(options) do
-      local optionID = info.gossipOptionID or info.optionID
-      if optionID then
-        table.insert(pool, {
-          kind = "gossipOption",
-          id = optionID,
-          title = info.name or info.title or "Dialogue option",
+          kind = "activeQuestLegacy",
+          id = i,
+          title = title,
+          isComplete = isComplete and true or false,
         })
       end
     end
@@ -5170,9 +5232,9 @@ local function ReportGossipOptions()
   for i = 1, #options do
     local opt = options[i]
     local prefix = "Talk"
-    if opt.kind == "availableQuest" then
+    if opt.kind == "availableQuest" or opt.kind == "availableQuestLegacy" then
       prefix = "Quest available"
-    elseif opt.kind == "activeQuest" then
+    elseif opt.kind == "activeQuest" or opt.kind == "activeQuestLegacy" then
       prefix = opt.isComplete and "Quest turn-in" or "Quest in progress"
     end
     AddLine("quest", string.format("  [%d] %s: %s", i, prefix, opt.title))
@@ -5195,8 +5257,18 @@ local function ChooseGossipOption(index)
   if opt.kind == "availableQuest" and C_GossipInfo and C_GossipInfo.SelectAvailableQuest then
     C_GossipInfo.SelectAvailableQuest(opt.id)
     AddLine("quest", string.format("Selected quest offer: %s", opt.title))
+  elseif opt.kind == "availableQuestLegacy" and SelectAvailableQuest then
+    if not pcall(SelectAvailableQuest, opt.id) then
+      pcall(SelectAvailableQuest)
+    end
+    AddLine("quest", string.format("Selected quest offer: %s", opt.title))
   elseif opt.kind == "activeQuest" and C_GossipInfo and C_GossipInfo.SelectActiveQuest then
     C_GossipInfo.SelectActiveQuest(opt.id)
+    AddLine("quest", string.format("Selected active quest: %s", opt.title))
+  elseif opt.kind == "activeQuestLegacy" and SelectActiveQuest then
+    if not pcall(SelectActiveQuest, opt.id) then
+      pcall(SelectActiveQuest)
+    end
     AddLine("quest", string.format("Selected active quest: %s", opt.title))
   elseif opt.kind == "gossipOption" and C_GossipInfo and C_GossipInfo.SelectOption then
     C_GossipInfo.SelectOption(opt.id)
@@ -6566,7 +6638,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA.dfModeEnabled = TextAdventurerDB.dfModeEnabled and true or false
     if TextAdventurerDB.dfModeProfile ~= "full" and TextAdventurerDB.dfModeProfile ~= "balanced" then
-      TextAdventurerDB.dfModeProfile = "balanced"
+      TextAdventurerDB.dfModeProfile = "full"
     end
     TA.dfModeProfile = TextAdventurerDB.dfModeProfile
     if TextAdventurerDB.dfModeOrientation ~= "fixed" and TextAdventurerDB.dfModeOrientation ~= "rotating" then
@@ -6574,7 +6646,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA.dfModeOrientation = TextAdventurerDB.dfModeOrientation
     if TextAdventurerDB.dfModeRotationMode ~= "smooth" and TextAdventurerDB.dfModeRotationMode ~= "octant" then
-      TextAdventurerDB.dfModeRotationMode = "octant"
+      TextAdventurerDB.dfModeRotationMode = "smooth"
     end
     TA.dfModeRotationMode = TextAdventurerDB.dfModeRotationMode
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
@@ -6584,16 +6656,20 @@ TA:SetScript("OnEvent", function(self, event, ...)
       if savedGrid % 2 == 0 then savedGrid = savedGrid + 1 end
       TA.dfModeGridSize = savedGrid
     end
+    local isFirstRunSafeMode = (TextAdventurerDB.firstRunSafetyAcknowledged ~= true)
+    if isFirstRunSafeMode then
+      TextAdventurerDB.dfModeWidth = DF_MODE_DEFAULT_WIDTH
+      TextAdventurerDB.dfModeHeight = DF_MODE_DEFAULT_HEIGHT
+    end
     local maxMarkRadius = math.floor((TA.dfModeGridSize or 35) / 2)
     if type(TextAdventurerDB.dfModeMarkRadius) ~= "number" or TextAdventurerDB.dfModeMarkRadius > 5 then
-      -- Reset oversized values (e.g. old default of 17) to a tight perimeter of 1.
-      TextAdventurerDB.dfModeMarkRadius = 1
+      -- Reset oversized values (e.g. old default of 17) to default perimeter of 3.
+      TextAdventurerDB.dfModeMarkRadius = 3
     end
     TA_SetDFModeMarkRadius(TextAdventurerDB.dfModeMarkRadius, true)
     if type(TextAdventurerDB.dfModeWidth) ~= "number" or type(TextAdventurerDB.dfModeHeight) ~= "number" then
-      local defaultW, defaultH = dfModeFrame:GetSize()
-      TextAdventurerDB.dfModeWidth = math.floor(defaultW)
-      TextAdventurerDB.dfModeHeight = math.floor(defaultH)
+      TextAdventurerDB.dfModeWidth = DF_MODE_DEFAULT_WIDTH
+      TextAdventurerDB.dfModeHeight = DF_MODE_DEFAULT_HEIGHT
     end
     TA_SetDFModeSize(TextAdventurerDB.dfModeWidth, TextAdventurerDB.dfModeHeight, true)
     if TA.dfModeEnabled then
@@ -6609,7 +6685,6 @@ TA:SetScript("OnEvent", function(self, event, ...)
         TA.activeMapMarkID = mark.id
       end
     end
-    local isFirstRunSafeMode = (TextAdventurerDB.firstRunSafetyAcknowledged ~= true)
     if isFirstRunSafeMode then
       TextAdventurerDB.autoEnable = false
       TextAdventurerDB.firstRunSafetyAcknowledged = true
@@ -6809,6 +6884,9 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "GOSSIP_SHOW" then
     TryAutoQuestFromGossip()
     ReportGossipOptions()
+  elseif event == "QUEST_GREETING" then
+    TryAutoQuestFromGossip()
+    ReportGossipOptions()
 
 
   elseif event == "TRAINER_SHOW" then
@@ -6882,6 +6960,7 @@ TA:RegisterEvent("ITEM_TEXT_READY")
 TA:RegisterEvent("ITEM_TEXT_CLOSED")
 TA:RegisterEvent("BAG_UPDATE_DELAYED")
 TA:RegisterEvent("GOSSIP_SHOW")
+TA:RegisterEvent("QUEST_GREETING")
 TA:RegisterEvent("TRAINER_SHOW")
 TA:RegisterEvent("QUEST_DETAIL")
 TA:RegisterEvent("QUEST_PROGRESS")
