@@ -389,6 +389,14 @@ local function AddLine(kind, msg)
   panel.text:ScrollToBottom()
 end
 
+local function TA_BroadcastDangerWarningToChat()
+  local chat = DEFAULT_CHAT_FRAME
+  if chat and chat.AddMessage then
+    chat:AddMessage("|cffff4040[Text Adventurer WARNING]|r This addon is extremely dangerous for Hardcore play and WILL eventually get your character killed.")
+    chat:AddMessage("|cffff4040[Text Adventurer WARNING]|r First-run safety is ON: autostart is disabled. Use /ta autostart on only after you understand the risks.")
+  end
+end
+
 local function BagLabel(bag)
   if bag == 0 then return "Backpack" end
   return string.format("Bag %d", bag)
@@ -6601,12 +6609,22 @@ TA:SetScript("OnEvent", function(self, event, ...)
         TA.activeMapMarkID = mark.id
       end
     end
-    if TextAdventurerDB.autoEnable == nil then TextAdventurerDB.autoEnable = true end
+    local isFirstRunSafeMode = (TextAdventurerDB.firstRunSafetyAcknowledged ~= true)
+    if isFirstRunSafeMode then
+      TextAdventurerDB.autoEnable = false
+      TextAdventurerDB.firstRunSafetyAcknowledged = true
+    elseif TextAdventurerDB.autoEnable == nil then
+      TextAdventurerDB.autoEnable = false
+    end
     if ChatFrame1 then
       ChatFrame1:Show()
       ChatFrame1:SetFrameLevel(5000)
     end
-    panel:Show()
+    if TextAdventurerDB.autoEnable then
+      panel:Show()
+    else
+      panel:Hide()
+    end
     TA.bagState = SnapshotBags()
     TA.lastBuffSnapshot = SnapshotBuffs()
     TA.questObjectiveSnapshot = BuildQuestObjectiveSnapshot()
@@ -6618,6 +6636,8 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.lastCombatDuration = TA.lastCombatDuration or 0
     ResetSwingTimer()
     AddLine("system", "You enter the world.")
+    AddLine("system", "WARNING: This addon is extremely dangerous and WILL eventually get your character killed.")
+    AddLine("system", "WARNING: First-run safety mode starts with autostart OFF. Use /ta autostart on only after reviewing /ta help.")
     AddLine("system", "Type /ta textmode on for full black-screen text mode.")
     AddLine("system", "Type /ta status for health and rage.")
     AddLine("system", "Type /ta xp for experience.")
@@ -6654,6 +6674,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     AddLine("chat", "Chat capture is enabled by default. Use /ta chat off to disable.")
     AddLine("system", "Enemy awareness is always on when nameplates exist.")
     AddLine("system", "Type /ta help for commands.")
+    TA_BroadcastDangerWarningToChat()
     ReportLocation(true)
     CheckLandmarkEntry()
     ReportStatus(true)

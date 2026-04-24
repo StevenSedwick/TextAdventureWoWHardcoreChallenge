@@ -2,6 +2,14 @@
 
 Text Adventurer is a World of Warcraft Classic Era addon focused on text-first gameplay feedback, command-driven utilities, and tactical overlays.
 
+## Danger Warning
+
+This addon is intentionally extreme for Hardcore challenge play.
+
+- It is extremely dangerous and WILL eventually get your character killed.
+- First-run safety mode keeps autostart OFF by default.
+- Enable autostart only if you accept the risk: `/ta autostart on`
+
 ## Features
 
 - Text event and status output.
@@ -44,6 +52,18 @@ git add .
 git commit -m "Describe your change"
 git push
 ```
+
+## Release Warning Text
+
+Use the following warning at the top of both your GitHub release body and your CurseForge file/project description.
+
+### GitHub Upload Warning
+
+`WARNING: Text Adventurer is extremely dangerous and WILL eventually get your Hardcore character killed. Use at your own risk.`
+
+### CurseForge Upload Warning
+
+`WARNING: This addon is extremely dangerous for Hardcore play and WILL eventually get your character killed. First-run autostart is OFF for safety.`
 
 ## License
 
