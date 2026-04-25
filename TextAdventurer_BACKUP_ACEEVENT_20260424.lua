@@ -90,13 +90,6 @@ TA.dpsCombatDamage = 0
 TA.lastCombatDamage = 0
 TA.lastCombatDuration = 0
 TA.mlFightSnapshot = nil
-TA.mlXPTrackerLastXP = nil
-TA.mlXPTrackerLastXPMax = nil
-TA.mlXPTrackerLastLevel = nil
-TA.mlXPTrackerLastAt = 0
-TA.mlXPTrackerAbsolute = 0
-TA.mlXPSourceHints = {}
-TA.lastCombatEndedAt = 0
 TA.pendingItemTextRead = nil
 TA.lastItemTextSignature = nil
 TA.gridSize = nil
@@ -385,112 +378,6 @@ if ChatFrame1 then
   ChatFrame1:SetFrameStrata("LOW")
   ChatFrame1:SetFrameLevel(1)
 end
-
-local TA_API_VERSION = "1.0.0"
-local TAExternalCallbacks = {}
-
-local function TA_EmitExternal(eventName, payload)
-  local listeners = TAExternalCallbacks[eventName]
-  if not listeners then return end
-  for i = #listeners, 1, -1 do
-    local cb = listeners[i]
-    if type(cb) == "function" then
-      local ok = pcall(cb, payload)
-      if not ok then
-        table.remove(listeners, i)
-      end
-    else
-      table.remove(listeners, i)
-    end
-  end
-end
-
-local function TA_GetIntegrationStateSnapshot()
-  local panelShown = panel and panel.IsShown and panel:IsShown() or false
-  return {
-    version = TA_API_VERSION,
-    addonLoaded = true,
-    panelVisible = panelShown and true or false,
-    textModeEnabled = TA.textMode and true or false,
-    dfModeEnabled = TA.dfModeEnabled and true or false,
-    dfModeView = TA.dfModeViewMode or "threat",
-    performanceModeEnabled = TA.performanceModeEnabled and true or false,
-  }
-end
-
-local function TA_PublishPublicAPI()
-  local api = _G.TextAdventurerAPI
-  if type(api) ~= "table" then
-    api = {}
-    _G.TextAdventurerAPI = api
-  end
-
-  api.apiVersion = TA_API_VERSION
-
-  function api.GetVersion()
-    return TA_API_VERSION
-  end
-
-  function api.GetState()
-    return TA_GetIntegrationStateSnapshot()
-  end
-
-  function api.ExecuteCommand(commandText)
-    if type(TA_ProcessInputCommand) ~= "function" then
-      return false, "TA_ProcessInputCommand unavailable"
-    end
-    local ok, err = pcall(TA_ProcessInputCommand, tostring(commandText or ""))
-    if not ok then
-      return false, tostring(err)
-    end
-    TA_EmitExternal("COMMAND_EXECUTED", { command = tostring(commandText or "") })
-    return true
-  end
-
-  function api.SendSlash(slashText)
-    if type(TA_SendFromTerminal) ~= "function" then
-      return false, "TA_SendFromTerminal unavailable"
-    end
-    local ok, result = pcall(TA_SendFromTerminal, tostring(slashText or ""))
-    if not ok then
-      return false, tostring(result)
-    end
-    TA_EmitExternal("SLASH_SENT", { slash = tostring(slashText or ""), handled = result and true or false })
-    return true, result and true or false
-  end
-
-  function api.RegisterCallback(eventName, callbackFn)
-    if type(eventName) ~= "string" or eventName == "" then
-      return false, "eventName must be non-empty string"
-    end
-    if type(callbackFn) ~= "function" then
-      return false, "callbackFn must be function"
-    end
-    local bucket = TAExternalCallbacks[eventName]
-    if not bucket then
-      bucket = {}
-      TAExternalCallbacks[eventName] = bucket
-    end
-    bucket[#bucket + 1] = callbackFn
-    return true
-  end
-
-  function api.UnregisterCallback(eventName, callbackFn)
-    local bucket = TAExternalCallbacks[eventName]
-    if not bucket or type(callbackFn) ~= "function" then
-      return false
-    end
-    for i = #bucket, 1, -1 do
-      if bucket[i] == callbackFn then
-        table.remove(bucket, i)
-        return true
-      end
-    end
-    return false
-  end
-end
-
-TA_PublishPublicAPI()
 
 function AddLine(kind, msg)
   if not msg or msg == "" then return end
@@ -2375,68 +2262,6 @@ local TA_SEAL_RANK_DATA = {
   },
 }
 
-local TA_WARRIOR_ABILITY_DATA = {
-  heroicStrike = {
-    spellIDs = { 78 },
-    ranks = {
-      { rank = 1, level = 1, rage = 15, value = 11 },
-      { rank = 2, level = 8, rage = 15, value = 21 },
-      { rank = 3, level = 16, rage = 15, value = 32 },
-      { rank = 4, level = 24, rage = 15, value = 44 },
-      { rank = 5, level = 32, rage = 15, value = 58 },
-      { rank = 6, level = 40, rage = 15, value = 80 },
-      { rank = 7, level = 48, rage = 15, value = 111 },
-      { rank = 8, level = 56, rage = 15, value = 138 },
-      { rank = 9, level = 60, rage = 15, value = 157 },
-    },
-  },
-  rend = {
-    spellIDs = { 772 },
-    ranks = {
-      { rank = 1, level = 4, rage = 10, value = 15, ticks = 3 },
-      { rank = 2, level = 10, rage = 10, value = 28, ticks = 4 },
-      { rank = 3, level = 20, rage = 10, value = 45, ticks = 5 },
-      { rank = 4, level = 30, rage = 10, value = 66, ticks = 6 },
-      { rank = 5, level = 40, rage = 10, value = 98, ticks = 7 },
-      { rank = 6, level = 50, rage = 10, value = 126, ticks = 7 },
-      { rank = 7, level = 60, rage = 10, value = 147, ticks = 7 },
-    },
-  },
-  overpower = {
-    spellIDs = { 7384 },
-    ranks = {
-      { rank = 1, level = 12, rage = 5, value = 5 },
-      { rank = 2, level = 28, rage = 5, value = 15 },
-      { rank = 3, level = 44, rage = 5, value = 25 },
-      { rank = 4, level = 60, rage = 5, value = 35 },
-    },
-  },
-  slam = {
-    spellIDs = { 1464 },
-    ranks = {
-      { rank = 1, level = 30, rage = 15, value = 32, castTime = 1.5 },
-      { rank = 2, level = 38, rage = 15, value = 43, castTime = 1.5 },
-      { rank = 3, level = 46, rage = 15, value = 68, castTime = 1.5 },
-      { rank = 4, level = 54, rage = 15, value = 87, castTime = 1.5 },
-    },
-  },
-  whirlwind = {
-    spellIDs = { 1680 },
-    ranks = {
-      { rank = 1, level = 36, rage = 25, value = 0, cooldown = 10 },
-    },
-  },
-  mortalStrike = {
-    spellIDs = { 12294 },
-    ranks = {
-      { rank = 1, level = 40, rage = 30, value = 85, cooldown = 6 },
-      { rank = 2, level = 48, rage = 30, value = 110, cooldown = 6 },
-      { rank = 3, level = 54, rage = 30, value = 135, cooldown = 6 },
-      { rank = 4, level = 60, rage = 30, value = 160, cooldown = 6 },
-    },
-  },
-}
-
 function TA_GetSealLiveConfig()
   TextAdventurerDB = TextAdventurerDB or {}
   if type(TextAdventurerDB.sealDpsLiveConfig) ~= "table" then
@@ -2533,25 +2358,6 @@ function TA_GetHighestKnownRank(spellNames)
   return bestRank
 end
 
-function TA_PlayerKnowsSpellIDs(spellIDs)
-  if type(spellIDs) ~= "table" then return false end
-  for i = 1, #spellIDs do
-    local spellID = tonumber(spellIDs[i])
-    if spellID then
-      if IsSpellKnown and IsSpellKnown(spellID) then
-        return true
-      end
-      if GetSpellInfo then
-        local name = GetSpellInfo(spellID)
-        if name and TA_GetHighestKnownRank({ name }) then
-          return true
-        end
-      end
-    end
-  end
-  return false
-end
-
 function TA_SelectRankByLevel(rankRows, level)
   if type(rankRows) ~= "table" or #rankRows == 0 then return nil end
   local pick = nil
@@ -2572,20 +2378,6 @@ function TA_SelectRankByNumber(rankRows, rank)
     end
   end
   return nil
-end
-
-function TA_SelectWarriorAbilityRow(key)
-  local data = TA_WARRIOR_ABILITY_DATA[key]
-  if not data or type(data.ranks) ~= "table" then return nil end
-  local playerLevel = UnitLevel("player") or 1
-  return TA_SelectRankByLevel(data.ranks, playerLevel)
-end
-
-function TA_GetWarriorTalentRank(value, maxRank)
-  local n = math.floor(tonumber(value) or 0)
-  if n < 0 then n = 0 end
-  if maxRank and n > maxRank then n = maxRank end
-  return n
 end
 
 function TA_GetLiveSpellRankRow(dataKey)
@@ -2625,148 +2417,6 @@ function TA_GetMeleeConnectChance(targetLevel, attackFromBehind)
   if connect < 0.05 then connect = 0.05 end
   if connect > 1 then connect = 1 end
   return connect
-end
-
-function TA_BuildLiveWarriorOptionMetrics(c)
-  local profile = TA_NormalizeWarriorWeaponProfile and TA_NormalizeWarriorWeaponProfile(c.warriorWeaponProfile)
-  if profile == "auto" and TA_DetectWarriorWeaponProfile then
-    profile = TA_DetectWarriorWeaponProfile()
-  end
-  local tuning = TA_GetWarriorWeaponProfileTuning and TA_GetWarriorWeaponProfileTuning(profile)
-  if tuning then
-    c.warriorDodgeChance = tuning.warriorDodgeChance
-    c.warriorGlancingChance = tuning.warriorGlancingChance
-    c.warriorGlancingDamage = tuning.warriorGlancingDamage
-    c.warriorNormalization = tuning.warriorNormalization
-    c.warriorOverpowerPerMin = tuning.warriorOverpowerPerMin
-    c.warriorWhirlwindTargets = tuning.warriorWhirlwindTargets
-  end
-
-  local cfg = TA_GetSealLiveConfig()
-  local minMain, maxMain = UnitDamage("player")
-  local mainSpeed = UnitAttackSpeed("player")
-  if not minMain or not maxMain or not mainSpeed or mainSpeed <= 0 then
-    return nil, "Live XP optimizer unavailable: no valid main-hand weapon data."
-  end
-
-  local avgWeaponHit = (minMain + maxMain) / 2
-  local playerLevel = UnitLevel("player") or 1
-  local targetLevel = tonumber(cfg.targetLevel) or playerLevel
-  local meleeConnect = TA_GetMeleeConnectChance(targetLevel, cfg.attackFromBehind)
-  local critChance = ((GetCritChance and (GetCritChance() or 0)) or 0) / 100
-  local dodgeChance = tonumber(c.warriorDodgeChance) or 0.05
-  local glancingChance = tonumber(c.warriorGlancingChance) or 0.10
-  local glancingDamage = tonumber(c.warriorGlancingDamage) or 0.95
-
-  if dodgeChance < 0 then dodgeChance = 0 end
-  if dodgeChance > 0.35 then dodgeChance = 0.35 end
-  if glancingChance < 0 then glancingChance = 0 end
-  if glancingChance > 0.40 then glancingChance = 0.40 end
-  if glancingDamage < 0.5 then glancingDamage = 0.5 end
-  if glancingDamage > 1.0 then glancingDamage = 1.0 end
-
-  local swingsPerSec = 1 / mainSpeed
-  local baseAutoDps = avgWeaponHit * swingsPerSec * meleeConnect
-  local ragePerHit = math.max(0.1, avgWeaponHit / 7.5)
-  local ragePerSec = ragePerHit * swingsPerSec * math.max(0.35, meleeConnect)
-
-  local impHS = TA_GetWarriorTalentRank(c.warriorImpHSRank, 3)
-  local impRend = TA_GetWarriorTalentRank(c.warriorImpRendRank, 3)
-  local impOP = TA_GetWarriorTalentRank(c.warriorImpOverpowerRank, 2)
-  local impSlam = TA_GetWarriorTalentRank(c.warriorImpSlamRank, 5)
-  local overpowerPerMin = tonumber(c.warriorOverpowerPerMin) or 1.2
-  local deepWoundsPerPoint = tonumber(c.warriorDeepWoundsPerPoint) or 0.2
-  local impalePerPoint = tonumber(c.warriorImpalePerPoint) or 0.1
-  local impaleRank = TA_GetWarriorTalentRank(c.warriorImpaleRank, 2)
-
-  local hsRow = TA_SelectWarriorAbilityRow("heroicStrike")
-  local rendRow = TA_SelectWarriorAbilityRow("rend")
-  local opRow = TA_SelectWarriorAbilityRow("overpower")
-  local slamRow = TA_SelectWarriorAbilityRow("slam")
-  local wwRow = TA_SelectWarriorAbilityRow("whirlwind")
-  local msRow = TA_SelectWarriorAbilityRow("mortalStrike")
-
-  local knowsHS = TA_PlayerKnowsSpellIDs(TA_WARRIOR_ABILITY_DATA.heroicStrike.spellIDs)
-  local knowsRend = TA_PlayerKnowsSpellIDs(TA_WARRIOR_ABILITY_DATA.rend.spellIDs)
-  local knowsOP = TA_PlayerKnowsSpellIDs(TA_WARRIOR_ABILITY_DATA.overpower.spellIDs)
-  local knowsSlam = TA_PlayerKnowsSpellIDs(TA_WARRIOR_ABILITY_DATA.slam.spellIDs)
-  local knowsWW = TA_PlayerKnowsSpellIDs(TA_WARRIOR_ABILITY_DATA.whirlwind.spellIDs)
-  local knowsMS = TA_PlayerKnowsSpellIDs(TA_WARRIOR_ABILITY_DATA.mortalStrike.spellIDs)
-
-  local normalizedWeaponHit = avgWeaponHit * ((tonumber(c.warriorNormalization) or 3.3) / math.max(1.6, mainSpeed))
-
-  local function estimatePhysicalHit(base)
-    local hitBase = math.max(0, tonumber(base) or 0)
-    local nonGlancing = hitBase * (1 + critChance - dodgeChance - glancingChance)
-    local glancing = hitBase * glancingChance * glancingDamage
-    local deepWounds = hitBase * critChance * (TA_GetWarriorTalentRank(c.warriorDeepWoundsRank, 3) * deepWoundsPerPoint)
-    return math.max(0, nonGlancing + glancing + deepWounds)
-  end
-
-  local hsCost = hsRow and math.max(0, (hsRow.rage or 15) - impHS) or 15
-  local hsHit = hsRow and estimatePhysicalHit(avgWeaponHit + (hsRow.value or 0)) or 0
-  local hsPerSec = math.max(0, math.min(hsCost > 0 and (ragePerSec / hsCost) or 0, swingsPerSec * 0.95))
-  local hsDps = hsPerSec * hsHit
-
-  local rendDps = 0
-  if rendRow and knowsRend then
-    local impRendBonus = 0
-    if impRend == 1 then impRendBonus = 0.15
-    elseif impRend == 2 then impRendBonus = 0.25
-    elseif impRend >= 3 then impRendBonus = 0.35 end
-    local rendDuration = math.max(1, tonumber(rendRow.ticks) or 1) * 3
-    local rendTotal = (rendRow.value or 0) * (1 + impRendBonus) * math.max(0.45, 1 - dodgeChance)
-    rendDps = rendTotal / rendDuration
-  end
-
-  local overpowerDps = 0
-  if opRow and knowsOP then
-    local opCritBonus = impOP * 0.25
-    local opHit = (normalizedWeaponHit + (opRow.value or 0)) * (1 + critChance + (opCritBonus * (1 + (impaleRank * impalePerPoint))))
-    overpowerDps = (math.max(0, overpowerPerMin) / 60) * opHit
-  end
-
-  local slamDps = 0
-  if slamRow and knowsSlam then
-    local slamCast = math.max(0.5, (slamRow.castTime or 1.5) - (0.1 * impSlam))
-    local slamHit = estimatePhysicalHit(normalizedWeaponHit + (slamRow.value or 0))
-    local slamPenalty = (slamCast / math.max(1.0, mainSpeed)) * avgWeaponHit * math.max(0.45, meleeConnect)
-    local slamCycle = math.max(2.0, mainSpeed + slamCast)
-    slamDps = math.max(0, (slamHit - slamPenalty) / slamCycle)
-  end
-
-  local wwDps = 0
-  if wwRow and knowsWW then
-    local wwTargets = math.floor(tonumber(c.warriorWhirlwindTargets) or 1)
-    if wwTargets < 1 then wwTargets = 1 end
-    if wwTargets > 4 then wwTargets = 4 end
-    local wwHit = estimatePhysicalHit(normalizedWeaponHit) * wwTargets
-    local wwCd = math.max(6, tonumber(wwRow.cooldown) or 10)
-    wwDps = wwHit / wwCd
-  end
-
-  local msDps = 0
-  if msRow and knowsMS then
-    local msHit = estimatePhysicalHit(normalizedWeaponHit + (msRow.value or 0))
-    local msCd = math.max(4, tonumber(msRow.cooldown) or 6)
-    msDps = msHit / msCd
-  end
-
-  return {
-    baseAutoDps = baseAutoDps,
-    hsDps = hsDps,
-    rendDps = rendDps,
-    overpowerDps = overpowerDps,
-    slamDps = slamDps,
-    wwDps = wwDps,
-    msDps = msDps,
-    knowsHS = knowsHS,
-    knowsRend = knowsRend,
-    knowsOP = knowsOP,
-    knowsSlam = knowsSlam,
-    knowsWW = knowsWW,
-    knowsMS = knowsMS,
-  }
 end
 
 function TA_GetJudgementConnectChance(targetLevel)
@@ -2918,247 +2568,9 @@ function TA_GetMLStore()
   local ml = TextAdventurerDB.ml
   if type(ml.logs) ~= "table" then ml.logs = {} end
   if type(ml.model) ~= "table" then ml.model = {} end
-  if type(ml.xpRateModel) ~= "table" then ml.xpRateModel = {} end
   if ml.loggingEnabled == nil then ml.loggingEnabled = true end
   if type(ml.maxLogs) ~= "number" then ml.maxLogs = 200 end
   return ml
-end
-
-function TA_GetMLXPRateModel()
-  local ml = TA_GetMLStore()
-  if type(ml.xpRateModel) ~= "table" then
-    ml.xpRateModel = {}
-  end
-  local m = ml.xpRateModel
-  if type(m.questXPH) ~= "number" then m.questXPH = 0 end
-  if type(m.grindXPH) ~= "number" then m.grindXPH = 0 end
-  if type(m.unknownXPH) ~= "number" then m.unknownXPH = 0 end
-  if type(m.totalXPH) ~= "number" then m.totalXPH = 0 end
-  if type(m.questSamples) ~= "number" then m.questSamples = 0 end
-  if type(m.grindSamples) ~= "number" then m.grindSamples = 0 end
-  if type(m.unknownSamples) ~= "number" then m.unknownSamples = 0 end
-  if type(m.totalSamples) ~= "number" then m.totalSamples = 0 end
-  if type(m.history) ~= "table" then m.history = {} end
-  return m
-end
-
-function TA_ResetMLXPRateModel()
-  local ml = TA_GetMLStore()
-  ml.xpRateModel = {
-    questXPH = 0,
-    grindXPH = 0,
-    unknownXPH = 0,
-    totalXPH = 0,
-    questSamples = 0,
-    grindSamples = 0,
-    unknownSamples = 0,
-    totalSamples = 0,
-    history = {},
-  }
-  TA.mlXPTrackerLastXP = nil
-  TA.mlXPTrackerLastXPMax = nil
-  TA.mlXPTrackerLastLevel = nil
-  TA.mlXPTrackerLastAt = 0
-  TA.mlXPTrackerAbsolute = 0
-  TA.mlXPSourceHints = {}
-  AddLine("system", "ML XP/hour source model reset.")
-end
-
-function TA_InitMLXPTracker()
-  TA.mlXPTrackerLastXP = UnitXP("player") or 0
-  TA.mlXPTrackerLastXPMax = UnitXPMax("player") or 0
-  TA.mlXPTrackerLastLevel = UnitLevel("player") or 1
-  TA.mlXPTrackerLastAt = GetTime()
-  TA.mlXPTrackerAbsolute = 0
-end
-
-function TA_ParseXPNumberFromText(text)
-  if not text or text == "" then return nil end
-  local raw = text:match("([%d,]+)%s+experience") or text:match("([%d,]+)%s+XP") or text:match("([%d,]+)%s+xp")
-  if not raw then return nil end
-  raw = raw:gsub(",", "")
-  return tonumber(raw)
-end
-
-function TA_MarkMLXPSourceHint(source, hintedXP)
-  if source ~= "quest" and source ~= "grind" then return end
-  TA.mlXPSourceHints = TA.mlXPSourceHints or {}
-  TA.mlXPSourceHints[source] = {
-    at = GetTime(),
-    xp = tonumber(hintedXP) or 0,
-  }
-end
-
-function TA_UpdateMLXPObservedRate(source, xpDelta, dt)
-  local m = TA_GetMLXPRateModel()
-  local xph = (tonumber(xpDelta) or 0) / math.max(0.2, tonumber(dt) or 0.2) * 3600
-  if xph < 0 then xph = 0 end
-  if xph > 500000 then xph = 500000 end
-
-  local function updateEMA(fieldRate, fieldSamples)
-    local n = tonumber(m[fieldSamples]) or 0
-    local alpha = 0.12
-    if n < 8 then
-      alpha = 0.35
-    elseif n < 30 then
-      alpha = 0.22
-    end
-    if n <= 0 or (tonumber(m[fieldRate]) or 0) <= 0 then
-      m[fieldRate] = xph
-    else
-      m[fieldRate] = (m[fieldRate] * (1 - alpha)) + (xph * alpha)
-    end
-    m[fieldSamples] = n + 1
-  end
-
-  if source == "quest" then
-    updateEMA("questXPH", "questSamples")
-  elseif source == "grind" then
-    updateEMA("grindXPH", "grindSamples")
-  else
-    updateEMA("unknownXPH", "unknownSamples")
-  end
-  updateEMA("totalXPH", "totalSamples")
-
-  local h = m.history
-  h[#h + 1] = {
-    t = date and date("%Y-%m-%d %H:%M:%S") or tostring(GetTime()),
-    source = source,
-    xp = xpDelta,
-    dt = dt,
-    xph = xph,
-  }
-  while #h > 120 do
-    table.remove(h, 1)
-  end
-end
-
-function TA_ResolveMLXPSource(deltaXP)
-  local now = GetTime()
-  local hints = TA.mlXPSourceHints or {}
-  local questHint = hints.quest
-  local grindHint = hints.grind
-  local questAge = questHint and (now - (questHint.at or 0)) or 999
-  local grindAge = grindHint and (now - (grindHint.at or 0)) or 999
-  local questFresh = questAge <= 2.5
-  local grindFresh = grindAge <= 2.5
-
-  if questFresh and grindFresh then
-    local questXP = tonumber(questHint.xp) or 0
-    local grindXP = tonumber(grindHint.xp) or 0
-    if questXP > 0 or grindXP > 0 then
-      local qd = math.abs(deltaXP - questXP)
-      local gd = math.abs(deltaXP - grindXP)
-      return (qd <= gd) and "quest" or "grind"
-    end
-    return (questAge <= grindAge) and "quest" or "grind"
-  end
-  if questFresh then
-    return "quest"
-  end
-  if grindFresh then
-    return "grind"
-  end
-  if TA.dpsCombatStart and TA.dpsCombatStart > 0 then
-    return "grind"
-  end
-  if TA.lastCombatEndedAt and (now - TA.lastCombatEndedAt) <= 3.0 then
-    return "grind"
-  end
-  return "unknown"
-end
-
-function TA_GetTrackedXPDelta()
-  local currentXP = UnitXP("player") or 0
-  local currentXPMax = UnitXPMax("player") or 0
-  local currentLevel = UnitLevel("player") or 1
-  local previousXP = TA.mlXPTrackerLastXP
-  local previousXPMax = TA.mlXPTrackerLastXPMax
-  local previousLevel = TA.mlXPTrackerLastLevel
-
-  TA.mlXPTrackerLastXP = currentXP
-  TA.mlXPTrackerLastXPMax = currentXPMax
-  TA.mlXPTrackerLastLevel = currentLevel
-
-  if previousXP == nil then
-    return 0
-  end
-
-  if currentLevel > (previousLevel or currentLevel) then
-    local remainder = math.max(0, (previousXPMax or 0) - (previousXP or 0))
-    return remainder + currentXP
-  end
-  return currentXP - previousXP
-end
-
-function TA_HandleMLXPSourceEvent(event, ...)
-  if event == "CHAT_MSG_COMBAT_XP_GAIN" then
-    local msg = ...
-    local xp = TA_ParseXPNumberFromText(msg)
-    TA_MarkMLXPSourceHint("grind", xp)
-    return
-  end
-
-  if event == "QUEST_TURNED_IN" then
-    local _, xpReward = ...
-    TA_MarkMLXPSourceHint("quest", xpReward)
-    return
-  end
-
-  if event ~= "PLAYER_XP_UPDATE" and event ~= "PLAYER_LEVEL_UP" then
-    return
-  end
-  if TA.mlXPTrackerLastXP == nil then
-    TA_InitMLXPTracker()
-    return
-  end
-
-  local now = GetTime()
-  local prevAt = TA.mlXPTrackerLastAt or now
-  local delta = TA_GetTrackedXPDelta()
-  TA.mlXPTrackerLastAt = now
-  if delta <= 0 then return end
-
-  TA.mlXPTrackerAbsolute = (TA.mlXPTrackerAbsolute or 0) + delta
-  local dt = now - prevAt
-  if dt <= 0 then dt = 0.2 end
-  local source = TA_ResolveMLXPSource(delta)
-  TA_UpdateMLXPObservedRate(source, delta, dt)
-end
-
-function TA_GetGuideTopQuestXPPerHour()
-  if type(TA_CollectQuestGuideRows) ~= "function" then
-    return 0
-  end
-  local rows = TA_CollectQuestGuideRows()
-  local top = rows and rows[1]
-  if not top then
-    return 0
-  end
-  local xpm = tonumber(top.xpPerMin) or 0
-  return math.max(0, xpm * 60)
-end
-
-function TA_BlendObservedRate(observed, samples, prior, priorWeight)
-  local obs = tonumber(observed) or 0
-  local n = math.max(0, tonumber(samples) or 0)
-  local p = math.max(0, tonumber(prior) or 0)
-  local w = math.max(0.5, tonumber(priorWeight) or 8)
-  return ((obs * n) + (p * w)) / (n + w)
-end
-
-function TA_ReportMLXPRateStatus()
-  if TA.mlXPTrackerLastXP == nil then
-    TA_InitMLXPTracker()
-  end
-  local m = TA_GetMLXPRateModel()
-  local c = TA_GetMLXPConfig()
-  local modeWeight, mode = TA_GetMLXPModeQuestWeight(c)
-  local questConf = (m.questSamples or 0) / math.max(1, (m.questSamples or 0) + (c.priorWeight or 8))
-  local grindConf = (m.grindSamples or 0) / math.max(1, (m.grindSamples or 0) + (c.priorWeight or 8))
-  AddLine("system", string.format("ML XP/hour rates: grind %.0f (%d samples, conf %.0f%%) | quest %.0f (%d samples, conf %.0f%%)", m.grindXPH or 0, m.grindSamples or 0, grindConf * 100, m.questXPH or 0, m.questSamples or 0, questConf * 100))
-  AddLine("system", string.format("Other: total %.0f (%d) | unknown %.0f (%d)", m.totalXPH or 0, m.totalSamples or 0, m.unknownXPH or 0, m.unknownSamples or 0))
-  AddLine("system", string.format("ML blend knobs: mode %s, effective questweight %.2f, base questweight %.2f, priorweight %.1f, grindscale %.1f", mode or "balanced", modeWeight or 0.55, c.questWeight or 0.55, c.priorWeight or 8, c.grindScale or 240))
 end
 
 function TA_CaptureMLFeatures()
@@ -3423,595 +2835,6 @@ function TA_ReportMLStatus()
   AddLine("system", string.format("ML status: logging=%s logs=%d/%d trees=%d", ml.loggingEnabled and "on" or "off", #ml.logs, ml.maxLogs or 200, treeCount))
   if ml.model and ml.model.name then
     AddLine("system", "ML model: " .. tostring(ml.model.name))
-  end
-end
-
-function TA_GetMLXPConfig()
-  local ml = TA_GetMLStore()
-  if type(ml.xpConfig) ~= "table" then
-    ml.xpConfig = {}
-  end
-  local c = ml.xpConfig
-  if type(c.weight) ~= "number" then c.weight = 0.65 end
-  if type(c.sealManaPct) ~= "number" then c.sealManaPct = 0.040 end
-  if type(c.judgeManaPct) ~= "number" then c.judgeManaPct = 0.050 end
-  if type(c.sealCycleSec) ~= "number" then c.sealCycleSec = 30 end
-  if type(c.socManaMult) ~= "number" then c.socManaMult = 1.06 end
-  if type(c.warriorImpHSRank) ~= "number" then c.warriorImpHSRank = 0 end
-  if type(c.warriorImpRendRank) ~= "number" then c.warriorImpRendRank = 0 end
-  if type(c.warriorImpOverpowerRank) ~= "number" then c.warriorImpOverpowerRank = 0 end
-  if type(c.warriorImpSlamRank) ~= "number" then c.warriorImpSlamRank = 0 end
-  if type(c.warriorDeepWoundsRank) ~= "number" then c.warriorDeepWoundsRank = 0 end
-  if type(c.warriorImpaleRank) ~= "number" then c.warriorImpaleRank = 0 end
-  if type(c.warriorOverpowerPerMin) ~= "number" then c.warriorOverpowerPerMin = 1.2 end
-  if type(c.warriorDodgeChance) ~= "number" then c.warriorDodgeChance = 0.05 end
-  if type(c.warriorGlancingChance) ~= "number" then c.warriorGlancingChance = 0.10 end
-  if type(c.warriorGlancingDamage) ~= "number" then c.warriorGlancingDamage = 0.95 end
-  if type(c.warriorNormalization) ~= "number" then c.warriorNormalization = 3.3 end
-  if type(c.warriorDeepWoundsPerPoint) ~= "number" then c.warriorDeepWoundsPerPoint = 0.2 end
-  if type(c.warriorImpalePerPoint) ~= "number" then c.warriorImpalePerPoint = 0.1 end
-  if type(c.warriorWhirlwindTargets) ~= "number" then c.warriorWhirlwindTargets = 1 end
-  if type(c.warriorWeaponProfile) ~= "string" or c.warriorWeaponProfile == "" then c.warriorWeaponProfile = "auto" end
-  if type(c.questWeight) ~= "number" then c.questWeight = 0.55 end
-  if type(c.priorWeight) ~= "number" then c.priorWeight = 8.0 end
-  if type(c.grindScale) ~= "number" then c.grindScale = 240 end
-  if type(c.mode) ~= "string" or c.mode == "" then c.mode = "balanced" end
-  return c
-end
-
-function TA_NormalizeMLXPMode(mode)
-  local m = tostring(mode or ""):lower():gsub("_", "-")
-  if m == "" or m == "balanced" or m == "balance" then
-    return "balanced"
-  end
-  if m == "grind" or m == "grind-first" or m == "grindfirst" then
-    return "grind-first"
-  end
-  if m == "quest" or m == "quest-first" or m == "questfirst" then
-    return "quest-first"
-  end
-  return nil
-end
-
-function TA_GetMLXPModeQuestWeight(c)
-  local mode = TA_NormalizeMLXPMode(c.mode) or "balanced"
-  if mode == "grind-first" then
-    return 0.20, mode
-  end
-  if mode == "quest-first" then
-    return 0.80, mode
-  end
-  return c.questWeight or 0.55, "balanced"
-end
-
-function TA_SetMLXPMode(mode)
-  local normalized = TA_NormalizeMLXPMode(mode)
-  if not normalized then
-    AddLine("system", "Unknown mode. Use: balanced | grind-first | quest-first")
-    return
-  end
-  local c = TA_GetMLXPConfig()
-  c.mode = normalized
-  local qWeight = TA_GetMLXPModeQuestWeight(c)
-  AddLine("system", string.format("ML XP mode set to %s (effective quest weight %.2f).", normalized, qWeight or 0))
-end
-
-function TA_ReportMLXPMode()
-  local c = TA_GetMLXPConfig()
-  local qWeight, mode = TA_GetMLXPModeQuestWeight(c)
-  AddLine("system", string.format("ML XP mode: %s (effective quest weight %.2f)", mode or "balanced", qWeight or 0))
-  AddLine("system", "Modes: balanced | grind-first | quest-first")
-end
-
-function TA_NormalizeWarriorWeaponProfile(profile)
-  local p = tostring(profile or ""):lower():gsub("_", "-")
-  if p == "" or p == "auto" then return "auto" end
-  if p == "slow" or p == "2h-slow" or p == "slow2h" or p == "slow-2h" then return "slow-2h" end
-  if p == "fast" or p == "2h-fast" or p == "fast2h" or p == "fast-2h" then return "fast-2h" end
-  if p == "1h" or p == "one" or p == "onehand" or p == "one-hand" then return "one-hand" end
-  if p == "dw" or p == "dual" or p == "dualwield" or p == "dual-wield" then return "dual-wield" end
-  return nil
-end
-
-function TA_DetectWarriorWeaponProfile()
-  local mainSpeed, offSpeed = UnitAttackSpeed("player")
-  mainSpeed = tonumber(mainSpeed) or 0
-  offSpeed = tonumber(offSpeed) or 0
-  if offSpeed > 0 then
-    return "dual-wield", mainSpeed, offSpeed
-  end
-  if mainSpeed >= 3.3 then
-    return "slow-2h", mainSpeed, 0
-  end
-  if mainSpeed >= 2.6 then
-    return "fast-2h", mainSpeed, 0
-  end
-  return "one-hand", mainSpeed, 0
-end
-
-function TA_GetWarriorWeaponProfileTuning(profile)
-  local p = TA_NormalizeWarriorWeaponProfile(profile)
-  if p == "slow-2h" then
-    return { warriorDodgeChance = 0.05, warriorGlancingChance = 0.10, warriorGlancingDamage = 0.95, warriorNormalization = 3.3, warriorOverpowerPerMin = 1.6, warriorWhirlwindTargets = 1 }
-  end
-  if p == "fast-2h" then
-    return { warriorDodgeChance = 0.05, warriorGlancingChance = 0.12, warriorGlancingDamage = 0.92, warriorNormalization = 3.3, warriorOverpowerPerMin = 1.2, warriorWhirlwindTargets = 1 }
-  end
-  if p == "one-hand" then
-    return { warriorDodgeChance = 0.05, warriorGlancingChance = 0.18, warriorGlancingDamage = 0.90, warriorNormalization = 2.4, warriorOverpowerPerMin = 0.9, warriorWhirlwindTargets = 1 }
-  end
-  if p == "dual-wield" then
-    return { warriorDodgeChance = 0.05, warriorGlancingChance = 0.24, warriorGlancingDamage = 0.85, warriorNormalization = 2.4, warriorOverpowerPerMin = 0.7, warriorWhirlwindTargets = 2 }
-  end
-  return nil
-end
-
-function TA_ApplyWarriorWeaponProfile(profile, silent)
-  local p = TA_NormalizeWarriorWeaponProfile(profile)
-  if not p then
-    if not silent then AddLine("system", "Usage: ml xp warrior weapon <auto|slow-2h|fast-2h|one-hand|dual-wield>") end
-    return false
-  end
-
-  local c = TA_GetMLXPConfig()
-  c.warriorWeaponProfile = p
-  if p == "auto" then
-    if not silent then
-      local detected, mainSpeed, offSpeed = TA_DetectWarriorWeaponProfile()
-      AddLine("system", string.format("Warrior weapon profile set to auto (detected now: %s, speed %.2f%s).", detected, mainSpeed or 0, offSpeed > 0 and (", offhand " .. string.format("%.2f", offSpeed)) or ""))
-    end
-    return true
-  end
-
-  local t = TA_GetWarriorWeaponProfileTuning(p)
-  if not t then
-    if not silent then AddLine("system", "Unknown warrior weapon profile.") end
-    return false
-  end
-  c.warriorDodgeChance = t.warriorDodgeChance
-  c.warriorGlancingChance = t.warriorGlancingChance
-  c.warriorGlancingDamage = t.warriorGlancingDamage
-  c.warriorNormalization = t.warriorNormalization
-  c.warriorOverpowerPerMin = t.warriorOverpowerPerMin
-  c.warriorWhirlwindTargets = t.warriorWhirlwindTargets
-  if not silent then AddLine("system", string.format("Warrior weapon profile applied: %s", p)) end
-  return true
-end
-
-function TA_ApplyWarriorPreset(presetName)
-  local preset = tostring(presetName or ""):lower():gsub("_", "-")
-  local c = TA_GetMLXPConfig()
-  if preset == "arms" then
-    c.warriorImpHSRank = 0
-    c.warriorImpRendRank = 3
-    c.warriorImpOverpowerRank = 2
-    c.warriorImpSlamRank = 0
-    c.warriorDeepWoundsRank = 3
-    c.warriorImpaleRank = 2
-    c.warriorOverpowerPerMin = 1.6
-    TA_ApplyWarriorWeaponProfile("slow-2h", true)
-    AddLine("system", "Warrior preset applied: arms (2H leveling baseline).")
-    return
-  end
-  if preset == "fury" then
-    c.warriorImpHSRank = 3
-    c.warriorImpRendRank = 0
-    c.warriorImpOverpowerRank = 0
-    c.warriorImpSlamRank = 0
-    c.warriorDeepWoundsRank = 0
-    c.warriorImpaleRank = 0
-    c.warriorOverpowerPerMin = 0.8
-    TA_ApplyWarriorWeaponProfile("dual-wield", true)
-    AddLine("system", "Warrior preset applied: fury (dual-wield leveling baseline).")
-    return
-  end
-  AddLine("system", "Usage: ml xp warrior preset <arms|fury>")
-end
-
-function TA_ResetMLXPConfigDefaults()
-  local ml = TA_GetMLStore()
-  ml.xpConfig = {
-    weight = 0.65,
-    sealManaPct = 0.040,
-    judgeManaPct = 0.050,
-    sealCycleSec = 30,
-    socManaMult = 1.06,
-    warriorImpHSRank = 0,
-    warriorImpRendRank = 0,
-    warriorImpOverpowerRank = 0,
-    warriorImpSlamRank = 0,
-    warriorDeepWoundsRank = 0,
-    warriorImpaleRank = 0,
-    warriorOverpowerPerMin = 1.2,
-    warriorDodgeChance = 0.05,
-    warriorGlancingChance = 0.10,
-    warriorGlancingDamage = 0.95,
-    warriorNormalization = 3.3,
-    warriorDeepWoundsPerPoint = 0.2,
-    warriorImpalePerPoint = 0.1,
-    warriorWhirlwindTargets = 1,
-    warriorWeaponProfile = "auto",
-    questWeight = 0.55,
-    priorWeight = 8.0,
-    grindScale = 240,
-    mode = "balanced",
-  }
-  AddLine("system", "ML XP optimizer settings reset to defaults.")
-end
-
-function TA_SetMLXPConfigValue(key, value)
-  local c = TA_GetMLXPConfig()
-  local k = tostring(key or ""):lower()
-  local v = tonumber(value)
-  if not v then
-    AddLine("system", "Invalid value. Usage: ml xp set <weight|sealpct|judgepct|sealcycle|socmult> <value>")
-    return
-  end
-
-  if k == "weight" then
-    if v < 0 then v = 0 end
-    if v > 5 then v = 5 end
-    c.weight = v
-  elseif k == "sealpct" then
-    if v < 0 then v = 0 end
-    if v > 0.30 then v = 0.30 end
-    c.sealManaPct = v
-  elseif k == "judgepct" then
-    if v < 0 then v = 0 end
-    if v > 0.40 then v = 0.40 end
-    c.judgeManaPct = v
-  elseif k == "sealcycle" then
-    if v < 10 then v = 10 end
-    if v > 120 then v = 120 end
-    c.sealCycleSec = v
-  elseif k == "socmult" then
-    if v < 0.5 then v = 0.5 end
-    if v > 2.0 then v = 2.0 end
-    c.socManaMult = v
-  elseif k == "warriorimphs" then
-    if v < 0 then v = 0 end
-    if v > 3 then v = 3 end
-    c.warriorImpHSRank = math.floor(v + 0.5)
-    v = c.warriorImpHSRank
-  elseif k == "warriorimprend" then
-    if v < 0 then v = 0 end
-    if v > 3 then v = 3 end
-    c.warriorImpRendRank = math.floor(v + 0.5)
-    v = c.warriorImpRendRank
-  elseif k == "warriorimpop" then
-    if v < 0 then v = 0 end
-    if v > 2 then v = 2 end
-    c.warriorImpOverpowerRank = math.floor(v + 0.5)
-    v = c.warriorImpOverpowerRank
-  elseif k == "warriorimpslam" then
-    if v < 0 then v = 0 end
-    if v > 5 then v = 5 end
-    c.warriorImpSlamRank = math.floor(v + 0.5)
-    v = c.warriorImpSlamRank
-  elseif k == "warriordeepwounds" then
-    if v < 0 then v = 0 end
-    if v > 3 then v = 3 end
-    c.warriorDeepWoundsRank = math.floor(v + 0.5)
-    v = c.warriorDeepWoundsRank
-  elseif k == "warriorimpale" then
-    if v < 0 then v = 0 end
-    if v > 2 then v = 2 end
-    c.warriorImpaleRank = math.floor(v + 0.5)
-    v = c.warriorImpaleRank
-  elseif k == "warrioropppm" then
-    if v < 0 then v = 0 end
-    if v > 12 then v = 12 end
-    c.warriorOverpowerPerMin = v
-  elseif k == "warriordodge" then
-    if v < 0 then v = 0 end
-    if v > 0.35 then v = 0.35 end
-    c.warriorDodgeChance = v
-  elseif k == "warriorglance" then
-    if v < 0 then v = 0 end
-    if v > 0.40 then v = 0.40 end
-    c.warriorGlancingChance = v
-  elseif k == "warriorglancedmg" then
-    if v < 0.5 then v = 0.5 end
-    if v > 1.0 then v = 1.0 end
-    c.warriorGlancingDamage = v
-  elseif k == "warriornorm" then
-    if v < 2.2 then v = 2.2 end
-    if v > 3.8 then v = 3.8 end
-    c.warriorNormalization = v
-  elseif k == "warriorwwtargets" then
-    if v < 1 then v = 1 end
-    if v > 4 then v = 4 end
-    c.warriorWhirlwindTargets = math.floor(v + 0.5)
-    v = c.warriorWhirlwindTargets
-  elseif k == "questweight" then
-    if v < 0 then v = 0 end
-    if v > 1 then v = 1 end
-    c.questWeight = v
-  elseif k == "priorweight" then
-    if v < 0.5 then v = 0.5 end
-    if v > 60 then v = 60 end
-    c.priorWeight = v
-  elseif k == "grindscale" then
-    if v < 50 then v = 50 end
-    if v > 2000 then v = 2000 end
-    c.grindScale = v
-  else
-    AddLine("system", "Unknown key. Use: weight, sealpct, judgepct, sealcycle, socmult, warriorimphs, warriorimprend, warriorimpop, warriorimpslam, warriordeepwounds, warriorimpale, warrioropppm, warriordodge, warriorglance, warriorglancedmg, warriornorm, warriorwwtargets, questweight, priorweight, grindscale")
-    return
-  end
-
-  AddLine("system", string.format("ML XP setting %s updated to %.4f", k, v))
-end
-
-function TA_GetManaRegenPerSecond()
-  local inactive, active
-  if GetPowerRegen then
-    inactive, active = GetPowerRegen()
-    inactive = tonumber(inactive) or 0
-    active = tonumber(active) or 0
-  elseif GetManaRegen then
-    inactive, active = GetManaRegen()
-    inactive = tonumber(inactive) or 0
-    active = tonumber(active) or 0
-  else
-    inactive, active = 0, 0
-  end
-
-  local combatRegen = active > 0 and active or inactive
-  if combatRegen < 0 then combatRegen = 0 end
-  return combatRegen
-end
-
-function TA_BuildLiveSealOptionMetrics(windowArg)
-  local cfg = TA_GetSealLiveConfig()
-  local window = tonumber(windowArg) or tonumber(cfg.hybridWindow) or 60
-  if window < 15 then window = 15 end
-  if window > 300 then window = 300 end
-  local resealGCD = tonumber(cfg.resealGCD) or 1.5
-
-  local minMain, maxMain = UnitDamage("player")
-  local mainSpeed = UnitAttackSpeed("player")
-  if not minMain or not maxMain or not mainSpeed or mainSpeed <= 0 then
-    return nil, "Live XP optimizer unavailable: no valid main-hand weapon data."
-  end
-
-  local spellPower = TA_GetSpellPowerHoly()
-  local avgWeaponHit = (minMain + maxMain) / 2
-  local meleeConnect = TA_GetMeleeConnectChance(cfg.targetLevel, cfg.attackFromBehind)
-  local judgeConnect = TA_GetJudgementConnectChance(cfg.targetLevel)
-  local swingsPerSec = 1 / mainSpeed
-
-  local sorRow = TA_GetLiveSpellRankRow("sor")
-  local jorRow = TA_GetLiveSpellRankRow("jor")
-  local socRow = TA_GetLiveSpellRankRow("soc")
-  local jocRow = TA_GetLiveSpellRankRow("joc")
-
-  if not sorRow or not jorRow or not jocRow then
-    return nil, "Live XP optimizer unavailable: missing SoR/JoR/JoC ranks in spellbook."
-  end
-
-  local sorBase = ((sorRow.min or 0) + (sorRow.max or 0)) / 2
-  local jorBase = ((jorRow.min or 0) + (jorRow.max or 0)) / 2
-  local jocBase = ((jocRow.min or 0) + (jocRow.max or 0)) / 2
-
-  local sorHit = sorBase + (spellPower * (sorRow.coeff or 0))
-  local sorDps = sorHit * swingsPerSec * meleeConnect
-
-  local jorHit = jorBase + (spellPower * (jorRow.coeff or 0))
-  local jorDps = (jorHit / math.max(1, cfg.judgementCD)) * judgeConnect
-
-  local socWeaponCoeff = socRow and (socRow.weaponCoeff or 0.70) or 0.70
-  local socCoeff = socRow and (socRow.coeff or 0.29) or 0.29
-  local socHit = (avgWeaponHit * socWeaponCoeff) + (spellPower * socCoeff)
-  local socConnects = (math.max(0.5, cfg.socPPM) / 60) * meleeConnect
-  local socDps = socHit * socConnects
-
-  local jocHit = jocBase + (spellPower * (jocRow.coeff or 0))
-  local jocDps = (jocHit / math.max(1, cfg.judgementCD)) * judgeConnect
-
-  local pureSorDps = sorDps + jorDps
-  local pureSocDps = socDps + jocDps
-
-  local oneJudgeDeltaDmg = (jocHit - jorHit) * judgeConnect
-  local resealPenaltyDmg = sorDps * resealGCD
-  local hybridDps = pureSorDps + ((oneJudgeDeltaDmg - resealPenaltyDmg) / window)
-
-  return {
-    cfg = cfg,
-    window = window,
-    pureSorDps = pureSorDps,
-    pureSocDps = pureSocDps,
-    hybridDps = hybridDps,
-    spellPower = spellPower,
-    mainSpeed = mainSpeed,
-    meleeConnect = meleeConnect,
-    judgeConnect = judgeConnect,
-  }
-end
-
-function TA_RecommendXPWithML(explain)
-  local c = TA_GetMLXPConfig()
-  local m = TA_GetMLXPRateModel()
-  local classToken = select(2, UnitClass("player")) or "UNKNOWN"
-  local mana = 0
-  local manaMax = 0
-  local manaPct = 100
-  local regen = TA_GetManaRegenPerSecond()
-  local options = nil
-  local classLabel = classToken
-  local effectiveQuestWeight, mode = TA_GetMLXPModeQuestWeight(c)
-
-  if classToken == "PALADIN" then
-    local metrics, err = TA_BuildLiveSealOptionMetrics()
-    if not metrics then
-      AddLine("system", err or "Live XP optimizer unavailable.")
-      return
-    end
-
-    local powerType = UnitPowerType("player") or 0
-    mana = UnitPower("player", powerType) or 0
-    manaMax = UnitPowerMax("player", powerType) or 0
-    manaPct = manaMax > 0 and (mana / manaMax) * 100 or 0
-
-    local judgeCost = manaMax * c.judgeManaPct
-    local sorSealCost = manaMax * c.sealManaPct
-    local socSealCost = sorSealCost * c.socManaMult
-    local judgePerSec = judgeCost / math.max(1, metrics.cfg.judgementCD)
-    local sealRefreshPerSec = 1 / math.max(10, c.sealCycleSec)
-    local extraHybridSealPerSec = 1 / math.max(15, metrics.window)
-
-    options = {
-      {
-        key = "sor",
-        label = "Pure SoR loop",
-        dps = metrics.pureSorDps,
-        manaPerSec = judgePerSec + (sorSealCost * sealRefreshPerSec),
-      },
-      {
-        key = "soc",
-        label = "Pure SoC loop",
-        dps = metrics.pureSocDps,
-        manaPerSec = judgePerSec + (socSealCost * sealRefreshPerSec),
-      },
-      {
-        key = "hybrid",
-        label = "JoC opener -> SoR",
-        dps = metrics.hybridDps,
-        manaPerSec = judgePerSec + (sorSealCost * sealRefreshPerSec) + (socSealCost * extraHybridSealPerSec),
-      },
-    }
-    classLabel = "Paladin"
-  elseif classToken == "WARRIOR" then
-    local metrics, err = TA_BuildLiveWarriorOptionMetrics(c)
-    if not metrics then
-      AddLine("system", err or "Live XP optimizer unavailable.")
-      return
-    end
-
-    options = {}
-    if metrics.knowsHS then
-      options[#options + 1] = {
-        key = "warrior_hs",
-        label = "Heroic Strike dump",
-        dps = metrics.baseAutoDps + metrics.hsDps,
-        manaPerSec = 0,
-      }
-    end
-    if metrics.knowsRend then
-      options[#options + 1] = {
-        key = "warrior_rend_hs",
-        label = "Rend maintain + Heroic Strike",
-        dps = metrics.baseAutoDps + metrics.rendDps + (metrics.hsDps * 0.85),
-        manaPerSec = 0,
-      }
-    end
-    if metrics.knowsOP then
-      options[#options + 1] = {
-        key = "warrior_op_hs",
-        label = "Overpower procs + Heroic Strike",
-        dps = metrics.baseAutoDps + metrics.overpowerDps + (metrics.hsDps * 0.75),
-        manaPerSec = 0,
-      }
-    end
-    if metrics.knowsMS then
-      options[#options + 1] = {
-        key = "warrior_arms",
-        label = "Mortal Strike rotation",
-        dps = metrics.baseAutoDps + metrics.msDps + (metrics.rendDps * 0.7) + (metrics.overpowerDps * 0.7),
-        manaPerSec = 0,
-      }
-    elseif metrics.knowsWW then
-      options[#options + 1] = {
-        key = "warrior_fury",
-        label = "Whirlwind rotation",
-        dps = metrics.baseAutoDps + metrics.wwDps + (metrics.hsDps * 0.55),
-        manaPerSec = 0,
-      }
-    elseif metrics.knowsSlam then
-      options[#options + 1] = {
-        key = "warrior_slam",
-        label = "Slam weaving",
-        dps = metrics.baseAutoDps + metrics.slamDps + (metrics.hsDps * 0.45),
-        manaPerSec = 0,
-      }
-    end
-
-    if #options == 0 then
-      AddLine("system", "Warrior XP optimizer: no supported learned abilities found yet.")
-      return
-    end
-    classLabel = "Warrior"
-  else
-    AddLine("system", string.format("ML XP optimizer currently supports Paladin and Warrior. You are: %s", classToken))
-    return
-  end
-
-  local manaStress = 0
-  if manaPct < 40 then
-    manaStress = (40 - manaPct) / 40
-  end
-  local effectiveWeight = c.weight * (1 + (1.5 * manaStress))
-  local best = nil
-  local bestScore = 0
-
-  for i = 1, #options do
-    local row = options[i]
-    local netDrain = row.manaPerSec - regen
-    if netDrain < 0 then netDrain = 0 end
-    local downtimeRatio = netDrain / math.max(0.01, regen)
-    local score = row.dps / (1 + (effectiveWeight * downtimeRatio))
-    row.netDrain = netDrain
-    row.downtimeRatio = downtimeRatio
-    row.score = score
-    row.timeToOOM = netDrain > 0 and (mana / netDrain) or 9999
-    if row.score > bestScore then bestScore = row.score end
-  end
-
-  if bestScore <= 0 then bestScore = 1 end
-  local questPriorBase = TA_GetGuideTopQuestXPPerHour()
-  if questPriorBase <= 0 then
-    questPriorBase = math.max(300, (UnitLevel("player") or 1) * 220)
-  end
-
-  for i = 1, #options do
-    local row = options[i]
-    local scoreRatio = math.max(0.35, (row.score or 0) / bestScore)
-    local priorGrind = math.max(150, (row.score or 0) * (c.grindScale or 240))
-    local priorQuest = math.max(150, questPriorBase * (0.86 + (0.24 * scoreRatio)))
-    row.predGrindXPH = TA_BlendObservedRate(m.grindXPH, m.grindSamples, priorGrind, c.priorWeight)
-    row.predQuestXPH = TA_BlendObservedRate(m.questXPH, m.questSamples, priorQuest, c.priorWeight)
-    row.predBlendXPH = (row.predGrindXPH * (1 - effectiveQuestWeight)) + (row.predQuestXPH * effectiveQuestWeight)
-    if (not best) or row.predBlendXPH > best.predBlendXPH then
-      best = row
-    end
-  end
-
-  AddLine("playerCombat", string.format("ML XP recommendation (%s): %s", classLabel, best.label))
-  AddLine("system", string.format("XP score model: higher is better (weight %.2f, mana %.1f%%, regen %.2f/s)", effectiveWeight, manaPct, regen))
-  AddLine("system", string.format("XP mode: %s (effective quest weight %.2f)", mode or "balanced", effectiveQuestWeight or 0.55))
-  local scoreParts = {}
-  for i = 1, #options do
-    scoreParts[#scoreParts + 1] = string.format("%s %.2f", options[i].label, options[i].score or 0)
-  end
-  AddLine("system", "Scores: " .. table.concat(scoreParts, " | "))
-  AddLine("system", string.format("Predicted XP/hour: grind %.0f | quest %.0f | blend %.0f", best.predGrindXPH or 0, best.predQuestXPH or 0, best.predBlendXPH or 0))
-  if explain then
-    local questConf = (m.questSamples or 0) / math.max(1, (m.questSamples or 0) + (c.priorWeight or 8))
-    local grindConf = (m.grindSamples or 0) / math.max(1, (m.grindSamples or 0) + (c.priorWeight or 8))
-    AddLine("system", string.format("  source model: grind %.0f/h (%d samples, conf %.0f%%), quest %.0f/h (%d samples, conf %.0f%%)", m.grindXPH or 0, m.grindSamples or 0, grindConf * 100, m.questXPH or 0, m.questSamples or 0, questConf * 100))
-    AddLine("system", string.format("  priors: quest base %.0f/h, mode %s, effective quest weight %.2f (base %.2f)", questPriorBase, mode or "balanced", effectiveQuestWeight or 0.55, c.questWeight or 0.55))
-    for i = 1, #options do
-      local row = options[i]
-      AddLine("system", string.format("  %s: dps %.2f, mana/s %.3f, net drain/s %.3f, downtime ratio %.2f, oom %.0fs, grind %.0f/h, quest %.0f/h, blend %.0f/h", row.label, row.dps or 0, row.manaPerSec or 0, row.netDrain or 0, row.downtimeRatio or 0, row.timeToOOM or 0, row.predGrindXPH or 0, row.predQuestXPH or 0, row.predBlendXPH or 0))
-    end
-    if classToken == "PALADIN" then
-      AddLine("system", string.format("  knobs: weight %.2f, sealpct %.3f, judgepct %.3f, sealcycle %.1fs, socmult %.2f, questweight %.2f, priorweight %.1f, grindscale %.1f", c.weight, c.sealManaPct, c.judgeManaPct, c.sealCycleSec, c.socManaMult, c.questWeight or 0.55, c.priorWeight or 8, c.grindScale or 240))
-      AddLine("system", "  tune: ml xp set <weight|sealpct|judgepct|sealcycle|socmult|questweight|priorweight|grindscale> <value>")
-    elseif classToken == "WARRIOR" then
-      AddLine("system", string.format("  knobs: weight %.2f, warrioropppm %.2f, warriordodge %.3f, warriorglance %.3f, warriorglancedmg %.3f, warriornorm %.2f, questweight %.2f, priorweight %.1f, grindscale %.1f", c.weight, c.warriorOverpowerPerMin, c.warriorDodgeChance, c.warriorGlancingChance, c.warriorGlancingDamage, c.warriorNormalization, c.questWeight or 0.55, c.priorWeight or 8, c.grindScale or 240))
-      AddLine("system", string.format("  talents: warriorimphs %d, warriorimprend %d, warriorimpop %d, warriorimpslam %d, warriordeepwounds %d, warriorimpale %d, warriorwwtargets %d", c.warriorImpHSRank or 0, c.warriorImpRendRank or 0, c.warriorImpOverpowerRank or 0, c.warriorImpSlamRank or 0, c.warriorDeepWoundsRank or 0, c.warriorImpaleRank or 0, c.warriorWhirlwindTargets or 1))
-      AddLine("system", "  tune: ml xp set <weight|warriorimphs|warriorimprend|warriorimpop|warriorimpslam|warriordeepwounds|warriorimpale|warrioropppm|warriordodge|warriorglance|warriorglancedmg|warriornorm|warriorwwtargets|questweight|priorweight|grindscale> <value>")
-    end
   end
 end
 
@@ -5468,42 +4291,6 @@ function TA_ReadBagItemText(bag, slot)
 end
 
 local function ReportTrainerServices()
-  local function TA_GetTrainerServiceNumAbilityReqCompat(serviceIndex)
-    if not GetTrainerServiceNumAbilityReq then
-      return 0
-    end
-
-    local ok, value = pcall(GetTrainerServiceNumAbilityReq, serviceIndex)
-    if ok and tonumber(value) then
-      return math.max(0, math.floor(tonumber(value) or 0))
-    end
-
-    ok, value = pcall(GetTrainerServiceNumAbilityReq)
-    if ok and tonumber(value) then
-      return math.max(0, math.floor(tonumber(value) or 0))
-    end
-
-    return 0
-  end
-
-  local function TA_GetTrainerServiceAbilityReqCompat(serviceIndex, reqIndex)
-    if not GetTrainerServiceAbilityReq then
-      return nil, nil
-    end
-
-    local ok, reqName, hasReq = pcall(GetTrainerServiceAbilityReq, serviceIndex, reqIndex)
-    if ok then
-      return reqName, hasReq
-    end
-
-    ok, reqName, hasReq = pcall(GetTrainerServiceAbilityReq, reqIndex)
-    if ok then
-      return reqName, hasReq
-    end
-
-    return nil, nil
-  end
-
   if not GetNumTrainerServices or not GetTrainerServiceInfo then
     AddLine("system", "Trainer API unavailable.")
     return
@@ -5521,10 +4308,10 @@ local function ReportTrainerServices()
       local levelReq = GetTrainerServiceLevelReq and GetTrainerServiceLevelReq(i) or 0
       local reqText = ""
       if GetTrainerServiceNumAbilityReq and GetTrainerServiceAbilityReq then
-        local reqCount = TA_GetTrainerServiceNumAbilityReqCompat(i)
+        local reqCount = GetTrainerServiceNumAbilityReq(i) or 0
         local reqParts = {}
         for r = 1, reqCount do
-          local reqName, hasReq = TA_GetTrainerServiceAbilityReqCompat(i, r)
+          local reqName, hasReq = GetTrainerServiceAbilityReq(i, r)
           if reqName and not hasReq then table.insert(reqParts, reqName) end
         end
         if #reqParts > 0 then reqText = " | Missing: " .. table.concat(reqParts, ", ") end
@@ -6551,10 +5338,8 @@ local function BuildDFModeDisplay()
     if unit.hasExactPos and unit.worldX and unit.worldY and playerWorldX and playerWorldY then
       local dx = unit.worldX - playerWorldX
       local dy = unit.worldY - playerWorldY
-      local east = dy
-      local north = -dx
-      x = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-      y = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+      x = dx >= 0 and math.floor((dx / yardsPerCell) + 0.5) or math.ceil((dx / yardsPerCell) - 0.5)
+      y = dy >= 0 and math.floor((dy / yardsPerCell) + 0.5) or math.ceil((dy / yardsPerCell) - 0.5)
       if x > innerRadius then x = innerRadius end
       if x < -innerRadius then x = -innerRadius end
       if y > innerRadius then y = innerRadius end
@@ -6618,19 +5403,17 @@ local function BuildDFModeDisplay()
       local dx = targetX - playerX
       local dy = targetY - playerY
       targetDistance = math.sqrt(dx * dx + dy * dy)
-      local east = dy
-      local north = -dx
 
       if balanced then
-        local angle = OctantAngle(math.atan2(north, east))
+        local angle = OctantAngle(math.atan2(dy, dx))
         local ring = targetDistance <= 14 and 2 or (targetDistance <= 30 and 4 or nil)
         if ring then
           tx = math.floor(math.cos(angle) * ring)
           ty = math.floor(math.sin(angle) * ring)
         end
       else
-        tx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-        ty = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+        tx = math.floor(dx / yardsPerCell + 0.5)
+        ty = math.floor(dy / yardsPerCell + 0.5)
       end
     else
       local nameHash = 0
@@ -6704,10 +5487,8 @@ local function BuildDFModeDisplay()
       dy_yards = (playerPosY - markCenterY) * markCellYards
 
       local markDist = math.sqrt((dx_yards * dx_yards) + (dy_yards * dy_yards))
-      local east = dy_yards
-      local north = -dx_yards
-      local mx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-      local my = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+      local mx = dx_yards >= 0 and math.floor((dx_yards / yardsPerCell) + 0.5) or math.ceil((dx_yards / yardsPerCell) - 0.5)
+      local my = dy_yards >= 0 and math.floor((dy_yards / yardsPerCell) + 0.5) or math.ceil((dy_yards / yardsPerCell) - 0.5)
 
       if nearestMarkDist == nil or markDist < nearestMarkDist then
         nearestMarkDist = markDist
@@ -6751,10 +5532,8 @@ local function BuildDFModeDisplay()
     if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
       local dx_yards = c.worldX - playerWorldX
       local dy_yards = c.worldY - playerWorldY
-      local east = dy_yards
-      local north = -dx_yards
-      local sx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-      local sy = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+      local sx = dx_yards >= 0 and math.floor((dx_yards / yardsPerCell) + 0.5) or math.ceil((dx_yards / yardsPerCell) - 0.5)
+      local sy = dy_yards >= 0 and math.floor((dy_yards / yardsPerCell) + 0.5) or math.ceil((dy_yards / yardsPerCell) - 0.5)
       if math.abs(sx) <= innerRadius and math.abs(sy) <= innerRadius and grid[sy] and grid[sy][sx] and grid[sy][sx] == "." then
         local ttl = math.max(1, (tonumber(TA.dfModeSonarTTL) or 8))
         local age = now - (c.seenAt or now)
@@ -7261,8 +6040,8 @@ local function CheckMovement()
   end
 end
 
--- Returns an 8-direction compass string (N/NE/E/SE/S/SW/W/NW) from map-space dx/dy.
--- In map-space, +dx is east and +dy is south, so convert to east/north before atan2.
+-- Returns an 8-direction compass string (N/NE/E/SE/S/SW/W/NW) from a world-space dx/dy offset.
+-- Uses the same coordinate convention as UnitPosition: dx = deltaX (south+), dy = deltaY (east+).
 function TA_CompassDir(dx, dy)
   local east = dy
   local north = -dx
@@ -7271,19 +6050,16 @@ function TA_CompassDir(dx, dy)
   return dirs[math.floor((deg + 22.5) / 45) % 8 + 1]
 end
 
-local DF_YARDS_PER_CELL = 3
 function TA_GetEffectiveDFYardsPerCell()
   local yards = tonumber(TA.dfModeYardsPerCell)
   if not yards then
-    -- Keep DF tactical map at its own scale; do not inherit world cell-yard sizing.
-    yards = tonumber(DF_YARDS_PER_CELL) or 3
+    yards = tonumber(TA.cellSizeYards) or tonumber(CELL_YARDS_STANDARD) or 6
   end
   yards = math.floor(yards + 0.5)
-  if yards < 3 then yards = 3 end
+  if yards < 5 then yards = 5 end
   if yards > 100 then yards = 100 end
   return yards
 end
-
 
 local function BuildNearbyLine(kind, units)
   if #units == 0 then return nil end
@@ -8078,14 +6854,6 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "  sealdps live hybrid [seconds] - test JoC opener then SoR loop vs pure SoR.")
     AddLine("system", "  sealdps assumptions - view/tune live model assumptions.")
     AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
-    AddLine("system", "  ml xp[/explain] - XP/hour recommendation blending grinding and questing source models.")
-    AddLine("system", "  ml xp mode [balanced|grind-first|quest-first] - switch leveling strategy mode.")
-    AddLine("system", "  ml xp set <key> <value> - tune XP optimizer.")
-    AddLine("system", "  ml xp defaults - reset XP optimizer tuning.")
-    AddLine("system", "  ml xp rates - show learned grind/quest XP/hour rates and confidence.")
-    AddLine("system", "  ml xp rates reset - clear learned grind/quest source rates.")
-    AddLine("system", "  ml xp warrior preset <arms|fury> - load common Warrior tuning.")
-    AddLine("system", "  ml xp warrior weapon <auto|slow-2h|fast-2h|one-hand|dual-wield> - tune Warrior weapon profile.")
     AddLine("system", "  ml model sample/clear - load or clear built-in ML model.")
     AddLine("system", "  ml log on/off/status/clear/max <n> - manage feature logs.")
     AddLine("system", "  ml export [n] - print recent fight logs as CSV rows.")
@@ -8254,15 +7022,6 @@ TA.EXACT_INPUT_HANDLERS = {
   ["ml status"] = function() TA_ReportMLStatus() end,
   ["ml recommend"] = function() TA_RecommendWithML(false) end,
   ["ml recommend explain"] = function() TA_RecommendWithML(true) end,
-  ["ml xp"] = function() TA_RecommendXPWithML(false) end,
-  ["ml xp explain"] = function() TA_RecommendXPWithML(true) end,
-  ["ml xp mode"] = function() TA_ReportMLXPMode() end,
-  ["ml xp defaults"] = function() TA_ResetMLXPConfigDefaults() end,
-  ["ml xp rates"] = function() TA_ReportMLXPRateStatus() end,
-  ["ml xp rates reset"] = function() TA_ResetMLXPRateModel() end,
-  ["ml xp set"] = function() AddLine("system", "Usage: ml xp set <key> <value> (use 'ml xp explain' for key list)") end,
-  ["ml xp warrior preset"] = function() AddLine("system", "Usage: ml xp warrior preset <arms|fury>") end,
-  ["ml xp warrior weapon"] = function() AddLine("system", "Usage: ml xp warrior weapon <auto|slow-2h|fast-2h|one-hand|dual-wield>") end,
   ["ml model sample"] = function() TA_LoadSampleMLModel() end,
   ["ml model clear"] = function() TA_ClearMLModel() end,
   ["ml log on"] = function() TA_SetMLLogging(true) end,
@@ -8411,10 +7170,6 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^sealdps%s+live%s+behind%s+(%a+)$", function(flag) TA_SetSealLiveBehind(flag) end },
   { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
   { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
-  { "^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end },
-  { "^ml%s+xp%s+mode%s+([%a%-]+)$", function(mode) TA_SetMLXPMode(mode) end },
-  { "^ml%s+xp%s+warrior%s+preset%s+([%a%-]+)$", function(name) TA_ApplyWarriorPreset(name) end },
-  { "^ml%s+xp%s+warrior%s+weapon%s+([%a%-]+)$", function(name) TA_ApplyWarriorWeaponProfile(name) end },
   { "^sealdps%s+(%d+)$", function(level) TA_ReportSealDpsComparison(tonumber(level)) end },
   { "^sealdps%s+set%s+(%d+)%s+([%-]?[%d%.]+)%s+([%-]?[%d%.]+)$", function(level, sor, soc) TA_SetSealDpsModelRow(level, sor, soc) end },
   { "^sealdps%s+import%s+(.+)$", function(payload) TA_ImportSealDpsModel(payload) end },
@@ -8666,7 +7421,7 @@ function TA_ProcessInputCommand(msg)
   end
   if dfCellN then
     local n = math.floor(tonumber(dfCellN) or 0)
-    if n < 3 then n = 3 end
+    if n < 5 then n = 5 end
     if n > 100 then n = 100 end
     TA.dfModeYardsPerCell = n
     TextAdventurerDB = TextAdventurerDB or {}
@@ -9193,7 +7948,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     if type(TextAdventurerDB.dfModeYardsPerCell) == "number" then
       local savedCellYards = math.floor(TextAdventurerDB.dfModeYardsPerCell + 0.5)
-      if savedCellYards >= 3 and savedCellYards <= 100 then
+      if savedCellYards >= 5 and savedCellYards <= 100 then
         TA.dfModeYardsPerCell = savedCellYards
       else
         TA.dfModeYardsPerCell = nil
@@ -9315,8 +8070,6 @@ TA:SetScript("OnEvent", function(self, event, ...)
     ReportExplorationMemory(true)
     ReportPathMemory(true)
     TA_EnsureRuntimeTickers()
-    TA_PublishPublicAPI()
-    TA_EmitExternal("READY", TA_GetIntegrationStateSnapshot())
     if TextAdventurerDB.autoEnable then
       EnableTextMode()
       panel.inputBox:SetFocus()
@@ -9344,21 +8097,11 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TA.dpsCombatDamage = 0
       AddLine("playerCombat", string.format("Fight summary: %.1f DPS (%d damage over %.1fs)", (TA.lastCombatDamage or 0) / dur, math.floor((TA.lastCombatDamage or 0) + 0.5), dur))
     end
-    TA.lastCombatEndedAt = GetTime()
     TA.mlFightSnapshot = nil
     AddLine("playerCombat", "You leave combat.")
     ReportStatus(true)
     if TA.performanceModeEnabled and TA.performancePendingApply then
       TA_ApplyPerformanceFrameSuppression()
-    end
-  elseif event == "QUEST_TURNED_IN" then
-    TA_HandleMLXPSourceEvent(event, ...)
-  elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
-    TA_HandleMLXPSourceEvent(event, ...)
-  elseif event == "PLAYER_XP_UPDATE" or event == "PLAYER_LEVEL_UP" then
-    TA_HandleMLXPSourceEvent(event, ...)
-    if TA_RecordGuideXPSample then
-      TA_RecordGuideXPSample()
     end
   elseif event == "UNIT_SPELLCAST_START" then
     local unit, _, spellID = ...
@@ -9483,9 +8226,6 @@ TA:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 TA:RegisterEvent("PLAYER_TARGET_CHANGED")
 TA:RegisterEvent("PLAYER_REGEN_DISABLED")
 TA:RegisterEvent("PLAYER_REGEN_ENABLED")
-TA:RegisterEvent("PLAYER_XP_UPDATE")
-TA:RegisterEvent("PLAYER_LEVEL_UP")
-TA:RegisterEvent("QUEST_TURNED_IN")
 TA:RegisterEvent("UNIT_SPELLCAST_START")
 TA:RegisterEvent("UNIT_SPELLCAST_STOP")
 TA:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
@@ -9533,7 +8273,6 @@ TA:RegisterEvent("CHAT_MSG_MONSTER_YELL")
 TA:RegisterEvent("CHAT_MSG_MONSTER_WHISPER")
 TA:RegisterEvent("CHAT_MSG_CHANNEL")
 TA:RegisterEvent("CHAT_MSG_SYSTEM")
-TA:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN")
 TA:RegisterEvent("MERCHANT_SHOW")
 TA:RegisterEvent("MERCHANT_CLOSED")
 TA:RegisterEvent("WHO_LIST_UPDATE")

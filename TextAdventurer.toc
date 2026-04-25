@@ -4,4 +4,9 @@
 ## Author: You
 ## Version: 0.2
 ## SavedVariablesPerCharacter: TextAdventurerDB
+## OptionalDeps: !BugGrabber, BugSack
+Ace3\LibStub\LibStub.lua
+Ace3\CallbackHandler-1.0\CallbackHandler-1.0.xml
+Ace3\AceEvent-3.0\AceEvent-3.0.xml
+Ace3\AceConsole-3.0\AceConsole-3.0.xml
 TextAdventurer.lua
