@@ -916,6 +916,63 @@ function ReportTargetCondition(force)
   end
 end
 
+function TA_CardinalFromEastNorth(east, north)
+  if not east or not north then return nil end
+  local eps = 0.01
+  local hasEast = math.abs(east) > eps
+  local hasNorth = math.abs(north) > eps
+  if not hasEast and not hasNorth then
+    return "here"
+  end
+  if hasNorth and hasEast then
+    if north > 0 then
+      return east > 0 and "northeast" or "northwest"
+    end
+    return east > 0 and "southeast" or "southwest"
+  end
+  if hasNorth then
+    return north > 0 and "north" or "south"
+  end
+  return east > 0 and "east" or "west"
+end
+
+function TA_GetUnitCellsAway(unit)
+  if not unit or not UnitExists(unit) then
+    return nil, false
+  end
+
+  local yardsPerCell = TA_GetEffectiveDFYardsPerCell and TA_GetEffectiveDFYardsPerCell() or 3
+  if yardsPerCell <= 0 then yardsPerCell = 3 end
+
+  local px, py = UnitPosition("player")
+  local ux, uy = UnitPosition(unit)
+  if px and py and ux and uy then
+    local dx = ux - px
+    local dy = uy - py
+    local east = dy
+    local north = -dx
+    local distYards = math.sqrt((east * east) + (north * north))
+    local cells = math.max(1, math.floor((distYards / yardsPerCell) + 0.5))
+    local direction = TA_CardinalFromEastNorth(east, north)
+    return cells, false, direction
+  end
+
+  if CheckInteractDistance then
+    local approxYards = nil
+    if TA_TryInteractDistance and TA_TryInteractDistance(unit, 1) then approxYards = 3
+    elseif TA_TryInteractDistance and TA_TryInteractDistance(unit, 2) then approxYards = 9
+    elseif TA_TryInteractDistance and TA_TryInteractDistance(unit, 3) then approxYards = 24
+    elseif TA_TryInteractDistance and TA_TryInteractDistance(unit, 4) then approxYards = 30
+    end
+    if approxYards then
+      local cells = math.max(1, math.floor((approxYards / yardsPerCell) + 0.5))
+      return cells, true, nil
+    end
+  end
+
+  return nil, false, nil
+end
+
 function CheckTarget()
   if not UnitExists("target") then
     if TA.lastTargetGUID then
@@ -936,7 +993,15 @@ function CheckTarget()
       AddLine("corpse", string.format("You target the corpse of %s.", name))
       TA.lastTargetHealthBucket = nil
     else
-      AddLine("target", string.format("You target %s (level %s, %s).", name, level > 0 and level or "??", reaction))
+      local cellsAway, isApprox, direction = TA_GetUnitCellsAway("target")
+      if cellsAway then
+        local approxPrefix = isApprox and "~" or ""
+        local cellWord = cellsAway == 1 and "cell" or "cells"
+        local where = direction and direction ~= "here" and (" " .. direction) or ""
+        AddLine("target", string.format("You target %s (level %s, %s, %s%d %s%s away).", name, level > 0 and level or "??", reaction, approxPrefix, cellsAway, cellWord, where))
+      else
+        AddLine("target", string.format("You target %s (level %s, %s).", name, level > 0 and level or "??", reaction))
+      end
       TA.lastTargetHealthBucket = nil
       ReportTargetCondition(true)
     end
