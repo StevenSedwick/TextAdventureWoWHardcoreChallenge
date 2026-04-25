@@ -949,8 +949,8 @@ function TA_GetUnitCellsAway(unit)
   if px and py and ux and uy then
     local dx = ux - px
     local dy = uy - py
-    local east = dy
-    local north = -dx
+    local east = dx
+    local north = dy
     local distYards = math.sqrt((east * east) + (north * north))
     local cells = math.max(1, math.floor((distYards / yardsPerCell) + 0.5))
     local direction = TA_CardinalFromEastNorth(east, north)
@@ -1013,16 +1013,16 @@ end
 function FacingToCardinal(facing)
   if not facing then return nil end
   local deg = math.deg(facing) % 360
-  -- WoW facing uses 0°=east, 90°=north, 180°=west, 270°=south.
-  if deg < 22.5 then return "east" end
-  if deg < 67.5 then return "northeast" end
-  if deg < 112.5 then return "north" end
-  if deg < 157.5 then return "northwest" end
-  if deg < 202.5 then return "west" end
-  if deg < 247.5 then return "southwest" end
-  if deg < 292.5 then return "south" end
-  if deg < 337.5 then return "southeast" end
-  return "east"
+  -- WoW Classic facing uses 0°=north, 90°=west, 180°=south, 270°=east.
+  if deg < 22.5 then return "north" end
+  if deg < 67.5 then return "northwest" end
+  if deg < 112.5 then return "west" end
+  if deg < 157.5 then return "southwest" end
+  if deg < 202.5 then return "south" end
+  if deg < 247.5 then return "southeast" end
+  if deg < 292.5 then return "east" end
+  if deg < 337.5 then return "northeast" end
+  return "north"
 end
 
 function SpeedCategory(speed)
@@ -2997,6 +2997,92 @@ function TA_NormalizeWarlockMode(mode)
   return "shadow"
 end
 
+local TA_WARLOCK_CONFIG_KEYS_HELP = "targetlevel, baseminshadow, basemaxshadow, baseminfire, basemaxfire, spellcoeff, spellcoeffshadow, spellcoefffire, casttime, casttimeshadow, casttimefire, damagemultshadow, damagemultfire, critbonus, flathitbonus, flatcritbonus, corruptionbasedps, corruptioncoeffps, corruptionuptime, cursebasedpsshadow, cursecoeffpsshadow, curseuptimeshadow, immolatebasedps, immolatecoeffps, immolateuptime, cursebasedpsfire, cursecoeffpsfire, curseuptimefire, petbasesuccubus, petbaseimp, petbasefelhunter, petbasevoidwalker, petbaseunknown, petspellpowerscale, petuptime, tapmanagain, tapcasttime, manapercastshadow, manapercastfire, manaregenweight, lowmanapct, lowmanapenaltymult, dotdps, petdps, manavaluedps, threatmultshadow, threatmultfire"
+local TA_WARLOCK_CONFIG_SPECS = {
+  targetlevel = { field = "targetLevel", min = 1, max = 63, round = true },
+  baseminshadow = { field = "baseMinShadow", min = 0 },
+  basemaxshadow = { field = "baseMaxShadow", min = 0 },
+  baseminfire = { field = "baseMinFire", min = 0 },
+  basemaxfire = { field = "baseMaxFire", min = 0 },
+  spellcoeff = { field = "spellCoeffShadow", mirrorField = "spellCoeffFire", min = 0, max = 2 },
+  spellcoeffshadow = { field = "spellCoeffShadow", min = 0, max = 2 },
+  spellcoefffire = { field = "spellCoeffFire", min = 0, max = 2 },
+  casttime = { field = "castTimeShadow", mirrorField = "castTimeFire", min = 1.0, max = 5.0 },
+  casttimeshadow = { field = "castTimeShadow", min = 1.0, max = 5.0 },
+  casttimefire = { field = "castTimeFire", min = 1.0, max = 5.0 },
+  damagemultshadow = { field = "damageMultShadow", min = 0.1, max = 4.0 },
+  damagemultfire = { field = "damageMultFire", min = 0.1, max = 4.0 },
+  critbonus = { field = "critBonus", min = 0, max = 2 },
+  flathitbonus = { field = "flatHitBonus", min = -0.5, max = 0.5 },
+  flatcritbonus = { field = "flatCritBonus", min = -0.5, max = 0.5 },
+  corruptionbasedps = { field = "corruptionBaseDps", min = 0, max = 500 },
+  corruptioncoeffps = { field = "corruptionCoeffPerSec", min = 0, max = 1 },
+  corruptionuptime = { field = "corruptionUptime", min = 0, max = 1 },
+  cursebasedpsshadow = { field = "curseBaseDpsShadow", min = 0, max = 500 },
+  cursecoeffpsshadow = { field = "curseCoeffPerSecShadow", min = 0, max = 1 },
+  curseuptimeshadow = { field = "curseUptimeShadow", min = 0, max = 1 },
+  immolatebasedps = { field = "immolateBaseDps", min = 0, max = 500 },
+  immolatecoeffps = { field = "immolateCoeffPerSec", min = 0, max = 1 },
+  immolateuptime = { field = "immolateUptime", min = 0, max = 1 },
+  cursebasedpsfire = { field = "curseBaseDpsFire", min = 0, max = 500 },
+  cursecoeffpsfire = { field = "curseCoeffPerSecFire", min = 0, max = 1 },
+  curseuptimefire = { field = "curseUptimeFire", min = 0, max = 1 },
+  petbasesuccubus = { field = "petBaseSuccubus", min = 0, max = 500 },
+  petbaseimp = { field = "petBaseImp", min = 0, max = 500 },
+  petbasefelhunter = { field = "petBaseFelhunter", min = 0, max = 500 },
+  petbasevoidwalker = { field = "petBaseVoidwalker", min = 0, max = 500 },
+  petbaseunknown = { field = "petBaseUnknown", min = 0, max = 500 },
+  petspellpowerscale = { field = "petSpellPowerScale", min = 0, max = 1 },
+  petuptime = { field = "petUptime", min = 0, max = 1 },
+  tapmanagain = { field = "tapManaGain", min = 1, max = 3000 },
+  tapcasttime = { field = "tapCastTime", min = 0.5, max = 5.0 },
+  manapercastshadow = { field = "manaPerCastShadow", min = 0, max = 3000 },
+  manapercastfire = { field = "manaPerCastFire", min = 0, max = 3000 },
+  manaregenweight = { field = "manaRegenWeight", min = 0, max = 3 },
+  lowmanapct = { field = "lowManaPct", min = 0, max = 1 },
+  lowmanapenaltymult = { field = "lowManaPenaltyMult", min = 0, max = 2 },
+  dotdps = { field = "dotDps", min = -500, max = 500 },
+  petdps = { field = "petDps", min = -500, max = 500 },
+  manavaluedps = { field = "manaValueDps", min = -500, max = 500 },
+  threatmultshadow = { field = "threatMultShadow", min = 0, max = 3 },
+  threatmultfire = { field = "threatMultFire", min = 0, max = 3 },
+}
+local TA_WARLOCK_MAPPING_ORDER = {
+  "sheetCritSnapshot",
+  "sheetHitSnapshot",
+  "shadowDamageMult",
+  "fireDamageMult",
+  "threatAdjustment",
+  "spellPowerBuffSnapshot",
+  "spellHitBuffSnapshot",
+}
+
+function TA_GetWarlockSheetData()
+  if type(TextAdventurerWarlockSheetData) == "table" then
+    return TextAdventurerWarlockSheetData
+  end
+  return nil
+end
+
+local function TA_GetWarlockSheetDefault(key, fallback)
+  local data = TA_GetWarlockSheetData()
+  if data and type(data.defaults) == "table" and type(data.defaults[key]) == "number" then
+    return tonumber(data.defaults[key]) or fallback
+  end
+  return fallback
+end
+
+local function TA_GetWarlockConfigNumber(config, laneKey, genericKey, fallback)
+  local value = config and config[laneKey]
+  if type(value) ~= "number" and genericKey then
+    value = config and config[genericKey]
+  end
+  if type(value) ~= "number" then
+    value = fallback
+  end
+  return tonumber(value) or fallback
+end
+
 function TA_GetWarlockLiveConfig()
   TextAdventurerDB = TextAdventurerDB or {}
   if type(TextAdventurerDB.warlockDpsLiveConfig) ~= "table" then
@@ -3009,18 +3095,52 @@ function TA_GetWarlockLiveConfig()
   if type(c.baseMaxShadow) ~= "number" then c.baseMaxShadow = 571 end
   if type(c.baseMinFire) ~= "number" then c.baseMinFire = 561 end
   if type(c.baseMaxFire) ~= "number" then c.baseMaxFire = 625 end
-  if type(c.spellCoeff) ~= "number" then c.spellCoeff = 0.8571 end
-  if type(c.castTime) ~= "number" then c.castTime = 2.5 end
-  if type(c.damageMultShadow) ~= "number" then c.damageMultShadow = 1.45475 end
-  if type(c.damageMultFire) ~= "number" then c.damageMultFire = 1.10 end
+  if type(c.spellCoeffShadow) ~= "number" then c.spellCoeffShadow = tonumber(c.spellCoeff) or 0.8571 end
+  if type(c.spellCoeffFire) ~= "number" then c.spellCoeffFire = tonumber(c.spellCoeff) or 0.8571 end
+  if type(c.castTimeShadow) ~= "number" then c.castTimeShadow = tonumber(c.castTime) or 2.5 end
+  if type(c.castTimeFire) ~= "number" then c.castTimeFire = tonumber(c.castTime) or 2.5 end
+  c.spellCoeff = c.spellCoeffShadow
+  c.castTime = c.castTimeShadow
+  if type(c.damageMultShadow) ~= "number" then c.damageMultShadow = TA_GetWarlockSheetDefault("shadowDamageMult", 1.45475) end
+  if type(c.damageMultFire) ~= "number" then c.damageMultFire = TA_GetWarlockSheetDefault("fireDamageMult", 1.10) end
   if type(c.critBonus) ~= "number" then c.critBonus = 1.0 end
   if type(c.flatHitBonus) ~= "number" then c.flatHitBonus = 0 end
   if type(c.flatCritBonus) ~= "number" then c.flatCritBonus = 0 end
+  if type(c.corruptionBaseDps) ~= "number" then c.corruptionBaseDps = 45.7 end
+  if type(c.corruptionCoeffPerSec) ~= "number" then c.corruptionCoeffPerSec = 0.0556 end
+  if type(c.corruptionUptime) ~= "number" then c.corruptionUptime = 0.75 end
+  if type(c.curseBaseDpsShadow) ~= "number" then c.curseBaseDpsShadow = 28.0 end
+  if type(c.curseCoeffPerSecShadow) ~= "number" then c.curseCoeffPerSecShadow = 0.0160 end
+  if type(c.curseUptimeShadow) ~= "number" then c.curseUptimeShadow = 0.85 end
+  if type(c.immolateBaseDps) ~= "number" then c.immolateBaseDps = 38.0 end
+  if type(c.immolateCoeffPerSec) ~= "number" then c.immolateCoeffPerSec = 0.0200 end
+  if type(c.immolateUptime) ~= "number" then c.immolateUptime = 0.80 end
+  if type(c.curseBaseDpsFire) ~= "number" then c.curseBaseDpsFire = 20.0 end
+  if type(c.curseCoeffPerSecFire) ~= "number" then c.curseCoeffPerSecFire = 0.0120 end
+  if type(c.curseUptimeFire) ~= "number" then c.curseUptimeFire = 0.75 end
+  if type(c.petBaseSuccubus) ~= "number" then c.petBaseSuccubus = 60 end
+  if type(c.petBaseImp) ~= "number" then c.petBaseImp = 46 end
+  if type(c.petBaseFelhunter) ~= "number" then c.petBaseFelhunter = 40 end
+  if type(c.petBaseVoidwalker) ~= "number" then c.petBaseVoidwalker = 24 end
+  if type(c.petBaseUnknown) ~= "number" then c.petBaseUnknown = 32 end
+  if type(c.petSpellPowerScale) ~= "number" then c.petSpellPowerScale = 0.03 end
+  if type(c.petUptime) ~= "number" then c.petUptime = 0.90 end
+  if type(c.tapManaGain) ~= "number" then c.tapManaGain = 420 end
+  if type(c.tapCastTime) ~= "number" then c.tapCastTime = 1.5 end
+  if type(c.manaPerCastShadow) ~= "number" then c.manaPerCastShadow = 380 end
+  if type(c.manaPerCastFire) ~= "number" then c.manaPerCastFire = 420 end
+  if type(c.manaRegenWeight) ~= "number" then c.manaRegenWeight = 1.0 end
+  if type(c.lowManaPct) ~= "number" then c.lowManaPct = 0.20 end
+  if type(c.lowManaPenaltyMult) ~= "number" then c.lowManaPenaltyMult = 0.10 end
   if type(c.dotDps) ~= "number" then c.dotDps = 0 end
   if type(c.petDps) ~= "number" then c.petDps = 0 end
   if type(c.manaValueDps) ~= "number" then c.manaValueDps = 0 end
-  if type(c.threatMultShadow) ~= "number" then c.threatMultShadow = 0.70 end
-  if type(c.threatMultFire) ~= "number" then c.threatMultFire = 1.00 end
+  if type(c.sheetCritSnapshot) ~= "number" then c.sheetCritSnapshot = TA_GetWarlockSheetDefault("sheetCritSnapshot", 0) end
+  if type(c.sheetHitSnapshot) ~= "number" then c.sheetHitSnapshot = TA_GetWarlockSheetDefault("sheetHitSnapshot", 0) end
+  if type(c.spellPowerBuffSnapshot) ~= "number" then c.spellPowerBuffSnapshot = TA_GetWarlockSheetDefault("spellPowerBuffSnapshot", 0) end
+  if type(c.spellHitBuffSnapshot) ~= "number" then c.spellHitBuffSnapshot = TA_GetWarlockSheetDefault("spellHitBuffSnapshot", 0) end
+  if type(c.threatMultShadow) ~= "number" then c.threatMultShadow = TA_GetWarlockSheetDefault("shadowThreatMult", 0.70) end
+  if type(c.threatMultFire) ~= "number" then c.threatMultFire = TA_GetWarlockSheetDefault("fireThreatMult", 1.00) end
   return c
 end
 
@@ -3055,10 +3175,177 @@ function TA_GetSpellCritChanceBySchool(school, flatCritBonus)
   return crit
 end
 
+local function TA_GetWarlockModeSpec(c)
+  local mode = TA_NormalizeWarlockMode(c.mode)
+  if mode == "fire" then
+    return {
+      mode = mode,
+      school = 3,
+      schoolName = "fire",
+      baseMin = tonumber(c.baseMinFire) or 0,
+      baseMax = tonumber(c.baseMaxFire) or 0,
+      spellCoeff = TA_GetWarlockConfigNumber(c, "spellCoeffFire", "spellCoeff", 0.8571),
+      castTime = TA_GetWarlockConfigNumber(c, "castTimeFire", "castTime", 2.5),
+      damageMult = tonumber(c.damageMultFire) or 1,
+      threatMult = tonumber(c.threatMultFire) or 1,
+      manaPerCast = tonumber(c.manaPerCastFire) or 0,
+      directLabel = "Fire nuke",
+      dotLabel = "Immolate + Curse",
+    }
+  end
+  return {
+    mode = "shadow",
+    school = 6,
+    schoolName = "shadow",
+    baseMin = tonumber(c.baseMinShadow) or 0,
+    baseMax = tonumber(c.baseMaxShadow) or 0,
+    spellCoeff = TA_GetWarlockConfigNumber(c, "spellCoeffShadow", "spellCoeff", 0.8571),
+    castTime = TA_GetWarlockConfigNumber(c, "castTimeShadow", "castTime", 2.5),
+    damageMult = tonumber(c.damageMultShadow) or 1,
+    threatMult = tonumber(c.threatMultShadow) or 1,
+    manaPerCast = tonumber(c.manaPerCastShadow) or 0,
+    directLabel = "Shadow Bolt",
+    dotLabel = "Corruption + Curse",
+  }
+end
+
+local function TA_GetWarlockPetFamily()
+  if not UnitExists("pet") or UnitIsDeadOrGhost("pet") then
+    return nil
+  end
+  return UnitCreatureFamily("pet") or UnitName("pet")
+end
+
+local function TA_GetWarlockPetBaseDps(c, petFamily)
+  local family = petFamily and petFamily:lower() or ""
+  if family:find("succubus", 1, true) then return tonumber(c.petBaseSuccubus) or 0, "Succubus" end
+  if family:find("felhunter", 1, true) then return tonumber(c.petBaseFelhunter) or 0, "Felhunter" end
+  if family:find("voidwalker", 1, true) then return tonumber(c.petBaseVoidwalker) or 0, "Voidwalker" end
+  if family:find("imp", 1, true) then return tonumber(c.petBaseImp) or 0, "Imp" end
+  return tonumber(c.petBaseUnknown) or 0, petFamily or "Unknown"
+end
+
+local function TA_UnitHasPlayerDebuff(unit, spellName)
+  if not UnitDebuff or not unit or not UnitExists(unit) or not spellName then
+    return false
+  end
+  for i = 1, 40 do
+    local name, _, _, _, _, _, _, caster = UnitDebuff(unit, i)
+    if not name then break end
+    local isMine = caster == "player"
+    if not isMine and caster and UnitIsUnit then
+      isMine = UnitIsUnit(caster, "player")
+    end
+    if isMine and name == spellName then
+      return true
+    end
+  end
+  return false
+end
+
+local function TA_GetWarlockDotPackage(c, mode, spellPower, hitChance)
+  local hasTarget = UnitExists("target") and not UnitIsDeadOrGhost("target")
+  local hasCorruption = hasTarget and TA_UnitHasPlayerDebuff("target", "Corruption")
+  local hasImmolate = hasTarget and TA_UnitHasPlayerDebuff("target", "Immolate")
+  local hasCurse = hasTarget and (TA_UnitHasPlayerDebuff("target", "Curse of Agony") or TA_UnitHasPlayerDebuff("target", "Curse of Doom"))
+
+  if mode == "fire" then
+    local immolateUptime = hasImmolate and 1 or (tonumber(c.immolateUptime) or 0)
+    local curseUptime = hasCurse and 1 or (tonumber(c.curseUptimeFire) or 0)
+    local immolateDps = ((tonumber(c.immolateBaseDps) or 0) + ((tonumber(c.immolateCoeffPerSec) or 0) * spellPower)) * hitChance * immolateUptime
+    local curseDps = ((tonumber(c.curseBaseDpsFire) or 0) + ((tonumber(c.curseCoeffPerSecFire) or 0) * spellPower)) * hitChance * curseUptime
+    return immolateDps + curseDps + (tonumber(c.dotDps) or 0), {
+      immolate = immolateDps,
+      curse = curseDps,
+      corruption = 0,
+      immolateLive = hasImmolate,
+      curseLive = hasCurse,
+    }
+  end
+
+  local corruptionUptime = hasCorruption and 1 or (tonumber(c.corruptionUptime) or 0)
+  local curseUptime = hasCurse and 1 or (tonumber(c.curseUptimeShadow) or 0)
+  local corruptionDps = ((tonumber(c.corruptionBaseDps) or 0) + ((tonumber(c.corruptionCoeffPerSec) or 0) * spellPower)) * hitChance * corruptionUptime
+  local curseDps = ((tonumber(c.curseBaseDpsShadow) or 0) + ((tonumber(c.curseCoeffPerSecShadow) or 0) * spellPower)) * hitChance * curseUptime
+  return corruptionDps + curseDps + (tonumber(c.dotDps) or 0), {
+    immolate = 0,
+    curse = curseDps,
+    corruption = corruptionDps,
+    immolateLive = false,
+    curseLive = hasCurse,
+    corruptionLive = hasCorruption,
+  }
+end
+
+local function TA_GetWarlockPetContribution(c, mode, spellPower)
+  local petFamily = TA_GetWarlockPetFamily()
+  if not petFamily then
+    return tonumber(c.petDps) or 0, {
+      label = "No active pet",
+      base = 0,
+      uptime = 0,
+      live = false,
+    }
+  end
+
+  local baseDps, label = TA_GetWarlockPetBaseDps(c, petFamily)
+  local uptime = tonumber(c.petUptime) or 0
+  local scaled = (baseDps + (spellPower * (tonumber(c.petSpellPowerScale) or 0))) * uptime
+  if mode == "shadow" and label == "Succubus" then
+    scaled = scaled * 1.08
+  elseif mode == "fire" and label == "Imp" then
+    scaled = scaled * 1.08
+  end
+  return scaled + (tonumber(c.petDps) or 0), {
+    label = label,
+    base = baseDps,
+    uptime = uptime,
+    live = true,
+  }
+end
+
+local function TA_GetWarlockManaContribution(c, mode, directDps)
+  local powerType = UnitPowerType and UnitPowerType("player") or 0
+  local mana = UnitPower and (UnitPower("player", powerType) or 0) or 0
+  local manaMax = UnitPowerMax and (UnitPowerMax("player", powerType) or 0) or 0
+  local manaPct = manaMax > 0 and (mana / manaMax) or 0
+  local spec = TA_GetWarlockModeSpec(c)
+  local regen = TA_GetManaRegenPerSecond()
+  local manaPerCast = tonumber(spec.manaPerCast) or 0
+  local castTime = math.max(0.5, tonumber(spec.castTime) or 2.5)
+  local spendPerSec = manaPerCast / castTime
+  local effectiveRegen = regen * math.max(0, tonumber(c.manaRegenWeight) or 0)
+  local deficitPerSec = math.max(0, spendPerSec - effectiveRegen)
+  local tapManaGain = math.max(1, tonumber(c.tapManaGain) or 1)
+  local tapCastTime = math.max(0.5, tonumber(c.tapCastTime) or 1.5)
+  local tapsPerSec = deficitPerSec / tapManaGain
+  local tapTaxDps = tapsPerSec * tapCastTime * directDps
+  local lowManaPenalty = 0
+  if manaPct < (tonumber(c.lowManaPct) or 0) then
+    lowManaPenalty = directDps * (tonumber(c.lowManaPenaltyMult) or 0)
+  end
+  local net = (tonumber(c.manaValueDps) or 0) - tapTaxDps - lowManaPenalty
+  return net, {
+    manaPct = manaPct,
+    regen = regen,
+    spendPerSec = spendPerSec,
+    tapTaxDps = tapTaxDps,
+    lowManaPenalty = lowManaPenalty,
+  }
+end
+
 function TA_SetWarlockMode(mode)
   local c = TA_GetWarlockLiveConfig()
   c.mode = TA_NormalizeWarlockMode(mode)
   AddLine("playerCombat", "Warlock DPS mode set to: " .. c.mode)
+end
+
+function TA_ResetWarlockDpsConfigDefaults()
+  TextAdventurerDB = TextAdventurerDB or {}
+  local mode = TA_NormalizeWarlockMode(TextAdventurerDB.warlockDpsLiveConfig and TextAdventurerDB.warlockDpsLiveConfig.mode)
+  TextAdventurerDB.warlockDpsLiveConfig = { mode = mode }
+  TA_GetWarlockLiveConfig()
+  AddLine("playerCombat", "Warlock DPS settings reset to spreadsheet-backed defaults.")
 end
 
 function TA_SetWarlockDpsConfigValue(key, value)
@@ -3070,89 +3357,55 @@ function TA_SetWarlockDpsConfigValue(key, value)
     return
   end
 
-  if k == "targetlevel" then
-    if v < 1 then v = 1 end
-    if v > 63 then v = 63 end
-    c.targetLevel = math.floor(v + 0.5)
-  elseif k == "baseminshadow" then
-    if v < 0 then v = 0 end
-    c.baseMinShadow = v
-  elseif k == "basemaxshadow" then
-    if v < 0 then v = 0 end
-    c.baseMaxShadow = v
-  elseif k == "baseminfire" then
-    if v < 0 then v = 0 end
-    c.baseMinFire = v
-  elseif k == "basemaxfire" then
-    if v < 0 then v = 0 end
-    c.baseMaxFire = v
-  elseif k == "spellcoeff" then
-    if v < 0 then v = 0 end
-    if v > 2 then v = 2 end
-    c.spellCoeff = v
-  elseif k == "casttime" then
-    if v < 1.0 then v = 1.0 end
-    if v > 5.0 then v = 5.0 end
-    c.castTime = v
-  elseif k == "damagemultshadow" then
-    if v < 0.1 then v = 0.1 end
-    if v > 4.0 then v = 4.0 end
-    c.damageMultShadow = v
-  elseif k == "damagemultfire" then
-    if v < 0.1 then v = 0.1 end
-    if v > 4.0 then v = 4.0 end
-    c.damageMultFire = v
-  elseif k == "critbonus" then
-    if v < 0 then v = 0 end
-    if v > 2 then v = 2 end
-    c.critBonus = v
-  elseif k == "flathitbonus" then
-    if v < -0.5 then v = -0.5 end
-    if v > 0.5 then v = 0.5 end
-    c.flatHitBonus = v
-  elseif k == "flatcritbonus" then
-    if v < -0.5 then v = -0.5 end
-    if v > 0.5 then v = 0.5 end
-    c.flatCritBonus = v
-  elseif k == "dotdps" then
-    if v < 0 then v = 0 end
-    c.dotDps = v
-  elseif k == "petdps" then
-    if v < 0 then v = 0 end
-    c.petDps = v
-  elseif k == "manavaluedps" then
-    if v < 0 then v = 0 end
-    c.manaValueDps = v
-  elseif k == "threatmultshadow" then
-    if v < 0 then v = 0 end
-    if v > 3 then v = 3 end
-    c.threatMultShadow = v
-  elseif k == "threatmultfire" then
-    if v < 0 then v = 0 end
-    if v > 3 then v = 3 end
-    c.threatMultFire = v
-  else
-    AddLine("system", "Unknown key. Use: targetlevel, baseminshadow, basemaxshadow, baseminfire, basemaxfire, spellcoeff, casttime, damagemultshadow, damagemultfire, critbonus, flathitbonus, flatcritbonus, dotdps, petdps, manavaluedps, threatmultshadow, threatmultfire")
+  local spec = TA_WARLOCK_CONFIG_SPECS[k]
+  if not spec then
+    AddLine("system", "Unknown key. Use: " .. TA_WARLOCK_CONFIG_KEYS_HELP)
     return
   end
+  if spec.min ~= nil and v < spec.min then v = spec.min end
+  if spec.max ~= nil and v > spec.max then v = spec.max end
+  if spec.round then v = math.floor(v + 0.5) end
+
+  c[spec.field] = v
+  if spec.mirrorField then
+    c[spec.mirrorField] = v
+  end
   AddLine("playerCombat", string.format("Warlock DPS setting updated: %s = %s", k, tostring(v)))
+end
+
+function TA_ReportWarlockSheetMapping()
+  local data = TA_GetWarlockSheetData()
+  if not data or type(data.mappings) ~= "table" then
+    AddLine("system", "No generated warlock sheet mapping is loaded.")
+    return
+  end
+
+  AddLine("playerCombat", "warlockdps sheet mapping:")
+  for _, key in ipairs(TA_WARLOCK_MAPPING_ORDER) do
+    local mapping = data.mappings[key]
+    if mapping then
+      AddLine("system", string.format("  %s <- %s!%s = %.6f", key, tostring(mapping.sheet or "?"), tostring(mapping.cell or "?"), tonumber(mapping.value) or 0))
+      if mapping.note and mapping.note ~= "" then
+        AddLine("system", "    " .. tostring(mapping.note))
+      end
+    end
+  end
+  AddLine("system", "Regenerate with: VS Code task 'Generate Warlock Sheet Data'.")
 end
 
 function TA_ReportWarlockLiveAssumptions()
   local c = TA_GetWarlockLiveConfig()
   AddLine("playerCombat", "warlockdps assumptions:")
-  AddLine("playerCombat", string.format("  mode: %s", c.mode))
-  AddLine("playerCombat", string.format("  target level: %d", c.targetLevel))
-  AddLine("playerCombat", string.format("  shadow base hit: %.0f-%.0f", c.baseMinShadow, c.baseMaxShadow))
-  AddLine("playerCombat", string.format("  fire base hit: %.0f-%.0f", c.baseMinFire, c.baseMaxFire))
-  AddLine("playerCombat", string.format("  spell coefficient: %.4f", c.spellCoeff))
-  AddLine("playerCombat", string.format("  cast time: %.2fs", c.castTime))
-  AddLine("playerCombat", string.format("  damage multipliers: shadow %.4f, fire %.4f", c.damageMultShadow, c.damageMultFire))
-  AddLine("playerCombat", string.format("  crit bonus (extra): %.2f", c.critBonus))
-  AddLine("playerCombat", string.format("  flat hit/crit bonus: %.3f / %.3f", c.flatHitBonus, c.flatCritBonus))
-  AddLine("playerCombat", string.format("  additive DPS: DoT %.1f, Pet %.1f, Mana %.1f", c.dotDps, c.petDps, c.manaValueDps))
-  AddLine("playerCombat", string.format("  threat multipliers: shadow %.2f, fire %.2f", c.threatMultShadow, c.threatMultFire))
-  AddLine("system", "Source: Zephan spreadsheet structure (Main E23/E24/E25 style multipliers).")
+  AddLine("playerCombat", string.format("  mode: %s | target level: %d", c.mode, c.targetLevel))
+  AddLine("playerCombat", string.format("  shadow nuke: %.0f-%.0f, coeff %.4f, cast %.2fs, mult %.4f", c.baseMinShadow, c.baseMaxShadow, c.spellCoeffShadow, c.castTimeShadow, c.damageMultShadow))
+  AddLine("playerCombat", string.format("  fire nuke: %.0f-%.0f, coeff %.4f, cast %.2fs, mult %.4f", c.baseMinFire, c.baseMaxFire, c.spellCoeffFire, c.castTimeFire, c.damageMultFire))
+  AddLine("playerCombat", string.format("  DoTs: corr %.1f + %.4f*SP @ %.0f%% | shadow curse %.1f + %.4f*SP @ %.0f%% | immolate %.1f + %.4f*SP @ %.0f%% | fire curse %.1f + %.4f*SP @ %.0f%%", c.corruptionBaseDps, c.corruptionCoeffPerSec, c.corruptionUptime * 100, c.curseBaseDpsShadow, c.curseCoeffPerSecShadow, c.curseUptimeShadow * 100, c.immolateBaseDps, c.immolateCoeffPerSec, c.immolateUptime * 100, c.curseBaseDpsFire, c.curseCoeffPerSecFire, c.curseUptimeFire * 100))
+  AddLine("playerCombat", string.format("  Pet baselines: succ %.1f imp %.1f fel %.1f void %.1f unk %.1f | uptime %.0f%% | SP scale %.3f", c.petBaseSuccubus, c.petBaseImp, c.petBaseFelhunter, c.petBaseVoidwalker, c.petBaseUnknown, c.petUptime * 100, c.petSpellPowerScale))
+  AddLine("playerCombat", string.format("  Mana model: shadow %.0f mana/cast, fire %.0f mana/cast, tap %.0f mana in %.2fs, regen weight %.2f, low mana %.0f%% -> %.0f%% penalty", c.manaPerCastShadow, c.manaPerCastFire, c.tapManaGain, c.tapCastTime, c.manaRegenWeight, c.lowManaPct * 100, c.lowManaPenaltyMult * 100))
+  AddLine("playerCombat", string.format("  Flat adjustments: DoT %.1f, Pet %.1f, Mana %.1f | flat hit/crit bonus %.3f / %.3f | crit bonus %.2f", c.dotDps, c.petDps, c.manaValueDps, c.flatHitBonus, c.flatCritBonus, c.critBonus))
+  AddLine("playerCombat", string.format("  Threat multipliers: shadow %.2f, fire %.2f", c.threatMultShadow, c.threatMultFire))
+  AddLine("system", string.format("Sheet snapshots: crit %.1f%%, hit %.1f%%, spell-power buffs %.0f, hit buffs %.1f%%", c.sheetCritSnapshot * 100, c.sheetHitSnapshot * 100, c.spellPowerBuffSnapshot, c.spellHitBuffSnapshot * 100))
+  AddLine("system", "Source: generated WarlockSheetData.lua from Zephan workbook inventory.")
 end
 
 function TA_ReportLiveWarlockDps()
@@ -3163,32 +3416,35 @@ function TA_ReportLiveWarlockDps()
   end
 
   local c = TA_GetWarlockLiveConfig()
-  local mode = TA_NormalizeWarlockMode(c.mode)
-  local school = mode == "fire" and 3 or 6
-  local baseMin = mode == "fire" and c.baseMinFire or c.baseMinShadow
-  local baseMax = mode == "fire" and c.baseMaxFire or c.baseMaxShadow
-  local damageMult = mode == "fire" and c.damageMultFire or c.damageMultShadow
-  local threatMult = mode == "fire" and c.threatMultFire or c.threatMultShadow
-
-  local spellPower = TA_GetSpellPowerBySchool(school)
+  local spec = TA_GetWarlockModeSpec(c)
+  local spellPower = TA_GetSpellPowerBySchool(spec.school)
   local hitChance = TA_GetSpellHitChance(c.targetLevel, c.flatHitBonus)
-  local critChance = TA_GetSpellCritChanceBySchool(school, c.flatCritBonus)
-  local castTime = math.max(1.0, tonumber(c.castTime) or 2.5)
-  local coeff = math.max(0, tonumber(c.spellCoeff) or 0)
-
-  local avgBase = (tonumber(baseMin) + tonumber(baseMax)) / 2
-  local nonCritHit = (avgBase + (spellPower * coeff)) * damageMult
+  local critChance = TA_GetSpellCritChanceBySchool(spec.school, c.flatCritBonus)
+  local castTime = math.max(1.0, tonumber(spec.castTime) or 2.5)
+  local coeff = math.max(0, tonumber(spec.spellCoeff) or 0)
+  local avgBase = (tonumber(spec.baseMin) + tonumber(spec.baseMax)) / 2
+  local nonCritHit = (avgBase + (spellPower * coeff)) * spec.damageMult
   local expectedCast = nonCritHit * (1 + (critChance * (tonumber(c.critBonus) or 0))) * hitChance
   local directDps = expectedCast / castTime
-  local totalDps = directDps + (tonumber(c.dotDps) or 0) + (tonumber(c.petDps) or 0) + (tonumber(c.manaValueDps) or 0)
-  local totalTps = totalDps * threatMult
+  local dotDps, dotInfo = TA_GetWarlockDotPackage(c, spec.mode, spellPower, hitChance)
+  local petDps, petInfo = TA_GetWarlockPetContribution(c, spec.mode, spellPower)
+  local manaDps, manaInfo = TA_GetWarlockManaContribution(c, spec.mode, directDps)
+  local totalDps = directDps + dotDps + petDps + manaDps
+  local totalTps = totalDps * spec.threatMult
 
-  AddLine("playerCombat", string.format("Warlock live model (%s):", mode))
-  AddLine("playerCombat", string.format("  Direct cast DPS: %.1f", directDps))
-  AddLine("playerCombat", string.format("  + DoT %.1f + Pet %.1f + Mana %.1f = %.1f DPS", tonumber(c.dotDps) or 0, tonumber(c.petDps) or 0, tonumber(c.manaValueDps) or 0, totalDps))
-  AddLine("playerCombat", string.format("  Estimated TPS: %.1f (threat x%.2f)", totalTps, threatMult))
-  AddLine("system", string.format("Inputs: SP %d (%s school), hit %.1f%%, crit %.1f%%, cast %.2fs, coeff %.4f, dmg mult %.4f", math.floor(spellPower + 0.5), mode == "fire" and "fire" or "shadow", hitChance * 100, critChance * 100, castTime, coeff, damageMult))
-  AddLine("system", "Tune with: warlockdps set <key> <value> | warlockdps mode <shadow|fire> | warlockdps assumptions")
+  AddLine("playerCombat", string.format("Warlock live model (%s):", spec.mode))
+  AddLine("playerCombat", string.format("  %s DPS: %.1f", spec.directLabel, directDps))
+  if spec.mode == "fire" then
+    AddLine("playerCombat", string.format("  %s DPS: immolate %.1f%s + curse %.1f%s = %.1f", spec.dotLabel, dotInfo.immolate or 0, (dotInfo.immolateLive and " [live]" or ""), dotInfo.curse or 0, (dotInfo.curseLive and " [live]" or ""), dotDps))
+  else
+    AddLine("playerCombat", string.format("  %s DPS: corruption %.1f%s + curse %.1f%s = %.1f", spec.dotLabel, dotInfo.corruption or 0, (dotInfo.corruptionLive and " [live]" or ""), dotInfo.curse or 0, (dotInfo.curseLive and " [live]" or ""), dotDps))
+  end
+  AddLine("playerCombat", string.format("  Pet DPS: %.1f (%s, uptime %.0f%%)", petDps, petInfo.label or "Unknown", (petInfo.uptime or 0) * 100))
+  AddLine("playerCombat", string.format("  Mana sustain DPS: %.1f (regen %.1f/s, tap tax %.1f, low-mana %.1f)", manaDps, manaInfo.regen or 0, manaInfo.tapTaxDps or 0, manaInfo.lowManaPenalty or 0))
+  AddLine("playerCombat", string.format("  Total: %.1f DPS | %.1f TPS", totalDps, totalTps))
+  AddLine("system", string.format("Inputs: SP %d (%s), hit %.1f%%, crit %.1f%%, cast %.2fs, coeff %.4f, dmg mult %.4f, mana %.0f%%", math.floor(spellPower + 0.5), spec.schoolName, hitChance * 100, critChance * 100, castTime, coeff, spec.damageMult, (manaInfo.manaPct or 0) * 100))
+  AddLine("system", string.format("Sheet comparison: crit %.1f%% vs sheet %.1f%% | hit %.1f%% vs sheet %.1f%%", critChance * 100, (tonumber(c.sheetCritSnapshot) or 0) * 100, hitChance * 100, (tonumber(c.sheetHitSnapshot) or 0) * 100))
+  AddLine("system", "Tune with: warlockdps set <key> <value> | warlockdps mode <shadow|fire> | warlockdps assumptions | warlockdps mapping")
 end
 
 function TA_GetMLStore()
@@ -6995,8 +7251,8 @@ local function BuildDFModeDisplay()
     if unit.hasExactPos and unit.worldX and unit.worldY and playerWorldX and playerWorldY then
       local dx = unit.worldX - playerWorldX
       local dy = unit.worldY - playerWorldY
-      local east = dy
-      local north = -dx
+      local east = dx
+      local north = dy
       x = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
       y = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
       if x > innerRadius then x = innerRadius end
@@ -7062,8 +7318,8 @@ local function BuildDFModeDisplay()
       local dx = targetX - playerX
       local dy = targetY - playerY
       targetDistance = math.sqrt(dx * dx + dy * dy)
-      local east = dy
-      local north = -dx
+      local east = dx
+      local north = dy
 
       if balanced then
         local angle = OctantAngle(math.atan2(north, east))
@@ -7101,8 +7357,8 @@ local function BuildDFModeDisplay()
       if ty < -innerRadius then ty = -innerRadius end
 
       if tx == 0 and ty == 0 then
-        tx = math.floor(math.cos(facing) + 0.5)
-        ty = math.floor(math.sin(facing) + 0.5)
+        tx = math.floor((-math.sin(facing)) + 0.5)
+        ty = math.floor((math.cos(facing)) + 0.5)
         if tx == 0 and ty == 0 then tx = 1 end
       end
 
@@ -7148,8 +7404,8 @@ local function BuildDFModeDisplay()
       dy_yards = (playerPosY - markCenterY) * markCellYards
 
       local markDist = math.sqrt((dx_yards * dx_yards) + (dy_yards * dy_yards))
-      local east = dy_yards
-      local north = -dx_yards
+      local east = dx_yards
+      local north = dy_yards
       local mx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
       local my = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
 
@@ -7195,8 +7451,8 @@ local function BuildDFModeDisplay()
     if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
       local dx_yards = c.worldX - playerWorldX
       local dy_yards = c.worldY - playerWorldY
-      local east = dy_yards
-      local north = -dx_yards
+      local east = dx_yards
+      local north = dy_yards
       local sx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
       local sy = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
       if math.abs(sx) <= innerRadius and math.abs(sy) <= innerRadius and grid[sy] and grid[sy][sx] and grid[sy][sx] == "." then
@@ -7220,7 +7476,7 @@ local function BuildDFModeDisplay()
 
   -- Build output: grid rows only, no header or footer
   local lines = {}
-  local navRotationAngle = facing - (math.pi / 2)
+  local navRotationAngle = facing
   if rotationMode == "octant" then
     local step = math.pi / 4
     navRotationAngle = math.floor((navRotationAngle / step) + 0.5) * step
@@ -7410,9 +7666,9 @@ function TA_DFModeStatus()
   local facingDegrees = math.floor(math.deg(facing))
   local dirStr = "?"
   if facingDegrees >= 315 or facingDegrees < 45 then dirStr = "N"
-  elseif facingDegrees >= 45 and facingDegrees < 135 then dirStr = "E"
+  elseif facingDegrees >= 45 and facingDegrees < 135 then dirStr = "W"
   elseif facingDegrees >= 135 and facingDegrees < 225 then dirStr = "S"
-  elseif facingDegrees >= 225 and facingDegrees < 315 then dirStr = "W"
+  elseif facingDegrees >= 225 and facingDegrees < 315 then dirStr = "E"
   end
 
   local mapID, cellX, cellY = GetPlayerMapCell()
@@ -7708,8 +7964,8 @@ end
 -- Returns an 8-direction compass string (N/NE/E/SE/S/SW/W/NW) from map-space dx/dy.
 -- In map-space, +dx is east and +dy is south, so convert to east/north before atan2.
 function TA_CompassDir(dx, dy)
-  local east = dy
-  local north = -dx
+  local east = dx
+  local north = -dy
   local deg = math.deg(math.atan2(north, east)) % 360
   local dirs = { "E", "NE", "N", "NW", "W", "SW", "S", "SE" }
   return dirs[math.floor((deg + 22.5) / 45) % 8 + 1]
@@ -8521,9 +8777,10 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "  sealdps live - compute live SoR vs SoC from current character stats.")
     AddLine("system", "  sealdps live hybrid [seconds] - test JoC opener then SoR loop vs pure SoR.")
     AddLine("system", "  sealdps assumptions - view/tune live model assumptions.")
-    AddLine("system", "  warlockdps - spreadsheet-style Warlock live DPS estimate.")
+    AddLine("system", "  warlockdps - spreadsheet-backed Warlock live DPS estimate.")
     AddLine("system", "  warlockdps mode <shadow|fire> - switch Warlock model lane.")
-    AddLine("system", "  warlockdps set <key> <value> / warlockdps assumptions - tune/view model knobs.")
+    AddLine("system", "  warlockdps set <key> <value> - tune direct/DoT/pet/mana knobs.")
+    AddLine("system", "  warlockdps assumptions|mapping|reset - inspect sheet linkage or restore defaults.")
     AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
     AddLine("system", "  ml xp[/explain] - XP/hour recommendation blending grinding and questing source models.")
     AddLine("system", "  ml xp mode [balanced|grind-first|quest-first] - switch leveling strategy mode.")
@@ -8703,6 +8960,8 @@ TA.EXACT_INPUT_HANDLERS = {
   ["warlock dps"] = function() TA_ReportLiveWarlockDps() end,
   ["warlockdps live"] = function() TA_ReportLiveWarlockDps() end,
   ["warlockdps assumptions"] = function() TA_ReportWarlockLiveAssumptions() end,
+  ["warlockdps mapping"] = function() TA_ReportWarlockSheetMapping() end,
+  ["warlockdps reset"] = function() TA_ResetWarlockDpsConfigDefaults() end,
   ["warlockdps mode"] = function() AddLine("system", "Usage: warlockdps mode <shadow|fire>") end,
   ["warlockdps set"] = function() AddLine("system", "Usage: warlockdps set <key> <value> (try: warlockdps assumptions)") end,
   ["ml status"] = function() TA_ReportMLStatus() end,
@@ -8868,6 +9127,8 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^sealdps%s+live%s+behind%s+(%a+)$", function(flag) TA_SetSealLiveBehind(flag) end },
   { "^warlockdps%s+mode%s+([%a%-]+)$", function(mode) TA_SetWarlockMode(mode) end },
   { "^warlockdps%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockDpsConfigValue(k, v) end },
+  { "^warlockdps%s+reset$", function() TA_ResetWarlockDpsConfigDefaults() end },
+  { "^warlockdps%s+mapping$", function() TA_ReportWarlockSheetMapping() end },
   { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
   { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
   { "^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end },

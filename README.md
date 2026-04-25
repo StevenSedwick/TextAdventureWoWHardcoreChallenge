@@ -15,6 +15,7 @@ This addon is intentionally extreme for Hardcore challenge play.
 - Text event and status output.
 - Slash-command interface (`/ta ...`).
 - Tactical DF mode window with multiple views.
+- Spreadsheet-backed combat helpers, including the Warlock live DPS model.
 - Per-character saved variables (`TextAdventurerDB`).
 
 ## Install
@@ -35,6 +36,12 @@ This addon is intentionally extreme for Hardcore challenge play.
   - `/ta df on`
   - `/ta df off`
   - `/ta df tactical|threat|exploration|combined`
+- Warlock spreadsheet-backed model:
+  - `/ta warlockdps`
+  - `/ta warlockdps assumptions`
+  - `/ta warlockdps mapping`
+  - `/ta warlockdps reset`
+  - `/ta warlockdps set <key> <value>`
 
 ## Project Notes
 
@@ -52,6 +59,15 @@ git add .
 git commit -m "Describe your change"
 git push
 ```
+
+## Warlock Spreadsheet Flow
+
+- Spreadsheet source: `release/Zephans_Warlock_Simulation.xlsx`
+- Extracted formula inventory: `release/warlock_formula_inventory.txt`
+- Generated addon data: `WarlockSheetData.lua`
+- Regeneration task: `Generate Warlock Sheet Data`
+
+The Warlock live model now uses generated sheet snapshots for its baseline multipliers and exposes the mapping in-game with `/ta warlockdps mapping`.
 
 ## Release Warning Text
 

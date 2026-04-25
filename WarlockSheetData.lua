@@ -1,0 +1,60 @@
+﻿TextAdventurerWarlockSheetData = {
+  sourceWorkbook = "release/Zephans_Warlock_Simulation.xlsx",
+  sourceInventory = "release/warlock_formula_inventory.txt",
+  generatedAt = "2026-04-25",
+  defaults = {
+    sheetCritSnapshot = 0.3121155116,
+    sheetHitSnapshot = 0.97,
+    shadowDamageMult = 1.45475,
+    fireDamageMult = 1.1,
+    threatAdjustment = 0.3,
+    shadowThreatMult = 0.7,
+    fireThreatMult = 1,
+    spellPowerBuffSnapshot = 180,
+    spellHitBuffSnapshot = 0.18,
+  },
+  mappings = {
+    sheetCritSnapshot = {
+      sheet = "Main",
+      cell = "E23",
+      value = 0.3121155116,
+      note = "Spreadsheet crit snapshot for the active lane.",
+    },
+    sheetHitSnapshot = {
+      sheet = "Main",
+      cell = "E24",
+      value = 0.97,
+      note = "Spreadsheet hit snapshot after rating and gear caps.",
+    },
+    shadowDamageMult = {
+      sheet = "Main",
+      cell = "E25",
+      value = 1.45475,
+      note = "Shadow lane total damage multiplier.",
+    },
+    fireDamageMult = {
+      sheet = "Main",
+      cell = "E26",
+      value = 1.1,
+      note = "Fire lane total damage multiplier.",
+    },
+    threatAdjustment = {
+      sheet = "Main",
+      cell = "H34",
+      value = 0.3,
+      note = "Threat delta used to derive reduction/increase assumptions.",
+    },
+    spellPowerBuffSnapshot = {
+      sheet = "Buff",
+      cell = "E52",
+      value = 180,
+      note = "Workbook spell power buff aggregate snapshot.",
+    },
+    spellHitBuffSnapshot = {
+      sheet = "Buff",
+      cell = "J52",
+      value = 0.18,
+      note = "Workbook hit bonus aggregate snapshot.",
+    },
+  },
+}

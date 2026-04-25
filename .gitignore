@@ -14,3 +14,23 @@ Desktop.ini
 # Keep VS Code settings out unless intentionally tracked
 .vscode/*
 !.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+!.vscode/scripts/
+
+# Third-party addon dependencies
+Ace3/
+BugSack/
+Questie/
+
+# WoW saved variables (personal account data)
+SavedVariables/
+
+# Release artifacts / spreadsheets
+release/
+
+# Backup files
+*_BACKUP*.lua
+*_backuponemore*.lua
+*_PREMERGE*.lua
+*_BACKUPRECENT*.lua

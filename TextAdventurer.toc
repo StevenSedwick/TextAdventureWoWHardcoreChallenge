@@ -9,4 +9,5 @@ Ace3\LibStub\LibStub.lua
 Ace3\CallbackHandler-1.0\CallbackHandler-1.0.xml
 Ace3\AceEvent-3.0\AceEvent-3.0.xml
 Ace3\AceConsole-3.0\AceConsole-3.0.xml
+WarlockSheetData.lua
 TextAdventurer.lua
