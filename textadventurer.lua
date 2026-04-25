@@ -2910,6 +2910,222 @@ function TA_ReportLiveSealHybridComparison(windowArg)
   AddLine("system", string.format("Assumptions: one JoC replaces one JoR per window; reseal penalty %.1fs", resealGCD))
 end
 
+function TA_GetSpellPowerBySchool(school)
+  if GetSpellBonusDamage then
+    local okSchool, vSchool = pcall(GetSpellBonusDamage, school)
+    if okSchool and tonumber(vSchool) then
+      return tonumber(vSchool)
+    end
+    local okGeneric, vGeneric = pcall(GetSpellBonusDamage)
+    if okGeneric and tonumber(vGeneric) then
+      return tonumber(vGeneric)
+    end
+  end
+  return 0
+end
+
+function TA_NormalizeWarlockMode(mode)
+  local m = (mode or ""):match("^%s*(.-)%s*$"):lower()
+  if m == "fire" or m == "firelock" then
+    return "fire"
+  end
+  return "shadow"
+end
+
+function TA_GetWarlockLiveConfig()
+  TextAdventurerDB = TextAdventurerDB or {}
+  if type(TextAdventurerDB.warlockDpsLiveConfig) ~= "table" then
+    TextAdventurerDB.warlockDpsLiveConfig = {}
+  end
+  local c = TextAdventurerDB.warlockDpsLiveConfig
+  c.mode = TA_NormalizeWarlockMode(c.mode)
+  if type(c.targetLevel) ~= "number" then c.targetLevel = 63 end
+  if type(c.baseMinShadow) ~= "number" then c.baseMinShadow = 510 end
+  if type(c.baseMaxShadow) ~= "number" then c.baseMaxShadow = 571 end
+  if type(c.baseMinFire) ~= "number" then c.baseMinFire = 561 end
+  if type(c.baseMaxFire) ~= "number" then c.baseMaxFire = 625 end
+  if type(c.spellCoeff) ~= "number" then c.spellCoeff = 0.8571 end
+  if type(c.castTime) ~= "number" then c.castTime = 2.5 end
+  if type(c.damageMultShadow) ~= "number" then c.damageMultShadow = 1.45475 end
+  if type(c.damageMultFire) ~= "number" then c.damageMultFire = 1.10 end
+  if type(c.critBonus) ~= "number" then c.critBonus = 1.0 end
+  if type(c.flatHitBonus) ~= "number" then c.flatHitBonus = 0 end
+  if type(c.flatCritBonus) ~= "number" then c.flatCritBonus = 0 end
+  if type(c.dotDps) ~= "number" then c.dotDps = 0 end
+  if type(c.petDps) ~= "number" then c.petDps = 0 end
+  if type(c.manaValueDps) ~= "number" then c.manaValueDps = 0 end
+  if type(c.threatMultShadow) ~= "number" then c.threatMultShadow = 0.70 end
+  if type(c.threatMultFire) ~= "number" then c.threatMultFire = 1.00 end
+  return c
+end
+
+function TA_GetSpellHitChance(targetLevel, flatHitBonus)
+  local level = UnitLevel("player") or 60
+  local diff = math.max(0, (tonumber(targetLevel) or 63) - level)
+  local baseMiss
+  if diff <= 2 then
+    baseMiss = 0.04 + (0.01 * diff)
+  else
+    baseMiss = 0.17 + (0.01 * (diff - 3))
+  end
+  local hitFromStats = (GetSpellHitModifier and (tonumber(GetSpellHitModifier()) or 0) or 0) / 100
+  local totalHit = hitFromStats + (tonumber(flatHitBonus) or 0)
+  local miss = baseMiss - totalHit
+  if miss < 0.01 then miss = 0.01 end
+  if miss > 0.99 then miss = 0.99 end
+  return 1 - miss
+end
+
+function TA_GetSpellCritChanceBySchool(school, flatCritBonus)
+  local crit = 0
+  if GetSpellCritChance then
+    local ok, v = pcall(GetSpellCritChance, school)
+    if ok and tonumber(v) then
+      crit = tonumber(v) / 100
+    end
+  end
+  crit = crit + (tonumber(flatCritBonus) or 0)
+  if crit < 0 then crit = 0 end
+  if crit > 0.99 then crit = 0.99 end
+  return crit
+end
+
+function TA_SetWarlockMode(mode)
+  local c = TA_GetWarlockLiveConfig()
+  c.mode = TA_NormalizeWarlockMode(mode)
+  AddLine("playerCombat", "Warlock DPS mode set to: " .. c.mode)
+end
+
+function TA_SetWarlockDpsConfigValue(key, value)
+  local c = TA_GetWarlockLiveConfig()
+  local k = (key or ""):match("^%s*(.-)%s*$"):lower()
+  local v = tonumber(value)
+  if not v then
+    AddLine("system", "Usage: warlockdps set <key> <value>")
+    return
+  end
+
+  if k == "targetlevel" then
+    if v < 1 then v = 1 end
+    if v > 63 then v = 63 end
+    c.targetLevel = math.floor(v + 0.5)
+  elseif k == "baseminshadow" then
+    if v < 0 then v = 0 end
+    c.baseMinShadow = v
+  elseif k == "basemaxshadow" then
+    if v < 0 then v = 0 end
+    c.baseMaxShadow = v
+  elseif k == "baseminfire" then
+    if v < 0 then v = 0 end
+    c.baseMinFire = v
+  elseif k == "basemaxfire" then
+    if v < 0 then v = 0 end
+    c.baseMaxFire = v
+  elseif k == "spellcoeff" then
+    if v < 0 then v = 0 end
+    if v > 2 then v = 2 end
+    c.spellCoeff = v
+  elseif k == "casttime" then
+    if v < 1.0 then v = 1.0 end
+    if v > 5.0 then v = 5.0 end
+    c.castTime = v
+  elseif k == "damagemultshadow" then
+    if v < 0.1 then v = 0.1 end
+    if v > 4.0 then v = 4.0 end
+    c.damageMultShadow = v
+  elseif k == "damagemultfire" then
+    if v < 0.1 then v = 0.1 end
+    if v > 4.0 then v = 4.0 end
+    c.damageMultFire = v
+  elseif k == "critbonus" then
+    if v < 0 then v = 0 end
+    if v > 2 then v = 2 end
+    c.critBonus = v
+  elseif k == "flathitbonus" then
+    if v < -0.5 then v = -0.5 end
+    if v > 0.5 then v = 0.5 end
+    c.flatHitBonus = v
+  elseif k == "flatcritbonus" then
+    if v < -0.5 then v = -0.5 end
+    if v > 0.5 then v = 0.5 end
+    c.flatCritBonus = v
+  elseif k == "dotdps" then
+    if v < 0 then v = 0 end
+    c.dotDps = v
+  elseif k == "petdps" then
+    if v < 0 then v = 0 end
+    c.petDps = v
+  elseif k == "manavaluedps" then
+    if v < 0 then v = 0 end
+    c.manaValueDps = v
+  elseif k == "threatmultshadow" then
+    if v < 0 then v = 0 end
+    if v > 3 then v = 3 end
+    c.threatMultShadow = v
+  elseif k == "threatmultfire" then
+    if v < 0 then v = 0 end
+    if v > 3 then v = 3 end
+    c.threatMultFire = v
+  else
+    AddLine("system", "Unknown key. Use: targetlevel, baseminshadow, basemaxshadow, baseminfire, basemaxfire, spellcoeff, casttime, damagemultshadow, damagemultfire, critbonus, flathitbonus, flatcritbonus, dotdps, petdps, manavaluedps, threatmultshadow, threatmultfire")
+    return
+  end
+  AddLine("playerCombat", string.format("Warlock DPS setting updated: %s = %s", k, tostring(v)))
+end
+
+function TA_ReportWarlockLiveAssumptions()
+  local c = TA_GetWarlockLiveConfig()
+  AddLine("playerCombat", "warlockdps assumptions:")
+  AddLine("playerCombat", string.format("  mode: %s", c.mode))
+  AddLine("playerCombat", string.format("  target level: %d", c.targetLevel))
+  AddLine("playerCombat", string.format("  shadow base hit: %.0f-%.0f", c.baseMinShadow, c.baseMaxShadow))
+  AddLine("playerCombat", string.format("  fire base hit: %.0f-%.0f", c.baseMinFire, c.baseMaxFire))
+  AddLine("playerCombat", string.format("  spell coefficient: %.4f", c.spellCoeff))
+  AddLine("playerCombat", string.format("  cast time: %.2fs", c.castTime))
+  AddLine("playerCombat", string.format("  damage multipliers: shadow %.4f, fire %.4f", c.damageMultShadow, c.damageMultFire))
+  AddLine("playerCombat", string.format("  crit bonus (extra): %.2f", c.critBonus))
+  AddLine("playerCombat", string.format("  flat hit/crit bonus: %.3f / %.3f", c.flatHitBonus, c.flatCritBonus))
+  AddLine("playerCombat", string.format("  additive DPS: DoT %.1f, Pet %.1f, Mana %.1f", c.dotDps, c.petDps, c.manaValueDps))
+  AddLine("playerCombat", string.format("  threat multipliers: shadow %.2f, fire %.2f", c.threatMultShadow, c.threatMultFire))
+  AddLine("system", "Source: Zephan spreadsheet structure (Main E23/E24/E25 style multipliers).")
+end
+
+function TA_ReportLiveWarlockDps()
+  local classToken = select(2, UnitClass("player")) or "UNKNOWN"
+  if classToken ~= "WARLOCK" then
+    AddLine("system", "warlockdps is designed for Warlock characters.")
+    return
+  end
+
+  local c = TA_GetWarlockLiveConfig()
+  local mode = TA_NormalizeWarlockMode(c.mode)
+  local school = mode == "fire" and 3 or 6
+  local baseMin = mode == "fire" and c.baseMinFire or c.baseMinShadow
+  local baseMax = mode == "fire" and c.baseMaxFire or c.baseMaxShadow
+  local damageMult = mode == "fire" and c.damageMultFire or c.damageMultShadow
+  local threatMult = mode == "fire" and c.threatMultFire or c.threatMultShadow
+
+  local spellPower = TA_GetSpellPowerBySchool(school)
+  local hitChance = TA_GetSpellHitChance(c.targetLevel, c.flatHitBonus)
+  local critChance = TA_GetSpellCritChanceBySchool(school, c.flatCritBonus)
+  local castTime = math.max(1.0, tonumber(c.castTime) or 2.5)
+  local coeff = math.max(0, tonumber(c.spellCoeff) or 0)
+
+  local avgBase = (tonumber(baseMin) + tonumber(baseMax)) / 2
+  local nonCritHit = (avgBase + (spellPower * coeff)) * damageMult
+  local expectedCast = nonCritHit * (1 + (critChance * (tonumber(c.critBonus) or 0))) * hitChance
+  local directDps = expectedCast / castTime
+  local totalDps = directDps + (tonumber(c.dotDps) or 0) + (tonumber(c.petDps) or 0) + (tonumber(c.manaValueDps) or 0)
+  local totalTps = totalDps * threatMult
+
+  AddLine("playerCombat", string.format("Warlock live model (%s):", mode))
+  AddLine("playerCombat", string.format("  Direct cast DPS: %.1f", directDps))
+  AddLine("playerCombat", string.format("  + DoT %.1f + Pet %.1f + Mana %.1f = %.1f DPS", tonumber(c.dotDps) or 0, tonumber(c.petDps) or 0, tonumber(c.manaValueDps) or 0, totalDps))
+  AddLine("playerCombat", string.format("  Estimated TPS: %.1f (threat x%.2f)", totalTps, threatMult))
+  AddLine("system", string.format("Inputs: SP %d (%s school), hit %.1f%%, crit %.1f%%, cast %.2fs, coeff %.4f, dmg mult %.4f", math.floor(spellPower + 0.5), mode == "fire" and "fire" or "shadow", hitChance * 100, critChance * 100, castTime, coeff, damageMult))
+  AddLine("system", "Tune with: warlockdps set <key> <value> | warlockdps mode <shadow|fire> | warlockdps assumptions")
+end
+
 function TA_GetMLStore()
   TextAdventurerDB = TextAdventurerDB or {}
   if type(TextAdventurerDB.ml) ~= "table" then
@@ -5572,6 +5788,169 @@ local function TrainAllAvailableServices()
   if bought == 0 then AddLine("system", "No currently available trainer skills to buy.") end
 end
 
+local function TA_ReportRecipeDetails(index)
+  index = tonumber(index)
+  if not index or index < 1 then
+    AddLine("system", "Usage: recipeinfo <index>")
+    return
+  end
+
+  if GetNumTradeSkills and GetTradeSkillInfo then
+    local total = tonumber(GetNumTradeSkills()) or 0
+    if total <= 0 then
+      AddLine("system", "No open trade skill window.")
+      return
+    end
+    if index > total then
+      AddLine("system", string.format("No recipe found at index %d.", index))
+      return
+    end
+
+    local name, category, numAvailable = GetTradeSkillInfo(index)
+    if not name or category == "header" then
+      AddLine("system", "That row is a category header. Pick a recipe index.")
+      return
+    end
+    AddLine("cast", string.format("Recipe [%d]: %s | Available: %s", index, name, tostring(numAvailable or 0)))
+
+    if GetTradeSkillNumMade then
+      local madeMin, madeMax = GetTradeSkillNumMade(index)
+      if madeMin and madeMax and madeMax > 0 then
+        if madeMin == madeMax then
+          AddLine("cast", string.format("Produces: %d", madeMin))
+        else
+          AddLine("cast", string.format("Produces: %d-%d", madeMin, madeMax))
+        end
+      end
+    end
+
+    if GetTradeSkillNumReagents and GetTradeSkillReagentInfo then
+      local reagentCount = tonumber(GetTradeSkillNumReagents(index)) or 0
+      if reagentCount > 0 then
+        AddLine("cast", "Reagents:")
+        for r = 1, reagentCount do
+          local reagentName, _, needed, owned = GetTradeSkillReagentInfo(index, r)
+          if reagentName then
+            AddLine("cast", string.format("  - %s x%d (you have %d)", reagentName, tonumber(needed) or 0, tonumber(owned) or 0))
+          end
+        end
+      end
+    end
+
+    if GetTradeSkillTools then
+      local tools = GetTradeSkillTools(index)
+      if tools and tools ~= "" then
+        AddLine("cast", "Tools: " .. tools)
+      end
+    end
+    return
+  end
+
+  if GetNumCrafts and GetCraftInfo then
+    local total = tonumber(GetNumCrafts()) or 0
+    if total <= 0 then
+      AddLine("system", "No open crafting window.")
+      return
+    end
+    if index > total then
+      AddLine("system", string.format("No recipe found at index %d.", index))
+      return
+    end
+
+    local name, category, numAvailable = GetCraftInfo(index)
+    if not name or category == "header" then
+      AddLine("system", "That row is a category header. Pick a recipe index.")
+      return
+    end
+    AddLine("cast", string.format("Recipe [%d]: %s | Available: %s", index, name, tostring(numAvailable or 0)))
+
+    if GetCraftNumReagents and GetCraftReagentInfo then
+      local reagentCount = tonumber(GetCraftNumReagents(index)) or 0
+      if reagentCount > 0 then
+        AddLine("cast", "Reagents:")
+        for r = 1, reagentCount do
+          local reagentName, _, needed, owned = GetCraftReagentInfo(index, r)
+          if reagentName then
+            AddLine("cast", string.format("  - %s x%d (you have %d)", reagentName, tonumber(needed) or 0, tonumber(owned) or 0))
+          end
+        end
+      end
+    end
+
+    if GetCraftDescription then
+      local desc = GetCraftDescription(index)
+      if desc and desc ~= "" then
+        AddLine("cast", "Description: " .. desc)
+      end
+    end
+    return
+  end
+
+  AddLine("system", "Recipe API unavailable on this client.")
+end
+
+local function TA_ReportProfessionRecipes()
+  if GetNumTradeSkills and GetTradeSkillInfo then
+    local total = tonumber(GetNumTradeSkills()) or 0
+    if total <= 0 then
+      AddLine("system", "No open trade skill window.")
+      return
+    end
+
+    local skillName = (GetTradeSkillLine and GetTradeSkillLine()) or "Trade Skill"
+    AddLine("cast", string.format("%s recipes:", tostring(skillName)))
+    local shown = 0
+    for i = 1, total do
+      local name, category, numAvailable = GetTradeSkillInfo(i)
+      if name then
+        if category == "header" then
+          AddLine("cast", string.format("-- %s --", name))
+        else
+          AddLine("cast", string.format("[%d] %s | Available: %s", i, name, tostring(numAvailable or 0)))
+          shown = shown + 1
+        end
+      end
+    end
+    if shown == 0 then
+      AddLine("system", "No craftable recipes were found in this trade skill window.")
+    else
+      AddLine("system", "Use: recipeinfo <index> for reagent details.")
+    end
+    return
+  end
+
+  if GetNumCrafts and GetCraftInfo then
+    local total = tonumber(GetNumCrafts()) or 0
+    if total <= 0 then
+      AddLine("system", "No open crafting window.")
+      return
+    end
+
+    local skillName = (GetCraftDisplaySkillLine and GetCraftDisplaySkillLine()) or "Crafting"
+    AddLine("cast", string.format("%s recipes:", tostring(skillName)))
+    local shown = 0
+    for i = 1, total do
+      local name, category, numAvailable = GetCraftInfo(i)
+      if name then
+        if category == "header" then
+          AddLine("cast", string.format("-- %s --", name))
+        else
+          AddLine("cast", string.format("[%d] %s | Available: %s", i, name, tostring(numAvailable or 0)))
+          shown = shown + 1
+        end
+      end
+    end
+    if shown == 0 then
+      AddLine("system", "No craftable recipes were found in this crafting window.")
+    else
+      AddLine("system", "Use: recipeinfo <index> for reagent details.")
+    end
+    return
+  end
+
+  AddLine("system", "Recipe API unavailable. Open a profession window and try again.")
+end
+
 local function ReportRange()
   if not UnitExists("target") then
     AddLine("system", "You have no target.")
@@ -8077,6 +8456,9 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "  sealdps live - compute live SoR vs SoC from current character stats.")
     AddLine("system", "  sealdps live hybrid [seconds] - test JoC opener then SoR loop vs pure SoR.")
     AddLine("system", "  sealdps assumptions - view/tune live model assumptions.")
+    AddLine("system", "  warlockdps - spreadsheet-style Warlock live DPS estimate.")
+    AddLine("system", "  warlockdps mode <shadow|fire> - switch Warlock model lane.")
+    AddLine("system", "  warlockdps set <key> <value> / warlockdps assumptions - tune/view model knobs.")
     AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
     AddLine("system", "  ml xp[/explain] - XP/hour recommendation blending grinding and questing source models.")
     AddLine("system", "  ml xp mode [balanced|grind-first|quest-first] - switch leveling strategy mode.")
@@ -8145,6 +8527,7 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "  rewardinfo <n> - inspect stats/details for one reward.")
     AddLine("system", "  prompts, accept <n>, decline <n> - handle popup dialogs.")
     AddLine("system", "  trainer, train <n>, train all - trainer service commands.")
+    AddLine("system", "  recipes, recipeinfo <n> - list profession recipes and inspect reagents.")
     return
   end
 
@@ -8251,6 +8634,12 @@ TA.EXACT_INPUT_HANDLERS = {
   ["sealdps live"] = function() TA_ReportLiveSealDpsComparison() end,
   ["sealdps live hybrid"] = function() TA_ReportLiveSealHybridComparison(nil) end,
   ["sealdps assumptions"] = function() TA_ReportSealLiveAssumptions() end,
+  ["warlockdps"] = function() TA_ReportLiveWarlockDps() end,
+  ["warlock dps"] = function() TA_ReportLiveWarlockDps() end,
+  ["warlockdps live"] = function() TA_ReportLiveWarlockDps() end,
+  ["warlockdps assumptions"] = function() TA_ReportWarlockLiveAssumptions() end,
+  ["warlockdps mode"] = function() AddLine("system", "Usage: warlockdps mode <shadow|fire>") end,
+  ["warlockdps set"] = function() AddLine("system", "Usage: warlockdps set <key> <value> (try: warlockdps assumptions)") end,
   ["ml status"] = function() TA_ReportMLStatus() end,
   ["ml recommend"] = function() TA_RecommendWithML(false) end,
   ["ml recommend explain"] = function() TA_RecommendWithML(true) end,
@@ -8296,6 +8685,9 @@ TA.EXACT_INPUT_HANDLERS = {
   ["macros"] = function() ReportMacros() end,
   ["trainer"] = function() ReportTrainerServices() end,
   ["train list"] = function() ReportTrainerServices() end,
+  ["recipes"] = function() TA_ReportProfessionRecipes() end,
+  ["recipe"] = function() TA_ReportProfessionRecipes() end,
+  ["recipeinfo"] = function() AddLine("system", "Usage: recipeinfo <index>") end,
   ["marka"] = function() MarkFacingA() end,
   ["markb"] = function() MarkFacingB() end,
   ["spacing"] = function() ReportSpacingEstimate() end,
@@ -8409,6 +8801,8 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^sealdps%s+live%s+resealgcd%s+([%d%.]+)$", function(seconds) TA_SetSealLiveResealGCD(seconds) end },
   { "^sealdps%s+live%s+hybrid%s+([%d%.]+)$", function(seconds) TA_ReportLiveSealHybridComparison(seconds) end },
   { "^sealdps%s+live%s+behind%s+(%a+)$", function(flag) TA_SetSealLiveBehind(flag) end },
+  { "^warlockdps%s+mode%s+([%a%-]+)$", function(mode) TA_SetWarlockMode(mode) end },
+  { "^warlockdps%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockDpsConfigValue(k, v) end },
   { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
   { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
   { "^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end },
@@ -8434,6 +8828,8 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^macro%s+(.+)$", function(name) CastMacroByName(name) end },
   { "^train%s+all$", function() TrainAllAvailableServices() end },
   { "^train%s+(%d+)$", function(idx) TrainServiceByIndex(tonumber(idx)) end },
+  { "^recipeinfo%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
+  { "^recipe%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
   { "^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end },
   { "^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end },
   { "^target%s+(.+)$", function(arg) DoTargetCommand(arg) end },
@@ -9426,6 +9822,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
 
   elseif event == "TRAINER_SHOW" then
     AddLine("quest", "Trainer opened. Type trainer, train 1, or train all.")
+  elseif event == "TRADE_SKILL_SHOW" then
+    AddLine("quest", "Profession opened. Type recipes or recipeinfo <index>.")
+  elseif event == "CRAFT_SHOW" then
+    AddLine("quest", "Crafting opened. Type recipes or recipeinfo <index>.")
   elseif event == "LOOT_CLOSED" then
     AddLine("loot", "You finish looting.")
   elseif event == "ITEM_TEXT_BEGIN" or event == "ITEM_TEXT_READY" then
@@ -9502,6 +9902,8 @@ TA:RegisterEvent("BAG_UPDATE_DELAYED")
 TA:RegisterEvent("GOSSIP_SHOW")
 TA:RegisterEvent("QUEST_GREETING")
 TA:RegisterEvent("TRAINER_SHOW")
+TA:RegisterEvent("TRADE_SKILL_SHOW")
+TA:RegisterEvent("CRAFT_SHOW")
 TA:RegisterEvent("QUEST_DETAIL")
 TA:RegisterEvent("QUEST_PROGRESS")
 TA:RegisterEvent("QUEST_COMPLETE")
