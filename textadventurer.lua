@@ -8739,6 +8739,18 @@ local function TA_GetTerrainContextAtWorldPos(posX, posY, preferredMode)
   local chunk = lookup.chunk
   local markerDensity = TA_BuildTerrainMarkerDensity(data, index)
   local selected = chunk and { lookup.tileX, lookup.tileY, lookup.chunkX, lookup.chunkY } or nil
+  local mapBounds = (type(data.mapBounds) == "table") and data.mapBounds or nil
+
+  local inCompiledTileBounds = nil
+  if mapBounds and type(mapBounds.tileMin) == "table" and type(mapBounds.tileMax) == "table" then
+    local minTx = tonumber(mapBounds.tileMin[1])
+    local minTy = tonumber(mapBounds.tileMin[2])
+    local maxTx = tonumber(mapBounds.tileMax[1])
+    local maxTy = tonumber(mapBounds.tileMax[2])
+    if minTx and minTy and maxTx and maxTy then
+      inCompiledTileBounds = (lookup.tileX >= minTx and lookup.tileX <= maxTx and lookup.tileY >= minTy and lookup.tileY <= maxTy)
+    end
+  end
 
   if not chunk or not selected then
     return {
@@ -8749,6 +8761,8 @@ local function TA_GetTerrainContextAtWorldPos(posX, posY, preferredMode)
       chunkX = lookup.chunkX,
       chunkY = lookup.chunkY,
       lookupMode = lookup.mode,
+      inCompiledTileBounds = inCompiledTileBounds,
+      mapBounds = mapBounds,
       resolved = false,
     }
   end
@@ -8764,6 +8778,8 @@ local function TA_GetTerrainContextAtWorldPos(posX, posY, preferredMode)
     chunkX = selected[3],
     chunkY = selected[4],
     lookupMode = lookup.mode,
+    inCompiledTileBounds = inCompiledTileBounds,
+    mapBounds = mapBounds,
     resolved = true,
     hasWater = chunk.hasWater and true or false,
     obstacleCount = markerDensity[lookup.key] or 0,
@@ -9874,6 +9890,16 @@ function TA_DFModeStatus()
     AddLine("system", "Terrain: no compiled terrain data loaded")
   elseif not terrain.resolved then
     AddLine("system", string.format("Terrain: loaded but no chunk match near tile/chunk %d:%d / %d:%d (mode %s)", terrain.tileX or -1, terrain.tileY or -1, terrain.chunkX or -1, terrain.chunkY or -1, tostring(terrain.lookupMode or "?")))
+    if terrain.inCompiledTileBounds == false then
+      local b = terrain.mapBounds
+      if b and b.tileMin and b.tileMax then
+        AddLine("system", string.format("Terrain coverage: outside compiled tile bounds (%d:%d to %d:%d). Export and compile this zone.", tonumber(b.tileMin[1]) or -1, tonumber(b.tileMin[2]) or -1, tonumber(b.tileMax[1]) or -1, tonumber(b.tileMax[2]) or -1))
+      else
+        AddLine("system", "Terrain coverage: outside compiled tile bounds. Export and compile this zone.")
+      end
+    else
+      AddLine("system", "Terrain coverage: tile is inside compiled bounds, but this chunk is missing from the dataset.")
+    end
   else
     local water = terrain.hasWater and "yes" or "no"
     local texture = tostring(terrain.texture or "unknown")
