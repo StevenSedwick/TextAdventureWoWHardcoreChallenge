@@ -78,6 +78,7 @@ TA.lastPathNarration = nil
 TA.moveTicker = nil
 TA.awarenessNearbyTicker = nil
 TA.awarenessMemoryTicker = nil
+TA.warlockPromptTicker = nil
 TA.lineLimit = 1000
 TA.lines = {}
 TA.lastNearbySignature = nil
@@ -156,6 +157,7 @@ TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
 TA.performanceFrameHooks = {}
 TA.tickerIntervals = { move = 0.01, nearby = 0.01, memory = 0.01, df = 0.01 }
+TA.tickerIntervals.warlockPrompt = 0.75
 
 local GRID_SIZE_LEGACY_DEFAULT = 12
 local GRID_SIZE_STANDARD = 80
@@ -2165,6 +2167,7 @@ local function TA_GetQuestRouteContext()
     at = now,
     db = TA_GetQuestieModule("QuestieDB"),
     xp = TA_GetQuestieModule("QuestXP"),
+    player = TA_GetQuestieModule("QuestiePlayer"),
   }
   TA.questRouteContext = ctx
   return ctx
@@ -2299,14 +2302,65 @@ local function TA_MapPercentToCells(targetXPct, targetYPct, yardsPerCell, yardsP
   }
 end
 
-local function TA_BuildQuestRouteCandidates(topN)
+local function TA_IsQuestHeaderFlag(v)
+  return v == true or v == 1 or v == "1"
+end
+
+local function TA_IsQuestCompleteFlag(v)
+  return v == true or v == 1 or v == "1"
+end
+
+local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
   local total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
   if total <= 0 then
-    TA.questRouteOverlay = nil
-    TA.questRouteCandidates = {}
-    return {}
+    return {}, 0, 0, 0, false
   end
 
+  local expandedHeaderIndices = {}
+  if expandCollapsedHeaders and ExpandQuestHeader and CollapseQuestHeader and GetQuestLogTitle then
+    for i = total, 1, -1 do
+      local _, _, _, isHeader, isCollapsed = GetQuestLogTitle(i)
+      if TA_IsQuestHeaderFlag(isHeader) and TA_IsQuestHeaderFlag(isCollapsed) then
+        ExpandQuestHeader(i)
+        table.insert(expandedHeaderIndices, i)
+      end
+    end
+    total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or total
+  end
+
+  local entries = {}
+  local headerCount = 0
+  local completedCount = 0
+  for i = 1, total do
+    local title, level, _, isHeader, _, isComplete, _, questID = GetQuestLogTitle(i)
+    local isHeaderQuest = TA_IsQuestHeaderFlag(isHeader)
+    local isCompletedQuest = TA_IsQuestCompleteFlag(isComplete)
+    if title and not isHeaderQuest and not isCompletedQuest then
+      table.insert(entries, {
+        index = i,
+        title = title,
+        level = level,
+        questID = questID,
+      })
+    elseif title and isHeaderQuest then
+      headerCount = headerCount + 1
+    elseif title and isCompletedQuest then
+      completedCount = completedCount + 1
+    end
+  end
+
+  if #expandedHeaderIndices > 0 and CollapseQuestHeader then
+    table.sort(expandedHeaderIndices, function(a, b) return a > b end)
+    for _, idx in ipairs(expandedHeaderIndices) do
+      CollapseQuestHeader(idx)
+    end
+  end
+
+  return entries, total, headerCount, completedCount, (#expandedHeaderIndices > 0)
+end
+
+local function TA_BuildQuestRouteCandidates(topN)
+  local initialTotal = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
   local store = TA_GetQuestRouterStore()
   local weights = store.weights
   local ctx = TA_GetQuestRouteContext()
@@ -2317,10 +2371,19 @@ local function TA_BuildQuestRouteCandidates(topN)
   local radius = math.max(3, math.floor(gridSize / 2))
 
   local rows = {}
-  for i = 1, total do
-    local title, level, _, isHeader, _, isComplete, _, questID = GetQuestLogTitle(i)
-    if title and not isHeader and isComplete ~= 1 then
-      local qid = tonumber(questID)
+  local total, headerCount, completedCount = initialTotal, 0, 0
+  local usedExpandedHeaderScan = false
+  local usedSnapshotFallback = false
+  local usedQuestieFallback = false
+  local activeEntries = nil
+
+  activeEntries, total, headerCount, completedCount = TA_CollectQuestRouteEntries(false)
+  if #activeEntries == 0 and total > 0 then
+    activeEntries, total, headerCount, completedCount, usedExpandedHeaderScan = TA_CollectQuestRouteEntries(true)
+  end
+
+  for _, entry in ipairs(activeEntries) do
+      local qid = tonumber(entry.questID)
       local rewardXP = 0
       if qid and ctx.xp and type(ctx.xp.GetQuestLogRewardXP) == "function" then
         local ok, v = pcall(function() return ctx.xp:GetQuestLogRewardXP(qid, true) end)
@@ -2328,10 +2391,10 @@ local function TA_BuildQuestRouteCandidates(topN)
       end
 
       local xpFactor = math.min(1, math.max(0, rewardXP / 4500))
-      local lvl = tonumber(level) or playerLevel
+      local lvl = tonumber(entry.level) or playerLevel
       local levelFit = 1 - math.min(1, math.abs(lvl - playerLevel) / 8)
-      local progress = TA_GetQuestObjectiveProgressRatio(i)
-      local guide = TA_GetGuideSignal(title)
+      local progress = TA_GetQuestObjectiveProgressRatio(entry.index)
+      local guide = TA_GetGuideSignal(entry.title)
 
       local proximity = 0.20
       local dxCells, dyCells = nil, nil
@@ -2371,9 +2434,9 @@ local function TA_BuildQuestRouteCandidates(topN)
       end
 
       table.insert(rows, {
-        index = i,
+        index = entry.index,
         questID = qid,
-        title = title,
+        title = entry.title,
         level = lvl,
         score = score,
         factors = factors,
@@ -2384,8 +2447,147 @@ local function TA_BuildQuestRouteCandidates(topN)
         dxCells = dxCells,
         dyCells = dyCells,
       })
+  end
+
+  -- Fallback: when Blizzard quest-log iteration yields no visible quests (often due to collapsed headers
+  -- or client API differences), pull active quest IDs from Questie's live questlog cache.
+  if #rows == 0 and ctx.player and type(ctx.player.currentQuestlog) == "table" and ctx.db then
+    for questID, _ in pairs(ctx.player.currentQuestlog) do
+      local qid = tonumber(questID)
+      if qid and qid > 0 then
+        local quest = (type(ctx.db.GetQuest) == "function") and ctx.db.GetQuest(qid) or nil
+        if type(quest) == "table" then
+          local title = quest.name or ("Quest " .. tostring(qid))
+          local lvl = tonumber(quest.level) or tonumber(quest.questLevel) or tonumber(quest.requiredLevel) or playerLevel
+          local rewardXP = 0
+          if ctx.xp and type(ctx.xp.GetQuestLogRewardXP) == "function" then
+            local ok, v = pcall(function() return ctx.xp:GetQuestLogRewardXP(qid, true) end)
+            if ok and tonumber(v) then rewardXP = tonumber(v) end
+          end
+
+          local xpFactor = math.min(1, math.max(0, rewardXP / 4500))
+          local levelFit = 1 - math.min(1, math.abs((tonumber(lvl) or playerLevel) - playerLevel) / 8)
+          local progress = 0
+          local guide = TA_GetGuideSignal(title)
+
+          local proximity = 0.20
+          local dxCells, dyCells = nil, nil
+          local routeMapID, routeXPct, routeYPct = nil, nil, nil
+          local start = TA_GetQuestStartFromQuestie(ctx.db, qid, currentMapID)
+          if start then
+            routeMapID = start.mapID
+            routeXPct = start.xPct
+            routeYPct = start.yPct
+            if routeMapID == tonumber(currentMapID) then
+              local pos = TA_MapPercentToCells(start.xPct, start.yPct, yardsPerCell, store.yardsPerPercent)
+              if pos then
+                dxCells = pos.dxCells
+                dyCells = pos.dyCells
+                local d = tonumber(pos.distCells) or (radius * 2)
+                proximity = 1 - math.min(1, d / (radius * 1.5))
+              end
+            end
+          end
+
+          if proximity < 0 then proximity = 0 end
+          if proximity > 1 then proximity = 1 end
+
+          local factors = {
+            xp = xpFactor,
+            proximity = proximity,
+            levelFit = levelFit,
+            progress = progress,
+            guide = guide,
+          }
+
+          local score = 0
+          for k, w in pairs(weights) do
+            score = score + ((factors[k] or 0) * (w or 0))
+          end
+
+          table.insert(rows, {
+            index = nil,
+            questID = qid,
+            title = title,
+            level = lvl,
+            score = score,
+            factors = factors,
+            rewardXP = rewardXP,
+            mapID = routeMapID,
+            xPct = routeXPct,
+            yPct = routeYPct,
+            dxCells = dxCells,
+            dyCells = dyCells,
+          })
+          usedQuestieFallback = true
+        end
+      end
     end
   end
+
+  if #rows == 0 and type(TA.questObjectiveSnapshot) == "table" then
+    local byQuest = {}
+    for _, item in pairs(TA.questObjectiveSnapshot) do
+      local qTitle = tostring(item and item.questTitle or "")
+      if qTitle ~= "" then
+        local row = byQuest[qTitle]
+        if not row then
+          row = {
+            title = qTitle,
+            done = 0,
+            total = 0,
+          }
+          byQuest[qTitle] = row
+        end
+        row.total = row.total + 1
+        if item.finished then
+          row.done = row.done + 1
+        end
+      end
+    end
+
+    for title, meta in pairs(byQuest) do
+      if meta.total > 0 and meta.done < meta.total then
+        local progress = meta.done / meta.total
+        local factors = {
+          xp = 0.25,
+          proximity = 0.20,
+          levelFit = 0.50,
+          progress = progress,
+          guide = TA_GetGuideSignal(title),
+        }
+        local score = 0
+        for k, w in pairs(weights) do
+          score = score + ((factors[k] or 0) * (w or 0))
+        end
+        table.insert(rows, {
+          index = nil,
+          questID = nil,
+          title = title,
+          level = playerLevel,
+          score = score,
+          factors = factors,
+          rewardXP = 0,
+          mapID = nil,
+          xPct = nil,
+          yPct = nil,
+          dxCells = nil,
+          dyCells = nil,
+        })
+        usedSnapshotFallback = true
+      end
+    end
+  end
+
+  TA.questRouteLastScan = {
+    total = total,
+    headers = headerCount,
+    completed = completedCount,
+    candidates = #rows,
+    usedExpandedHeaderScan = usedExpandedHeaderScan and true or false,
+    usedQuestieFallback = usedQuestieFallback and true or false,
+    usedSnapshotFallback = usedSnapshotFallback and true or false,
+  }
 
   table.sort(rows, function(a, b)
     if a.score == b.score then
@@ -2435,7 +2637,14 @@ local function TA_ReportQuestRouteSuggestions(explain, topN)
 
   local top = TA_BuildQuestRouteCandidates(topN)
   if #top == 0 then
-    AddLine("quest", "No in-progress quests available to route.")
+    local scan = TA.questRouteLastScan or {}
+    AddLine("quest", string.format("No in-progress quests available to route. (entries=%d headers=%d completed=%d candidates=%d)", tonumber(scan.total) or 0, tonumber(scan.headers) or 0, tonumber(scan.completed) or 0, tonumber(scan.candidates) or 0))
+    if scan.usedExpandedHeaderScan then
+      AddLine("quest", "Quest-route scan auto-expanded collapsed quest headers.")
+    end
+    if scan.usedQuestieFallback then
+      AddLine("quest", "Questie fallback was used; try /ta quests to confirm visible quest-log entries.")
+    end
     return
   end
 
@@ -2460,6 +2669,19 @@ local function TA_ReportQuestRouteWeights()
   local w = s.weights or {}
   AddLine("system", string.format("Quest route weights: xp=%.3f proximity=%.3f levelFit=%.3f progress=%.3f guide=%.3f", tonumber(w.xp) or 0, tonumber(w.proximity) or 0, tonumber(w.levelFit) or 0, tonumber(w.progress) or 0, tonumber(w.guide) or 0))
   AddLine("system", string.format("learningRate=%.3f samples=%d correct=%d", tonumber(s.learningRate) or 0, tonumber(s.samples) or 0, tonumber(s.correctSuggestions) or 0))
+end
+
+local function TA_ReportQuestRouteDebug()
+  local scan = TA.questRouteLastScan or {}
+  local s = TA_GetQuestRouterStore()
+  local ctx = TA_GetQuestRouteContext()
+  local snapshotCount = 0
+  for _, v in pairs(TA.questObjectiveSnapshot or {}) do
+    if v then snapshotCount = snapshotCount + 1 end
+  end
+  AddLine("system", string.format("QuestRoute debug: enabled=%s entries=%d headers=%d completed=%d candidates=%d", tostring(s.enabled ~= false), tonumber(scan.total) or 0, tonumber(scan.headers) or 0, tonumber(scan.completed) or 0, tonumber(scan.candidates) or 0))
+  AddLine("system", string.format("  usedExpandedHeaderScan=%s usedQuestieFallback=%s usedSnapshotFallback=%s", tostring(scan.usedExpandedHeaderScan == true), tostring(scan.usedQuestieFallback == true), tostring(scan.usedSnapshotFallback == true)))
+  AddLine("system", string.format("  data sources: QuestieDB=%s QuestXP=%s QuestiePlayer=%s objectiveSnapshot=%d", tostring(ctx.db ~= nil), tostring(ctx.xp ~= nil), tostring(ctx.player ~= nil), snapshotCount))
 end
 
 local function TA_SetQuestRouteWeight(key, value)
@@ -3891,6 +4113,7 @@ function TA_ReportLiveWarlockDps()
   end
 
   local c = TA_GetWarlockLiveConfig()
+  local promptCfg = TA_GetWarlockPromptConfig()
   local spec = TA_GetWarlockModeSpec(c)
   local spellPower = TA_GetSpellPowerBySchool(spec.school)
   local hitChance = TA_GetSpellHitChance(c.targetLevel, c.flatHitBonus)
@@ -3920,6 +4143,211 @@ function TA_ReportLiveWarlockDps()
   AddLine("system", string.format("Inputs: SP %d (%s), hit %.1f%%, crit %.1f%%, cast %.2fs, coeff %.4f, dmg mult %.4f, mana %.0f%%", math.floor(spellPower + 0.5), spec.schoolName, hitChance * 100, critChance * 100, castTime, coeff, spec.damageMult, (manaInfo.manaPct or 0) * 100))
   AddLine("system", string.format("Sheet comparison: crit %.1f%% vs sheet %.1f%% | hit %.1f%% vs sheet %.1f%%", critChance * 100, (tonumber(c.sheetCritSnapshot) or 0) * 100, hitChance * 100, (tonumber(c.sheetHitSnapshot) or 0) * 100))
   AddLine("system", "Tune with: warlockdps set <key> <value> | warlockdps mode <shadow|fire> | warlockdps assumptions | warlockdps mapping")
+end
+
+local function TA_GetWarlockPromptConfig()
+  TextAdventurerDB = TextAdventurerDB or {}
+  if type(TextAdventurerDB.warlockPrompt) ~= "table" then
+    TextAdventurerDB.warlockPrompt = {}
+  end
+  local p = TextAdventurerDB.warlockPrompt
+  if p.enabled == nil then p.enabled = false end
+  if type(p.minManaPct) ~= "number" then p.minManaPct = 0.25 end
+  if type(p.minHealthPctForTap) ~= "number" then p.minHealthPctForTap = 0.45 end
+  return p
+end
+
+local function TA_GetPlayerDebuffRemaining(unit, spellName)
+  if not UnitDebuff or not unit or not UnitExists(unit) or not spellName then
+    return 0, false
+  end
+  for i = 1, 40 do
+    local name, _, _, _, _, duration, expirationTime, caster = UnitDebuff(unit, i)
+    if not name then break end
+    local isMine = caster == "player"
+    if not isMine and caster and UnitIsUnit then
+      isMine = UnitIsUnit(caster, "player")
+    end
+    if isMine and name == spellName then
+      if tonumber(expirationTime) and tonumber(duration) and expirationTime > 0 and duration > 0 then
+        return math.max(0, expirationTime - GetTime()), true
+      end
+      return 999, true
+    end
+  end
+  return 0, false
+end
+
+local function TA_PlayerKnowsAnySpell(names)
+  if type(names) ~= "table" then return false end
+  return TA_GetHighestKnownRank(names) ~= nil
+end
+
+local function TA_GetWarlockPromptState()
+  local classToken = select(2, UnitClass("player")) or "UNKNOWN"
+  if classToken ~= "WARLOCK" then
+    return nil, "warlockdps prompt is designed for Warlock characters."
+  end
+  if not UnitExists("target") or UnitIsDeadOrGhost("target") or (UnitCanAttack and not UnitCanAttack("player", "target")) then
+    return nil, "No hostile target selected."
+  end
+
+  local c = TA_GetWarlockLiveConfig()
+  local spec = TA_GetWarlockModeSpec(c)
+  local powerType = UnitPowerType and UnitPowerType("player") or 0
+  local mana = UnitPower and (UnitPower("player", powerType) or 0) or 0
+  local manaMax = UnitPowerMax and (UnitPowerMax("player", powerType) or 0) or 0
+  local manaPct = manaMax > 0 and (mana / manaMax) or 0
+  local health = UnitHealth and (UnitHealth("player") or 0) or 0
+  local healthMax = UnitHealthMax and (UnitHealthMax("player") or 0) or 0
+  local healthPct = healthMax > 0 and (health / healthMax) or 0
+
+  local moving = false
+  if GetUnitSpeed then
+    moving = (tonumber(GetUnitSpeed("player")) or 0) > 0
+  end
+
+  local corrRemain = 0
+  local immolateRemain = 0
+  local curseRemain = 0
+  if spec.mode == "shadow" then
+    corrRemain = select(1, TA_GetPlayerDebuffRemaining("target", "Corruption"))
+  else
+    immolateRemain = select(1, TA_GetPlayerDebuffRemaining("target", "Immolate"))
+  end
+  local agonyRemain = select(1, TA_GetPlayerDebuffRemaining("target", "Curse of Agony"))
+  local doomRemain = select(1, TA_GetPlayerDebuffRemaining("target", "Curse of Doom"))
+  curseRemain = math.max(agonyRemain or 0, doomRemain or 0)
+
+  local knowsCorruption = TA_PlayerKnowsAnySpell({ "Corruption" })
+  local knowsImmolate = TA_PlayerKnowsAnySpell({ "Immolate" })
+  local knowsAgony = TA_PlayerKnowsAnySpell({ "Curse of Agony" })
+  local knowsDoom = TA_PlayerKnowsAnySpell({ "Curse of Doom" })
+  local knowsLifeTap = TA_PlayerKnowsAnySpell({ "Life Tap" })
+  local knowsShadowBolt = TA_PlayerKnowsAnySpell({ "Shadow Bolt" })
+  local knowsSearingPain = TA_PlayerKnowsAnySpell({ "Searing Pain" })
+
+  local function BuildPrompt(key, action, reason)
+    local detail = string.format("mana %.0f%%, hp %.0f%%", manaPct * 100, healthPct * 100)
+    return {
+      key = key,
+      action = action,
+      reason = reason,
+      detail = detail,
+    }
+  end
+
+  if moving then
+    if spec.mode == "shadow" and knowsCorruption and corrRemain <= 1.5 then
+      return BuildPrompt("corr-refresh-moving", "Cast Corruption", "instant DoT while moving")
+    end
+    if spec.mode == "fire" and knowsImmolate and immolateRemain <= 1.5 then
+      return BuildPrompt("immolate-refresh-moving", "Cast Immolate", "refresh DoT while moving")
+    end
+    if (knowsAgony or knowsDoom) and curseRemain <= 2.0 then
+      local curseName = knowsAgony and "Curse of Agony" or "Curse of Doom"
+      return BuildPrompt("curse-refresh-moving", "Cast " .. curseName, "curse refresh while moving")
+    end
+  end
+
+  if manaPct <= (tonumber(promptCfg.minManaPct) or 0.25) and knowsLifeTap and healthPct >= (tonumber(promptCfg.minHealthPctForTap) or 0.45) then
+    return BuildPrompt("lifetap-lowmana", "Cast Life Tap", "mana below threshold")
+  end
+
+  if spec.mode == "shadow" and knowsCorruption and corrRemain <= 1.5 then
+    return BuildPrompt("corr-refresh", "Cast Corruption", "maintain corruption uptime")
+  end
+  if spec.mode == "fire" and knowsImmolate and immolateRemain <= 1.5 then
+    return BuildPrompt("immolate-refresh", "Cast Immolate", "maintain immolate uptime")
+  end
+  if (knowsAgony or knowsDoom) and curseRemain <= 2.0 then
+    local curseName = knowsAgony and "Curse of Agony" or "Curse of Doom"
+    return BuildPrompt("curse-refresh", "Cast " .. curseName, "maintain curse uptime")
+  end
+
+  if spec.mode == "shadow" and knowsShadowBolt then
+    return BuildPrompt("shadowbolt-fill", "Cast Shadow Bolt", "highest-value shadow filler")
+  end
+  if spec.mode == "fire" and knowsSearingPain then
+    return BuildPrompt("searingpain-fill", "Cast Searing Pain", "fire filler")
+  end
+  if knowsShadowBolt then
+    return BuildPrompt("shadowbolt-fallback", "Cast Shadow Bolt", "fallback nuke")
+  end
+
+  return BuildPrompt("no-spell", "Use wand / reposition", "no known filler spell found")
+end
+
+function TA_ReportWarlockActionPrompt(force)
+  local rec, blockedReason = TA_GetWarlockPromptState()
+  if not rec then
+    if force then
+      AddLine("system", "warlockprompt: " .. tostring(blockedReason or "no prompt available"))
+    end
+    return
+  end
+
+  local now = GetTime()
+  local isSame = (TA.lastWarlockPromptKey == rec.key)
+  local shouldEmit = force or (not isSame) or (now >= (TA.lastWarlockPromptEmitAt or 0) + 5)
+  if not shouldEmit then
+    return
+  end
+
+  TA.lastWarlockPromptKey = rec.key
+  TA.lastWarlockPromptEmitAt = now
+  AddLine("playerCombat", string.format("Warlock prompt: %s (%s; %s)", rec.action, rec.reason, rec.detail or ""))
+end
+
+function TA_SetWarlockPromptEnabled(enabled)
+  local p = TA_GetWarlockPromptConfig()
+  p.enabled = enabled and true or false
+  AddLine("system", string.format("warlockprompt %s", p.enabled and "enabled" or "disabled"))
+end
+
+function TA_ReportWarlockPromptStatus()
+  local p = TA_GetWarlockPromptConfig()
+  AddLine("system", string.format("warlockprompt: %s | mana threshold %.0f%% | life tap hp floor %.0f%%", p.enabled and "on" or "off", (tonumber(p.minManaPct) or 0.25) * 100, (tonumber(p.minHealthPctForTap) or 0.45) * 100))
+  TA_ReportWarlockActionPrompt(true)
+end
+
+function TA_SetWarlockPromptValue(key, value)
+  local p = TA_GetWarlockPromptConfig()
+  local k = (key or ""):lower()
+  local v = tonumber(value)
+  if not v then
+    AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>")
+    return
+  end
+  if k == "manapct" then
+    if v > 1 then v = v / 100 end
+    if v < 0 then v = 0 end
+    if v > 0.95 then v = 0.95 end
+    p.minManaPct = v
+    AddLine("system", string.format("warlockprompt min mana set to %.0f%%", v * 100))
+    return
+  end
+  if k == "taphpfloor" then
+    if v > 1 then v = v / 100 end
+    if v < 0.10 then v = 0.10 end
+    if v > 0.95 then v = 0.95 end
+    p.minHealthPctForTap = v
+    AddLine("system", string.format("warlockprompt life-tap hp floor set to %.0f%%", v * 100))
+    return
+  end
+  AddLine("system", "Unknown key. Use: manapct or taphpfloor")
+end
+
+function TA_MaybeAutoWarlockPrompt()
+  local p = TA_GetWarlockPromptConfig()
+  if p.enabled ~= true then
+    return
+  end
+  local inCombat = UnitAffectingCombat and UnitAffectingCombat("player")
+  if not inCombat then
+    return
+  end
+  TA_ReportWarlockActionPrompt(false)
 end
 
 function TA_GetMLStore()
@@ -7258,11 +7686,13 @@ local function TA_SetTickerProfile(profile)
     TA.tickerIntervals.nearby = 0.05
     TA.tickerIntervals.memory = 0.10
     TA.tickerIntervals.df = 0.05
+    TA.tickerIntervals.warlockPrompt = 1.50
   else
     TA.tickerIntervals.move = 0.01
     TA.tickerIntervals.nearby = 0.01
     TA.tickerIntervals.memory = 0.01
     TA.tickerIntervals.df = 0.01
+    TA.tickerIntervals.warlockPrompt = 0.75
   end
 end
 
@@ -9280,6 +9710,9 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "  warlockdps mode <shadow|fire> - switch Warlock model lane.")
     AddLine("system", "  warlockdps set <key> <value> - tune direct/DoT/pet/mana knobs.")
     AddLine("system", "  warlockdps assumptions|mapping|reset - inspect sheet linkage or restore defaults.")
+    AddLine("system", "  warlockprompt - single next-action prompt for current target.")
+    AddLine("system", "  warlockprompt on/off/status - auto-prompt control while in combat.")
+    AddLine("system", "  warlockprompt set <manapct|taphpfloor> <value> - prompt tuning.")
     AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
     AddLine("system", "  ml xp[/explain] - XP/hour recommendation blending grinding and questing source models.")
     AddLine("system", "  ml xp mode [balanced|grind-first|quest-first] - switch leveling strategy mode.")
@@ -9463,6 +9896,16 @@ TA.EXACT_INPUT_HANDLERS = {
   ["warlockdps reset"] = function() TA_ResetWarlockDpsConfigDefaults() end,
   ["warlockdps mode"] = function() AddLine("system", "Usage: warlockdps mode <shadow|fire>") end,
   ["warlockdps set"] = function() AddLine("system", "Usage: warlockdps set <key> <value> (try: warlockdps assumptions)") end,
+  ["warlockprompt"] = function() TA_ReportWarlockActionPrompt(true) end,
+  ["warlock prompt"] = function() TA_ReportWarlockActionPrompt(true) end,
+  ["warlockprompt on"] = function() TA_SetWarlockPromptEnabled(true) end,
+  ["warlock prompt on"] = function() TA_SetWarlockPromptEnabled(true) end,
+  ["warlockprompt off"] = function() TA_SetWarlockPromptEnabled(false) end,
+  ["warlock prompt off"] = function() TA_SetWarlockPromptEnabled(false) end,
+  ["warlockprompt status"] = function() TA_ReportWarlockPromptStatus() end,
+  ["warlock prompt status"] = function() TA_ReportWarlockPromptStatus() end,
+  ["warlockprompt set"] = function() AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>") end,
+  ["warlock prompt set"] = function() AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>") end,
   ["ml status"] = function() TA_ReportMLStatus() end,
   ["ml recommend"] = function() TA_RecommendWithML(false) end,
   ["ml recommend explain"] = function() TA_RecommendWithML(true) end,
@@ -9502,6 +9945,8 @@ TA.EXACT_INPUT_HANDLERS = {
   ["quest route explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
   ["questroute weights"] = function() TA_ReportQuestRouteWeights() end,
   ["quest route weights"] = function() TA_ReportQuestRouteWeights() end,
+  ["questroute debug"] = function() TA_ReportQuestRouteDebug() end,
+  ["quest route debug"] = function() TA_ReportQuestRouteDebug() end,
   ["questroute mark"] = function() TA_QuestRouteTomTomWaypoint() end,
   ["quest route mark"] = function() TA_QuestRouteTomTomWaypoint() end,
   ["questroute on"] = function() TA_SetQuestRouteToggle(true) end,
@@ -9640,6 +10085,8 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^warlockdps%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockDpsConfigValue(k, v) end },
   { "^warlockdps%s+reset$", function() TA_ResetWarlockDpsConfigDefaults() end },
   { "^warlockdps%s+mapping$", function() TA_ReportWarlockSheetMapping() end },
+  { "^warlockprompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end },
+  { "^warlock%s+prompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end },
   { "^questroute%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
   { "^quest%s+route%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
   { "^questroute%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
@@ -9671,38 +10118,43 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^train%s+(%d+)$", function(idx) TrainServiceByIndex(tonumber(idx)) end },
   { "^recipeinfo%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
   { "^recipe%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
-  { "^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end },
-  { "^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end },
-  { "^target%s+(.+)$", function(arg) DoTargetCommand(arg) end },
-  { "^markcell%s+(.+)$", function(name) MarkCurrentCell(name) end },
-  { "^mark cell%s+(.+)$", function(name) MarkCurrentCell(name) end },
-  { "^cellsize%s+(%d+)$", function(size) SetGridSize(tonumber(size)) end },
-  { "^cellcal%s+(.+)$", function(args) TA_ReportCellYardsCalibration(args) end },
-  { "^cellyards%s+([%d%.]+)$", function(yards) SetCellSizeYards(tonumber(yards)) end },
-  { "^showmark%s+(%d+)$", function(markID) ShowMarkedCellOnMap(tonumber(markID)) end },
-  { "^renamemark%s+(%d+)%s+(.+)$", function(markID, newName) TA_RenameMarkedCell(tonumber(markID), newName) end },
-  { "^deletemark%s+(%d+)$", function(markID) DeleteMarkedCell(tonumber(markID)) end },
-  { "^choose%s+(%d+)$", function(idx) ChooseGossipOption(tonumber(idx)) end },
-  { "^select%s+(%d+)$", function(idx) SelectQuestReward(tonumber(idx)) end },
-  { "^rewardinfo%s+(%d+)$", function(idx) ReportQuestRewardInfo(tonumber(idx)) end },
-  { "^reward%s+(%d+)$", function(idx)
-      idx = tonumber(idx)
-      SelectQuestReward(idx)
-      GetQuestRewardChoice(idx)
-    end },
-  { "^accept%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "accept") end },
-  { "^decline%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "decline") end },
-  { "^buy%s+(%d+)$", function(idx) BuyVendorItem(tonumber(idx), 1) end },
-  { "^buy%s+(%d+)%s+(%d+)$", function(idx, qty) BuyVendorItem(tonumber(idx), tonumber(qty)) end },
-  { "^buycheck%s+(%d+)$", function(idx) TA_CheckVendorPurchase(tonumber(idx), 1) end },
-  { "^buycheck%s+(%d+)%s+(%d+)$", function(idx, qty) TA_CheckVendorPurchase(tonumber(idx), tonumber(qty)) end },
-  { "^sell%s+(%d+)%s+(%d+)$", function(bag, slot) SellBagItem(tonumber(bag), tonumber(slot)) end },
-  { "^destroy%s+(%d+)%s+(%d+)$", function(bag, slot) DestroyBagItem(tonumber(bag), tonumber(slot)) end },
-  { "^vendorinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end },
-  { "^shopinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end },
-  { "^iteminfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end },
-  { "^readitem%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReadBagItemText(tonumber(bag), tonumber(slot)) end },
 }
+
+local function TA_AddPatternInputHandler(pattern, handler)
+  table.insert(TA.PATTERN_INPUT_HANDLERS, { pattern, handler })
+end
+
+TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
+TA_AddPatternInputHandler("^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end)
+TA_AddPatternInputHandler("^target%s+(.+)$", function(arg) DoTargetCommand(arg) end)
+TA_AddPatternInputHandler("^markcell%s+(.+)$", function(name) MarkCurrentCell(name) end)
+TA_AddPatternInputHandler("^mark cell%s+(.+)$", function(name) MarkCurrentCell(name) end)
+TA_AddPatternInputHandler("^cellsize%s+(%d+)$", function(size) SetGridSize(tonumber(size)) end)
+TA_AddPatternInputHandler("^cellcal%s+(.+)$", function(args) TA_ReportCellYardsCalibration(args) end)
+TA_AddPatternInputHandler("^cellyards%s+([%d%.]+)$", function(yards) SetCellSizeYards(tonumber(yards)) end)
+TA_AddPatternInputHandler("^showmark%s+(%d+)$", function(markID) ShowMarkedCellOnMap(tonumber(markID)) end)
+TA_AddPatternInputHandler("^renamemark%s+(%d+)%s+(.+)$", function(markID, newName) TA_RenameMarkedCell(tonumber(markID), newName) end)
+TA_AddPatternInputHandler("^deletemark%s+(%d+)$", function(markID) DeleteMarkedCell(tonumber(markID)) end)
+TA_AddPatternInputHandler("^choose%s+(%d+)$", function(idx) ChooseGossipOption(tonumber(idx)) end)
+TA_AddPatternInputHandler("^select%s+(%d+)$", function(idx) SelectQuestReward(tonumber(idx)) end)
+TA_AddPatternInputHandler("^rewardinfo%s+(%d+)$", function(idx) ReportQuestRewardInfo(tonumber(idx)) end)
+TA_AddPatternInputHandler("^reward%s+(%d+)$", function(idx)
+  idx = tonumber(idx)
+  SelectQuestReward(idx)
+  GetQuestRewardChoice(idx)
+end)
+TA_AddPatternInputHandler("^accept%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "accept") end)
+TA_AddPatternInputHandler("^decline%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "decline") end)
+TA_AddPatternInputHandler("^buy%s+(%d+)$", function(idx) BuyVendorItem(tonumber(idx), 1) end)
+TA_AddPatternInputHandler("^buy%s+(%d+)%s+(%d+)$", function(idx, qty) BuyVendorItem(tonumber(idx), tonumber(qty)) end)
+TA_AddPatternInputHandler("^buycheck%s+(%d+)$", function(idx) TA_CheckVendorPurchase(tonumber(idx), 1) end)
+TA_AddPatternInputHandler("^buycheck%s+(%d+)%s+(%d+)$", function(idx, qty) TA_CheckVendorPurchase(tonumber(idx), tonumber(qty)) end)
+TA_AddPatternInputHandler("^sell%s+(%d+)%s+(%d+)$", function(bag, slot) SellBagItem(tonumber(bag), tonumber(slot)) end)
+TA_AddPatternInputHandler("^destroy%s+(%d+)%s+(%d+)$", function(bag, slot) DestroyBagItem(tonumber(bag), tonumber(slot)) end)
+TA_AddPatternInputHandler("^vendorinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
+TA_AddPatternInputHandler("^shopinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
+TA_AddPatternInputHandler("^iteminfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
+TA_AddPatternInputHandler("^readitem%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReadBagItemText(tonumber(bag), tonumber(slot)) end)
 
 function TA_RunCVarList(filter)
   if not ConsoleExec then
@@ -10260,6 +10712,13 @@ function TA_EnsureRuntimeTickers()
       TA_UpdateDFMode()
     end)
   end
+  if not TA.warlockPromptTicker then
+    TA.warlockPromptTicker = C_Timer.NewTicker(TA.tickerIntervals.warlockPrompt or 0.75, function()
+      if TA_MaybeAutoWarlockPrompt then
+        TA_MaybeAutoWarlockPrompt()
+      end
+    end)
+  end
 end
 
 function TA_StopRuntimeTickers()
@@ -10267,6 +10726,7 @@ function TA_StopRuntimeTickers()
   if TA.awarenessNearbyTicker then TA.awarenessNearbyTicker:Cancel(); TA.awarenessNearbyTicker = nil end
   if TA.awarenessMemoryTicker then TA.awarenessMemoryTicker:Cancel(); TA.awarenessMemoryTicker = nil end
   if TA.dfModeTicker then TA.dfModeTicker:Cancel(); TA.dfModeTicker = nil end
+  if TA.warlockPromptTicker then TA.warlockPromptTicker:Cancel(); TA.warlockPromptTicker = nil end
 end
 
 function TA_RestartRuntimeTickers()
@@ -10492,6 +10952,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.skillSnapshot = TA_BuildSkillSnapshot()
     TA.lastBuffSnapshot = SnapshotBuffs()
     TA.questObjectiveSnapshot = BuildQuestObjectiveSnapshot()
+    TA_GetWarlockPromptConfig()
     local qStore = TA_GetQuestRouterStore()
     TA.questRouteOverlay = nil
     TA.questRouteCandidates = {}
@@ -10519,6 +10980,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     AddLine("system", "Type /ta quests to list your quest log.")
     AddLine("system", "Type /ta questinfo <index or name> to read full quest details.")
     AddLine("quest", "Route planner: /ta questroute, /ta questroute explain, /ta questroute top 5, /ta questroute mark.")
+    AddLine("playerCombat", "Warlock prompt: /ta warlockprompt for next action, /ta warlockprompt on for auto prompts in combat.")
     AddLine("system", "Type /ta buffs to list your current buffs and timers.")
     AddLine("system", "Type /ta where for your current place.")
     AddLine("system", "Type /ta tracking for active tracking modes.")
