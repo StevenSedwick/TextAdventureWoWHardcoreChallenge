@@ -34,6 +34,17 @@ function TA_RegisterWarlockMLCommandHandlers(exactHandlers, addPatternHandler)
   exactHandlers["warlockprompt set"] = function() AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>") end
   exactHandlers["warlock prompt set"] = function() AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>") end
 
+  exactHandlers["warriorprompt"] = function() TA_ReportWarriorActionPrompt(true) end
+  exactHandlers["warrior prompt"] = function() TA_ReportWarriorActionPrompt(true) end
+  exactHandlers["warriorprompt on"] = function() TA_SetWarriorPromptEnabled(true) end
+  exactHandlers["warrior prompt on"] = function() TA_SetWarriorPromptEnabled(true) end
+  exactHandlers["warriorprompt off"] = function() TA_SetWarriorPromptEnabled(false) end
+  exactHandlers["warrior prompt off"] = function() TA_SetWarriorPromptEnabled(false) end
+  exactHandlers["warriorprompt status"] = function() TA_ReportWarriorPromptStatus() end
+  exactHandlers["warrior prompt status"] = function() TA_ReportWarriorPromptStatus() end
+  exactHandlers["warriorprompt set"] = function() AddLine("system", "Usage: warriorprompt set <rage|rendrefresh> <value>") end
+  exactHandlers["warrior prompt set"] = function() AddLine("system", "Usage: warriorprompt set <rage|rendrefresh> <value>") end
+
   exactHandlers["ml status"] = function() TA_ReportMLStatus() end
   exactHandlers["ml recommend"] = function() TA_RecommendWithML(false) end
   exactHandlers["ml recommend explain"] = function() TA_RecommendWithML(true) end
@@ -66,6 +77,8 @@ function TA_RegisterWarlockMLCommandHandlers(exactHandlers, addPatternHandler)
   addPatternHandler("^warlockdps%s+mapping$", function() TA_ReportWarlockSheetMapping() end)
   addPatternHandler("^warlockprompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end)
   addPatternHandler("^warlock%s+prompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end)
+  addPatternHandler("^warriorprompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarriorPromptValue(k, v) end)
+  addPatternHandler("^warrior%s+prompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarriorPromptValue(k, v) end)
   addPatternHandler("^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end)
   addPatternHandler("^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end)
   addPatternHandler("^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end)

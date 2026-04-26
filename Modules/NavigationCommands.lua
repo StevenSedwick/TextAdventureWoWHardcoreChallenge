@@ -187,14 +187,23 @@ function TA_HandleNavigationInputCommand(lower, msg)
         TA.dfModeLastUpdate = 0
         TA_UpdateDFMode()
       end
+    elseif dfRotationMode == "fixed" or dfRotationMode == "rotating" then
+      TA.dfModeOrientation = dfRotationMode
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeOrientation = dfRotationMode
+      AddLine("system", "DF orientation set to: " .. dfRotationMode .. " (via rotation alias)")
+      if TA.dfModeEnabled then
+        TA.dfModeLastUpdate = 0
+        TA_UpdateDFMode()
+      end
     else
-      AddLine("system", "Unknown DF rotation mode. Use: smooth or octant")
+      AddLine("system", "Unknown DF rotation mode. Use: smooth, octant, fixed, or rotating")
     end
     return true
   end
   if lower == "df rotation" or lower == "dfmode rotation" then
     AddLine("system", "DF rotation mode: " .. (TA.dfModeRotationMode or "smooth"))
-    AddLine("system", "Usage: /ta df rotation <smooth|octant>")
+    AddLine("system", "Usage: /ta df rotation <smooth|octant|fixed|rotating>")
     return true
   end
 
@@ -264,6 +273,11 @@ function TA_HandleNavigationInputCommand(lower, msg)
     return true
   end
 
+  if lower == "df status" or lower == "dfmode status" then
+    TA_DFModeStatus()
+    return true
+  end
+
   local dfModeView = lower:match("^dfmode%s+(%w+)$") or lower:match("^df%s+(%w+)$")
   if dfModeView then
     if dfModeView == "hybrid" or dfModeView == "all" then
@@ -296,11 +310,6 @@ function TA_HandleNavigationInputCommand(lower, msg)
     else
       AddLine("system", "Unknown DF profile. Use: balanced or full")
     end
-    return true
-  end
-
-  if lower == "df status" or lower == "dfmode status" then
-    TA_DFModeStatus()
     return true
   end
 

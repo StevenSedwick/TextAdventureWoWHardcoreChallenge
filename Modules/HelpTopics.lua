@@ -7,6 +7,7 @@ function TA_Help_ShowOverview()
   AddLine("system", "  economy - bags, gear, vendor, buying/selling")
   AddLine("system", "  social - chat and targeting shortcuts")
   AddLine("system", "  advanced - macros, bindings, diagnostics")
+  AddLine("system", "  testing - self-test command coverage")
   AddLine("system", "All commands support both: <command> (terminal) and /ta <command> (chat).")
   AddLine("system", "Type: help <topic>. Example: help navigation")
 end
@@ -26,6 +27,7 @@ function TA_Help_ShowTopic(topicArg)
   if raw == "inventory" or raw == "vendor" then key = "economy" end
   if raw == "chat" then key = "social" end
   if raw == "macros" then key = "advanced" end
+  if raw == "test" or raw == "tests" then key = "testing" end
 
   if key == "combat" then
     AddLine("system", "Help: Combat & Stats")
@@ -51,6 +53,9 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  warlockprompt - single next-action prompt for current target.")
     AddLine("system", "  warlockprompt on/off/status - auto-prompt control while in combat.")
     AddLine("system", "  warlockprompt set <manapct|taphpfloor> <value> - prompt tuning.")
+    AddLine("system", "  warriorprompt - single next-action prompt for current target.")
+    AddLine("system", "  warriorprompt on/off/status - auto-prompt control while in combat.")
+    AddLine("system", "  warriorprompt set <rage|rendrefresh> <value> - prompt tuning.")
     AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
     AddLine("system", "  ml xp[/explain] - XP/hour recommendation blending grinding and questing source models.")
     AddLine("system", "  ml xp mode [balanced|grind-first|quest-first] - switch leveling strategy mode.")
@@ -127,7 +132,9 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  rewardinfo <n> - inspect stats/details for one reward.")
     AddLine("system", "  prompts, accept <n>, decline <n> - handle popup dialogs.")
     AddLine("system", "  trainer, train <n>, train all - trainer service commands.")
-    AddLine("system", "  recipes, recipeinfo <n> - list profession recipes and inspect reagents.")
+    AddLine("system", "  recipes <profession> - open profession window (or use recipes to list current open window).")
+    AddLine("system", "  recipeinfo, recipeinfo <n> - list recipes or inspect one recipe's reagents.")
+    AddLine("system", "  craft <n> <count>, craftall <n> - craft by recipe index once window is open.")
     return
   end
 
@@ -155,8 +162,9 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  equip <bag> <slot> - equip a specific bag item.")
     AddLine("system", "  money/gold/coins - show your current currency.")
     AddLine("system", "  readitem - read an open readable item, or readitem <bag> <slot>.")
-    AddLine("system", "  vendor/shop - vendor inventory overview.")
+      AddLine("system", "  vendor/shop - vendor inventory overview.")
     AddLine("system", "  vendorinfo <n> - inspect vendor item details before buying.")
+      AddLine("system", "  baginfo <bag> <slot> - inspect stats/tooltip for an item in your bag.")
     AddLine("system", "  buycheck <n> [qty] - check affordability before buying.")
     AddLine("system", "  buy <n> [qty] - purchase vendor items.")
     AddLine("system", "  buyback - list sold items available for buyback.")
@@ -207,6 +215,16 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  input - focus text input quickly (same as /ta input).")
     AddLine("system", "  hide/show/toggle - hide/show the text panel.")
     AddLine("system", "  clear - clear the addon text log.")
+    return
+  end
+
+  if key == "testing" then
+    AddLine("system", "Help: Testing")
+    AddLine("system", "  selftest - run a safe smoke suite of exact command handlers.")
+    AddLine("system", "  selftest full - run broader non-destructive exact command coverage.")
+    AddLine("system", "  selftest patterns - run safe curated sample tests for pattern handlers.")
+    AddLine("system", "  selftest patterns full - run broader curated pattern coverage.")
+    AddLine("system", "Self-test output appears as [FAIL] lines plus a final ok/fail summary.")
     return
   end
 

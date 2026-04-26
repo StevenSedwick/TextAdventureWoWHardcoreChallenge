@@ -18,7 +18,8 @@ function TA_RegisterEconomyCommandHandlers(exactHandlers, addPatternHandler)
   exactHandlers["shop"] = function() ReportVendorItems() end
   exactHandlers["vendorinfo"] = function() AddLine("system", "Usage: vendorinfo <index>") end
   exactHandlers["shopinfo"] = function() AddLine("system", "Usage: shopinfo <index>") end
-  exactHandlers["iteminfo"] = function() AddLine("system", "Usage: iteminfo <index> (while vendor is open)") end
+  exactHandlers["iteminfo"] = function() AddLine("system", "Usage: iteminfo <index> (vendor) OR iteminfo <bag> <slot>") end
+  exactHandlers["baginfo"] = function() AddLine("system", "Usage: baginfo <bag> <slot>") end
   exactHandlers["buycheck"] = function() AddLine("system", "Usage: buycheck <index> [qty]") end
   exactHandlers["readitem"] = function()
     if ItemTextFrame and ItemTextFrame:IsShown() then
@@ -36,6 +37,8 @@ function TA_RegisterEconomyCommandHandlers(exactHandlers, addPatternHandler)
   addPatternHandler("^destroy%s+(%d+)%s+(%d+)$", function(bag, slot) DestroyBagItem(tonumber(bag), tonumber(slot)) end)
   addPatternHandler("^vendorinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
   addPatternHandler("^shopinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
+  addPatternHandler("^baginfo%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReportBagItemDetails(tonumber(bag), tonumber(slot)) end)
+  addPatternHandler("^iteminfo%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReportBagItemDetails(tonumber(bag), tonumber(slot)) end)
   addPatternHandler("^iteminfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
   addPatternHandler("^readitem%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReadBagItemText(tonumber(bag), tonumber(slot)) end)
 

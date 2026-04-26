@@ -1,5 +1,9 @@
 ---@diagnostic disable: undefined-global
 
+if not TA then
+  return
+end
+
 TA.EXACT_INPUT_HANDLERS = {
   ["health"] = function() ReportStatus(true) end,
   ["hp"] = function() ReportStatus(true) end,
@@ -61,10 +65,38 @@ TA.EXACT_INPUT_HANDLERS = {
   ["textmode on"] = function() TA_EnableTextModeCommand() end,
   ["textmode off"] = function() TA_DisableTextModeCommand() end,
   ["help"] = function() TA_ShowHelpOverview() end,
+  ["selftest"] = function() TA_RunCommandSelfTest("safe") end,
+  ["selftest full"] = function() TA_RunCommandSelfTest("full") end,
+  ["selftest patterns"] = function() TA_RunPatternSelfTest("safe") end,
+  ["selftest patterns full"] = function() TA_RunPatternSelfTest("full") end,
   ["performance"] = function() TA_ReportPerformanceStatus() end,
   ["performance status"] = function() TA_ReportPerformanceStatus() end,
   ["performance on"] = function() TA_EnablePerformanceMode() end,
   ["performance off"] = function() TA_DisablePerformanceMode() end,
+  ["terrain"] = function()
+    local data = rawget(_G, "TextAdventurerTerrainData")
+    if type(data) ~= "table" then
+      AddLine("system", "Terrain data not loaded. Expected global: TextAdventurerTerrainData")
+      return
+    end
+
+    local chunks = (type(data.chunks) == "table") and #data.chunks or 0
+    local markers = (type(data.markers) == "table") and #data.markers or 0
+    local tiles = (type(data.tilesPresent) == "table") and #data.tilesPresent or 0
+    AddLine("system", string.format("Terrain loaded: zone=%s map=%s chunks=%d markers=%d tiles=%d", tostring(data.zoneKey or "?"), tostring(data.mapName or "?"), chunks, markers, tiles))
+  end,
+  ["terrain status"] = function()
+    local data = rawget(_G, "TextAdventurerTerrainData")
+    if type(data) ~= "table" then
+      AddLine("system", "Terrain data not loaded. Expected global: TextAdventurerTerrainData")
+      return
+    end
+
+    local chunks = (type(data.chunks) == "table") and #data.chunks or 0
+    local markers = (type(data.markers) == "table") and #data.markers or 0
+    local tiles = (type(data.tilesPresent) == "table") and #data.tilesPresent or 0
+    AddLine("system", string.format("Terrain loaded: zone=%s map=%s chunks=%d markers=%d tiles=%d", tostring(data.zoneKey or "?"), tostring(data.mapName or "?"), chunks, markers, tiles))
+  end,
 }
 
 TA.PATTERN_INPUT_HANDLERS = {

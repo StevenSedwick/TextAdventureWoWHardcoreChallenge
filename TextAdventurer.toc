@@ -10,7 +10,8 @@ Ace3\CallbackHandler-1.0\CallbackHandler-1.0.xml
 Ace3\AceEvent-3.0\AceEvent-3.0.xml
 Ace3\AceConsole-3.0\AceConsole-3.0.xml
 WarlockSheetData.lua
-TextAdventurer.lua
+TerrainData_Azeroth.lua
+textadventurer.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
 Modules\QuestCommands.lua
