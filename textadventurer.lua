@@ -144,6 +144,9 @@ TA.dfModeLastKnownUnits = {}
 TA.dfModeCorpseContacts = {}
 TA.dfModeCorpseTTL = 45
 TA.dfModeTerrainContext = nil
+TA.dfModeTerrainStandingLabel = nil
+TA.dfModeTerrainStandingShort = nil
+TA.dfModeHueEnabled = false
 TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
@@ -203,6 +206,7 @@ local GetPlayerMapCell
 local RecordOutgoingDamage
 local ReportCurrentCell
 local UpdateMapCellOverlay
+local TA_RecordDFCorpseFromGUID
 
 local panel = CreateFrame("Frame", "TextAdventurerPanel", UIParent, "BackdropTemplate")
 panel:SetSize(920, 560)
@@ -312,8 +316,8 @@ inputBox:SetMaxLetters(200)
 inputBox:Hide()
 panel.inputBox = inputBox
 
-local DF_MODE_DEFAULT_WIDTH = 300
-local DF_MODE_DEFAULT_HEIGHT = 600
+local DF_MODE_DEFAULT_WIDTH = 400
+local DF_MODE_DEFAULT_HEIGHT = 625
 
 local dfModeFrame = CreateFrame("Frame", "TextAdventurerDFModeFrame", UIParent, "BackdropTemplate")
 dfModeFrame:SetSize(DF_MODE_DEFAULT_WIDTH, DF_MODE_DEFAULT_HEIGHT)
@@ -2319,7 +2323,7 @@ local function TA_IsQuestCompleteFlag(v)
 end
 
 local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
-  local total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
+  local total = GetNumQuestLogEntries and tonumber((GetNumQuestLogEntries())) or 0
   if total <= 0 then
     return {}, 0, 0, 0, false
   end
@@ -2333,7 +2337,7 @@ local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
         table.insert(expandedHeaderIndices, i)
       end
     end
-    total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or total
+    total = GetNumQuestLogEntries and tonumber((GetNumQuestLogEntries())) or total
   end
 
   local entries = {}
@@ -2368,7 +2372,7 @@ local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
 end
 
 local function TA_BuildQuestRouteCandidates(topN)
-  local initialTotal = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
+  local initialTotal = GetNumQuestLogEntries and tonumber((GetNumQuestLogEntries())) or 0
   local store = TA_GetQuestRouterStore()
   local weights = store.weights
   local ctx = TA_GetQuestRouteContext()
@@ -8379,7 +8383,7 @@ local function TA_PruneDFLastKnownUnits(mapID)
   end
 end
 
-local function TA_RecordDFCorpseFromGUID(guid, name, mapID)
+TA_RecordDFCorpseFromGUID = function(guid, name, mapID)
   if not guid then return end
   local known = TA.dfModeLastKnownUnits and TA.dfModeLastKnownUnits[guid]
   if type(known) ~= "table" then return end
@@ -8784,7 +8788,7 @@ local function TA_GetTerrainContextAtMapPos(mapX, mapY)
   return TA_GetTerrainContextAtWorldPos(posX, posY)
 end
 
-local function TA_GetTerrainGlyph(terrain, referenceHeight, referenceSlope, forwardBias, distCells)
+local function TA_GetTerrainGlyph(terrain, referenceHeight, referenceSlope, forwardBias, distCells, localHeightBaseline, localSlopeBaseline, localSlopeRelief, localHeightRelief)
   if type(terrain) ~= "table" or not terrain.resolved then
     return "."
   end
@@ -8792,14 +8796,22 @@ local function TA_GetTerrainGlyph(terrain, referenceHeight, referenceSlope, forw
   local obstacleCount = tonumber(terrain.obstacleCount) or 0
   local avgSlope = tonumber(terrain.avgSlope) or 0
   local maxSlope = tonumber(terrain.maxSlope) or avgSlope
-  local baselineSlope = tonumber(referenceSlope) or avgSlope
+  local baselineSlope = tonumber(localSlopeBaseline)
+  if baselineSlope == nil then
+    baselineSlope = tonumber(referenceSlope)
+  end
+  if baselineSlope == nil then
+    baselineSlope = avgSlope
+  end
   local avgSlopeDelta = avgSlope - baselineSlope
   local height = tonumber(terrain.avgHeight)
+  local slopeRelief = tonumber(localSlopeRelief) or 0
+  local heightRelief = tonumber(localHeightRelief) or 0
   local forward = tonumber(forwardBias) or 0
   local dist = tonumber(distCells) or 999
   local deltaHeight = nil
   local gradePerCell = nil
-  local nearAhead = (forward >= 0.65) and (dist <= 8)
+  local nearAhead = (forward >= 0.72) and (dist <= 6)
   local nearWeight = 0
   if dist <= 6 then
     nearWeight = (6 - dist) / 6
@@ -8817,43 +8829,74 @@ local function TA_GetTerrainGlyph(terrain, referenceHeight, referenceSlope, forw
     if gradeDiv < 1 then gradeDiv = 1 end
     gradePerCell = deltaHeight / gradeDiv
 
-    -- Keep A/V directional: only show near and in a forward cone so grade
-    -- cues indicate where you're heading, not broad side bands.
-    local showGrade = (dist <= 10) and (forward >= 0.35)
+    -- Keep A/V directional and local: show only near and strongly ahead.
+    local showGrade = (dist <= 8) and (forward >= 0.55)
     if showGrade then
-      local deltaThreshold = nearAhead and 4 or 6
-      local gradeThreshold = nearAhead and 0.8 or 1.2
-      if deltaHeight >= deltaThreshold and gradePerCell >= gradeThreshold then
+      local localDeltaPassUp = true
+      local localDeltaPassDown = true
+      if localHeightBaseline and height then
+        local localDelta = height - localHeightBaseline
+        local reliefHeightBoost = math.max(0, heightRelief - 2.0) * 0.25
+        local localThreshold = (nearAhead and 1.5 or 2.5) - reliefHeightBoost
+        if localThreshold < 0.8 then localThreshold = 0.8 end
+        localDeltaPassUp = localDelta >= localThreshold
+        localDeltaPassDown = localDelta <= -localThreshold
+      end
+
+      local deltaThreshold = nearAhead and 6 or 8
+      local gradeThreshold = nearAhead and 1.1 or 1.5
+      if localDeltaPassUp and deltaHeight >= deltaThreshold and gradePerCell >= gradeThreshold then
         return "A"
       end
-      if deltaHeight <= -deltaThreshold and gradePerCell <= -gradeThreshold then
+      if localDeltaPassDown and deltaHeight <= -deltaThreshold and gradePerCell <= -gradeThreshold then
         return "V"
       end
     end
   end
 
-  -- Use sustained average slope only. Max-slope spikes were causing
-  -- almost every chunk to look steep in some compiled datasets.
-  if referenceSlope ~= nil then
-    local steepAbs = (nearAhead and 10.5 or 12) - (1.5 * closeBoost)
-    local steepDelta = (nearAhead and 3 or 4) - (1.2 * closeBoost)
-    local inclineAbs = (nearAhead and 6.5 or 8) - (1.8 * closeBoost)
-    local inclineDelta = (nearAhead and 1.2 or 2) - (0.9 * closeBoost)
+  if baselineSlope ~= nil then
+    -- Compare against local neighborhood slope when available so hill edges
+    -- still warn even when the player is already on uneven terrain.
+    local steepAbs = (nearAhead and 9.5 or 11) - (1.5 * closeBoost)
+    local steepDelta = (nearAhead and 1.6 or 2.3) - (1.0 * closeBoost)
+    local inclineAbs = (nearAhead and 5.8 or 7) - (1.8 * closeBoost)
+    local inclineDelta = (nearAhead and 0.5 or 1.0) - (0.7 * closeBoost)
 
-    if steepAbs < 9 then steepAbs = 9 end
-    if steepDelta < 2 then steepDelta = 2 end
-    if inclineAbs < 5 then inclineAbs = 5 end
-    if inclineDelta < 0.8 then inclineDelta = 0.8 end
+    if steepAbs < 8.5 then steepAbs = 8.5 end
+    if steepDelta < 1.2 then steepDelta = 1.2 end
+    if inclineAbs < 4.8 then inclineAbs = 4.8 end
+    if inclineDelta < 0.35 then inclineDelta = 0.35 end
 
-    if avgSlope >= steepAbs and avgSlopeDelta >= steepDelta then return "^" end
+    local reliefSlopeTerm = math.max(0, slopeRelief - 2)
+    local reliefHeightTerm = math.max(0, heightRelief - 2)
+    local localReliefBoost = (reliefSlopeTerm * 0.18) + (reliefHeightTerm * 0.05)
+    if localReliefBoost > 2.2 then localReliefBoost = 2.2 end
+    if avgSlope < 6 then
+      -- On mostly flat ground, treat relief as a hint, not a hard slope verdict.
+      localReliefBoost = localReliefBoost * 0.35
+    end
+    local effectiveSlopeDelta = avgSlopeDelta + localReliefBoost
 
-    -- Directly ahead, allow abrupt max-slope spikes to show as incline warning
-    -- even when avg slope is still ramping up.
-    if (nearAhead or (dist <= 5 and forward >= 0.35)) and maxSlope >= 14 and avgSlopeDelta >= 0.8 then
+    if (nearAhead or dist <= 5) and slopeRelief >= 10 and avgSlope >= 9 and avgSlopeDelta >= 0.8 then
+      return "^"
+    end
+    if (nearAhead or dist <= 6) and slopeRelief >= 7 and avgSlope >= 6.5 and avgSlopeDelta >= 0.4 then
       return "/"
     end
 
-    if avgSlope >= inclineAbs and avgSlopeDelta >= inclineDelta then return "/" end
+    if avgSlope >= steepAbs and effectiveSlopeDelta >= steepDelta then return "^" end
+
+    if (nearAhead or (dist <= 6 and forward >= 0.45)) and maxSlope >= 16 and effectiveSlopeDelta >= 1.1 then
+      return "^"
+    end
+
+    -- Directly ahead, allow abrupt max-slope spikes to show as incline warning
+    -- even when avg slope is still ramping up.
+    if (nearAhead or (dist <= 6 and forward >= 0.45)) and maxSlope >= 12 and effectiveSlopeDelta >= 0.4 then
+      return "/"
+    end
+
+    if avgSlope >= inclineAbs and effectiveSlopeDelta >= inclineDelta then return "/" end
   else
     if avgSlope >= 14 then return "^" end
     if avgSlope >= 9 then return "/" end
@@ -8882,6 +8925,101 @@ local function GetEntitySymbol(unit)
     return classLower
   end
   return "?"
+end
+
+function TA_ClassifyStandingTerrain(terrain, localSlopeBaseline)
+  if type(terrain) ~= "table" or not terrain.resolved then
+    return nil, nil
+  end
+
+  if terrain.hasWater then
+    return "Ground: waterline", "WATER"
+  end
+
+  local slope = tonumber(terrain.avgSlope) or 0
+  local maxSlope = tonumber(terrain.maxSlope) or slope
+  local baseline = tonumber(localSlopeBaseline)
+  local slopeDelta = baseline and (slope - baseline) or 0
+
+  if maxSlope >= 18 or (slope >= 13 and slopeDelta >= 1.8) then
+    return "Ground: mountain face", "MTN"
+  end
+  if maxSlope >= 15 or (slope >= 10 and slopeDelta >= 1.1) then
+    return "Ground: steep hillside", "STEEP"
+  end
+  if maxSlope >= 11 or slope >= 7 then
+    return "Ground: rolling hills", "HILL"
+  end
+  return "Ground: mostly flat", "FLAT"
+end
+
+function TA_Clamp01(v)
+  if v < 0 then return 0 end
+  if v > 1 then return 1 end
+  return v
+end
+
+function TA_ColorLerp(a, b, t)
+  local s = 1 - t
+  return (a[1] * s) + (b[1] * t), (a[2] * s) + (b[2] * t), (a[3] * s) + (b[3] * t)
+end
+
+function TA_HeatToRGB(heat)
+  local t = TA_Clamp01(tonumber(heat) or 0)
+  local stops = {
+    { 0.00, { 0.22, 0.52, 1.00 } }, -- blue
+    { 0.33, { 0.20, 0.90, 0.42 } }, -- green
+    { 0.66, { 0.98, 0.83, 0.20 } }, -- yellow
+    { 1.00, { 1.00, 0.33, 0.18 } }, -- red
+  }
+
+  for i = 1, #stops - 1 do
+    local lo = stops[i]
+    local hi = stops[i + 1]
+    if t <= hi[1] then
+      local span = hi[1] - lo[1]
+      local localT = span > 0 and ((t - lo[1]) / span) or 0
+      return TA_ColorLerp(lo[2], hi[2], localT)
+    end
+  end
+
+  local last = stops[#stops][2]
+  return last[1], last[2], last[3]
+end
+
+function TA_ColorizeCellByHeat(cell, heat)
+  if type(cell) ~= "string" or cell == "" then
+    return cell
+  end
+  local r, g, b = TA_HeatToRGB(heat)
+  return string.format("|cff%02x%02x%02x%s|r", math.floor(r * 255), math.floor(g * 255), math.floor(b * 255), cell)
+end
+
+function TA_TerrainHeatFromContext(terrain, slopeRelief, heightRelief)
+  if type(terrain) ~= "table" or not terrain.resolved then
+    return 0
+  end
+  if terrain.hasWater then
+    return 0.08
+  end
+
+  local avgSlope = tonumber(terrain.avgSlope) or 0
+  local maxSlope = tonumber(terrain.maxSlope) or avgSlope
+  local reliefSlope = tonumber(slopeRelief) or 0
+  local reliefHeight = tonumber(heightRelief) or 0
+
+  -- Use average slope + local relief as primary signals. Max-slope spikes are
+  -- only used as excess over average so one outlier does not saturate all cells.
+  local avgNorm = TA_Clamp01(avgSlope / 22.0)
+  local spikeExcess = math.max(0, maxSlope - avgSlope)
+  local spikeNorm = TA_Clamp01(spikeExcess / 14.0)
+  local reliefNorm = TA_Clamp01(reliefSlope / 10.0)
+  local verticalNorm = TA_Clamp01(reliefHeight / 20.0)
+
+  local raw = (avgNorm * 0.50) + (spikeNorm * 0.20) + (reliefNorm * 0.20) + (verticalNorm * 0.10)
+  -- Slightly compress the top-end so hills and mid-slopes retain distinct hues.
+  local heat = raw ^ 1.2
+  return TA_Clamp01(heat)
 end
 
 local function BuildDFModeDisplay()
@@ -9326,17 +9464,219 @@ local function BuildDFModeDisplay()
     painted = 0,
     blocked = 0,
     noGlyph = 0,
+    heatMin = nil,
+    heatMax = nil,
   }
+  local terrainCache = {}
+
+  local function TA_GetTerrainCellAtOffset(wx, wy)
+    if not playerWorldX or not playerWorldY then
+      return nil
+    end
+    local key = tostring(wx) .. ":" .. tostring(wy)
+    if terrainCache[key] ~= nil then
+      return terrainCache[key] ~= false and terrainCache[key] or nil
+    end
+
+    terrainStats.lookups = terrainStats.lookups + 1
+    local sampleX = playerWorldX + (wx * yardsPerCell)
+    local sampleY = playerWorldY + (wy * yardsPerCell)
+    local terrainCell = TA_GetTerrainContextAtWorldPos(sampleX, sampleY, terrainLookupMode)
+    terrainCache[key] = terrainCell or false
+    return terrainCell
+  end
+
+  local function TA_IsSameTerrainChunk(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then
+      return false
+    end
+    return (a.tileX == b.tileX) and (a.tileY == b.tileY) and (a.chunkX == b.chunkX) and (a.chunkY == b.chunkY)
+  end
+
+  local function TA_GetLocalTerrainBaselines(wx, wy, anchorTerrainCell)
+    local slopeSum = 0
+    local heightSum = 0
+    local count = 0
+    local slopeMin, slopeMax = nil, nil
+    local heightMin, heightMax = nil, nil
+    for oy = -1, 1 do
+      for ox = -1, 1 do
+        if not (ox == 0 and oy == 0) then
+          local n = TA_GetTerrainCellAtOffset(wx + ox, wy + oy)
+          if n and n.resolved then
+            if anchorTerrainCell and not TA_IsSameTerrainChunk(anchorTerrainCell, n) then
+              -- Keep the baseline local to the same ADT chunk so nearby chunk
+              -- transitions do not flatten or overstate local slope cues.
+              n = nil
+            end
+          end
+          if n and n.resolved then
+            local nSlope = tonumber(n.avgSlope)
+            local nHeight = tonumber(n.avgHeight)
+            if nSlope ~= nil and nHeight ~= nil then
+              count = count + 1
+              slopeSum = slopeSum + nSlope
+              heightSum = heightSum + nHeight
+              if slopeMin == nil or nSlope < slopeMin then slopeMin = nSlope end
+              if slopeMax == nil or nSlope > slopeMax then slopeMax = nSlope end
+              if heightMin == nil or nHeight < heightMin then heightMin = nHeight end
+              if heightMax == nil or nHeight > heightMax then heightMax = nHeight end
+            end
+          end
+        end
+      end
+    end
+
+    if count >= 3 then
+      local slopeRelief = (slopeMax and slopeMin) and (slopeMax - slopeMin) or 0
+      local heightRelief = (heightMax and heightMin) and (heightMax - heightMin) or 0
+      return (heightSum / count), (slopeSum / count), slopeRelief, heightRelief
+    end
+
+    if anchorTerrainCell and anchorTerrainCell.resolved then
+      -- Fallback: if there are too few same-chunk neighbors, use the anchor
+      -- cell sample itself instead of averaging across other chunks.
+      local aHeight = tonumber(anchorTerrainCell.avgHeight)
+      local aSlope = tonumber(anchorTerrainCell.avgSlope)
+      return aHeight, aSlope, 0, 0
+    end
+
+    return nil, nil, 0, 0
+  end
+
   -- Keep terrain warnings closer to the player in threat mode.
   local terrainRenderRadius = radius
   if viewMode == "threat" then
     terrainRenderRadius = math.max(6, math.floor(radius * 0.6))
   end
 
+  local showTerrainView = (viewMode == "threat" or viewMode == "combined")
+  local terrainLayer = {}
+  local terrainHeatLayer = {}
+
+  -- Pass 1: sample terrain glyphs for each display cell so we can smooth noisy
+  -- one-off spikes without requerying terrain on the render pass.
+  for y = radius, -radius, -1 do
+    terrainLayer[y] = {}
+    terrainHeatLayer[y] = {}
+    for x = -radius, radius do
+      terrainStats.samples = terrainStats.samples + 1
+
+      local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
+      local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
+      local dist = math.sqrt(x * x + y * y)
+
+      local baseCell = "."
+      if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
+        baseCell = grid[wy][wx]
+      end
+
+      local glyph = "."
+      local heat = 0
+      if showTerrainView then
+        if baseCell ~= "." then
+          terrainStats.blocked = terrainStats.blocked + 1
+        elseif dist > terrainRenderRadius then
+          -- Intentionally skip far-edge terrain in threat mode to avoid
+          -- warnings appearing only at the outer border.
+        elseif playerWorldX and playerWorldY then
+          local terrainCell = TA_GetTerrainCellAtOffset(wx, wy)
+          if terrainCell and terrainCell.resolved then
+            terrainStats.resolved = terrainStats.resolved + 1
+          else
+            terrainStats.unresolved = terrainStats.unresolved + 1
+          end
+
+          local forwardBias = 0
+          if dist > 0 then
+            forwardBias = ((wx * forwardX) + (wy * forwardY)) / dist
+          end
+          local localHeightBaseline, localSlopeBaseline, localSlopeRelief, localHeightRelief = TA_GetLocalTerrainBaselines(wx, wy, terrainCell)
+          heat = TA_TerrainHeatFromContext(terrainCell, localSlopeRelief, localHeightRelief)
+          if terrainStats.heatMin == nil or heat < terrainStats.heatMin then terrainStats.heatMin = heat end
+          if terrainStats.heatMax == nil or heat > terrainStats.heatMax then terrainStats.heatMax = heat end
+          glyph = TA_GetTerrainGlyph(
+            terrainCell,
+            centerTerrainHeight,
+            centerTerrainSlope,
+            forwardBias,
+            dist,
+            localHeightBaseline,
+            localSlopeBaseline,
+            localSlopeRelief,
+            localHeightRelief
+          )
+          if glyph ~= "." then
+            terrainStats.painted = terrainStats.painted + 1
+          else
+            terrainStats.noGlyph = terrainStats.noGlyph + 1
+          end
+        end
+      end
+
+      terrainLayer[y][x] = glyph
+      terrainHeatLayer[y][x] = heat
+    end
+  end
+
+  local centerLocalSlope = nil
+  if playerWorldX and playerWorldY then
+    local centerTerrainCell = TA_GetTerrainCellAtOffset(0, 0)
+    local _, localSlope = TA_GetLocalTerrainBaselines(0, 0, centerTerrainCell)
+    centerLocalSlope = localSlope
+  end
+  local standingLabel, standingShort = TA_ClassifyStandingTerrain(TA.dfModeTerrainContext, centerLocalSlope)
+  TA.dfModeTerrainStandingLabel = standingLabel
+  TA.dfModeTerrainStandingShort = standingShort
+
+  local function TA_GetSmoothedTerrainGlyph(x, y)
+    local raw = terrainLayer[y] and terrainLayer[y][x] or "."
+    if raw ~= "A" and raw ~= "V" and raw ~= "/" and raw ~= "^" then
+      return raw
+    end
+
+    local counts = { ["A"] = 0, ["V"] = 0, ["/"] = 0, ["^"] = 0 }
+    for oy = -1, 1 do
+      for ox = -1, 1 do
+        if not (ox == 0 and oy == 0) then
+          local ny = y + oy
+          local nx = x + ox
+          local g = terrainLayer[ny] and terrainLayer[ny][nx] or nil
+          if counts[g] ~= nil then
+            counts[g] = counts[g] + 1
+          end
+        end
+      end
+    end
+
+    if (raw == "A" or raw == "V") and counts[raw] < 2 and counts["/"] + counts["^"] < 3 then
+      return ","
+    end
+    if raw == "^" and counts["^"] < 2 and counts["/"] >= 2 then
+      return "/"
+    end
+
+    local bestGlyph = raw
+    local bestCount = counts[raw] or 0
+    local candidates = { "^", "/", "A", "V" }
+    for i = 1, #candidates do
+      local g = candidates[i]
+      local c = counts[g] or 0
+      if c > bestCount then
+        bestCount = c
+        bestGlyph = g
+      end
+    end
+
+    if bestGlyph ~= raw and bestCount >= 3 then
+      return bestGlyph
+    end
+    return raw
+  end
+
   for y = radius, -radius, -1 do
     local row = {}
     for x = -radius, radius do
-      terrainStats.samples = terrainStats.samples + 1
       -- Rotate viewport with heading: screen coords -> world coords.
       local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
       local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
@@ -9350,34 +9690,16 @@ local function BuildDFModeDisplay()
       local showThreat = (viewMode == "threat" or viewMode == "combined")
       local showExploration = (viewMode == "exploration" or viewMode == "combined")
       local showRange = (viewMode == "tactical" or viewMode == "combined")
-      local showTerrain = (viewMode == "threat" or viewMode == "combined")
+      local showTerrain = showTerrainView
 
-      if showTerrain then
-        if cell ~= "." then
-          terrainStats.blocked = terrainStats.blocked + 1
-        elseif dist > terrainRenderRadius then
-          -- Intentionally skip far-edge terrain in threat mode to avoid
-          -- warnings appearing only at the outer border.
-        elseif playerWorldX and playerWorldY then
-          terrainStats.lookups = terrainStats.lookups + 1
-          local sampleX = playerWorldX + (wx * yardsPerCell)
-          local sampleY = playerWorldY + (wy * yardsPerCell)
-          local terrainCell = TA_GetTerrainContextAtWorldPos(sampleX, sampleY, terrainLookupMode)
-          if terrainCell and terrainCell.resolved then
-            terrainStats.resolved = terrainStats.resolved + 1
+      if showTerrain and cell == "." then
+        local glyph = TA_GetSmoothedTerrainGlyph(x, y)
+        if glyph and glyph ~= "." then
+          if TA.dfModeHueEnabled then
+            local heat = (terrainHeatLayer[y] and terrainHeatLayer[y][x]) or 0
+            cell = TA_ColorizeCellByHeat(glyph, heat)
           else
-            terrainStats.unresolved = terrainStats.unresolved + 1
-          end
-          local forwardBias = 0
-          if dist > 0 then
-            forwardBias = ((wx * forwardX) + (wy * forwardY)) / dist
-          end
-          local glyph = TA_GetTerrainGlyph(terrainCell, centerTerrainHeight, centerTerrainSlope, forwardBias, dist)
-          if glyph ~= "." then
-            terrainStats.painted = terrainStats.painted + 1
             cell = glyph
-          else
-            terrainStats.noGlyph = terrainStats.noGlyph + 1
           end
         end
       end
@@ -9417,6 +9739,12 @@ local function BuildDFModeDisplay()
       "Threat: ! high  ~ medium  . empty  x corpse",
       "Terrain: ^ steep  / incline  A/V up/down  X/# obstacles",
     }
+    if TA.dfModeHueEnabled then
+      table.insert(legend, "Terrain hue: blue low  green medium  yellow high  red extreme")
+    end
+    if standingLabel then
+      table.insert(legend, standingLabel)
+    end
     display = display .. "\n" .. table.concat(legend, "\n")
   end
 
@@ -9530,6 +9858,7 @@ function TA_DFModeStatus()
   AddLine("system", "Legend: P=Player  E=Enemy  T/t=Target  M=Mark  *=Contested")
   AddLine("system", "Threat: !=high  ~=medium  .=empty  x=corpse")
   AddLine("system", "Terrain: ^=steep  /=incline  A/V=up/down  X/#=obstacles")
+  AddLine("system", "Terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF") .. " (use /ta df hue on|off)")
   AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 1) .. " cell(s)")
   AddLine("system", "Orientation: " .. ((TA.dfModeOrientation or "fixed"):upper()))
   AddLine("system", "Rotation mode: " .. ((TA.dfModeRotationMode or "smooth"):upper()))
@@ -9553,9 +9882,19 @@ function TA_DFModeStatus()
     local maxSlope = terrain.maxSlope and string.format("%.2f", terrain.maxSlope) or "?"
     AddLine("system", string.format("Terrain: tile/chunk %d:%d / %d:%d  water=%s  texture=%s  height~%s  slope~%s (max %s, mode %s)", terrain.tileX or -1, terrain.tileY or -1, terrain.chunkX or -1, terrain.chunkY or -1, water, texture, height, slope, maxSlope, tostring(terrain.lookupMode or "?")))
   end
+  local standingLabel = TA.dfModeTerrainStandingLabel
+  if not standingLabel and terrain and terrain.resolved then
+    standingLabel = select(1, TA_ClassifyStandingTerrain(terrain, nil))
+  end
+  if standingLabel then
+    AddLine("system", standingLabel)
+  end
   local tr = TA.dfModeTerrainRenderStats
   if type(tr) == "table" then
     AddLine("system", string.format("Terrain render: samples=%d lookups=%d resolved=%d painted=%d blocked=%d no-glyph=%d unresolved=%d", tr.samples or 0, tr.lookups or 0, tr.resolved or 0, tr.painted or 0, tr.blocked or 0, tr.noGlyph or 0, tr.unresolved or 0))
+    if tr.heatMin ~= nil and tr.heatMax ~= nil then
+      AddLine("system", string.format("Terrain hue range: min=%.2f max=%.2f", tonumber(tr.heatMin) or 0, tonumber(tr.heatMax) or 0))
+    end
   end
   if TA.dfModeNavHint and TA.dfModeNavHint ~= "" then
     AddLine("system", "Navigation hint: " .. TA.dfModeNavHint)
@@ -9656,7 +9995,12 @@ function TA_UpdateDFMode()
   if terrain and terrain.resolved then
     local waterFlag = terrain.hasWater and "W" or "D"
     local slope = terrain.avgSlope and string.format("%.1f", terrain.avgSlope) or "?"
-    dfTitle:SetText(string.format("%s | %s | s:%s", viewMode, waterFlag, slope))
+    local standingShort = TA.dfModeTerrainStandingShort
+    if standingShort then
+      dfTitle:SetText(string.format("%s | %s | s:%s | %s", viewMode, waterFlag, slope, standingShort))
+    else
+      dfTitle:SetText(string.format("%s | %s | s:%s", viewMode, waterFlag, slope))
+    end
   else
     dfTitle:SetText(viewMode)
   end
@@ -11085,6 +11429,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeRotationMode = "smooth"
     end
     TA.dfModeRotationMode = TextAdventurerDB.dfModeRotationMode
+    if TextAdventurerDB.dfModeHueEnabled == nil then
+      TextAdventurerDB.dfModeHueEnabled = false
+    end
+    TA.dfModeHueEnabled = TextAdventurerDB.dfModeHueEnabled and true or false
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
       local savedGrid = math.floor(TextAdventurerDB.dfModeGridSize)
       if savedGrid < 5 then savedGrid = 5 end

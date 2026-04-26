@@ -278,6 +278,35 @@ function TA_HandleNavigationInputCommand(lower, msg)
     return true
   end
 
+  local dfHue = lower:match("^df%s+hue%s+(%w+)$") or lower:match("^dfmode%s+hue%s+(%w+)$")
+  if dfHue then
+    if dfHue == "on" then
+      TA.dfModeHueEnabled = true
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeHueEnabled = true
+      AddLine("system", "DF terrain hue enabled.")
+    elseif dfHue == "off" then
+      TA.dfModeHueEnabled = false
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeHueEnabled = false
+      AddLine("system", "DF terrain hue disabled.")
+    elseif dfHue == "status" then
+      AddLine("system", "DF terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF"))
+    else
+      AddLine("system", "Unknown DF hue option. Use: on, off, or status")
+    end
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
+    return true
+  end
+  if lower == "df hue" or lower == "dfmode hue" then
+    AddLine("system", "DF terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF"))
+    AddLine("system", "Usage: /ta df hue <on|off|status>")
+    return true
+  end
+
   local dfModeView = lower:match("^dfmode%s+(%w+)$") or lower:match("^df%s+(%w+)$")
   if dfModeView then
     if dfModeView == "hybrid" or dfModeView == "all" then
