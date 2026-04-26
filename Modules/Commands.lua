@@ -8,11 +8,6 @@ TA.EXACT_INPUT_HANDLERS = {
   ["stats"] = function() ReportCharacterStats() end,
   ["skills"] = function() TA_ReportSkillLevels(true) end,
   ["skill"] = function() TA_ReportSkillLevels(true) end,
-  ["lootpreview"] = function() ReportLootWindowPreview() end,
-  ["loot preview"] = function() ReportLootWindowPreview() end,
-  ["money"] = function() ReportMoney() end,
-  ["gold"] = function() ReportMoney() end,
-  ["coins"] = function() ReportMoney() end,
   ["dps"] = function() ReportDPS() end,
   ["dps reset"] = function() ResetDPSStats() end,
   ["sealdps"] = function() TA_ReportSealDpsComparison(nil) end,
@@ -68,10 +63,6 @@ TA.EXACT_INPUT_HANDLERS = {
   ["level"] = function() ReportXP() end,
   ["buffs"] = function() ReportBuffs() end,
   ["tracking"] = function() ReportTracking() end,
-  ["inventory"] = function() ReportInventory() end,
-  ["bags"] = function() ReportInventory() end,
-  ["gear"] = function() ReportEquipment() end,
-  ["equipment"] = function() ReportEquipment() end,
   ["actions"] = function() ReportActionBars() end,
   ["bars"] = function() ReportActionBars() end,
   ["spells"] = function() ReportSpellbook() end,
@@ -151,19 +142,6 @@ TA.EXACT_INPUT_HANDLERS = {
   ["prompts"] = function() ReportStaticPopups() end,
   ["debug"] = function() DebugVisiblePopups() end,
   ["debugpopups"] = function() DebugVisiblePopups() end,
-  ["vendor"] = function() ReportVendorItems() end,
-  ["shop"] = function() ReportVendorItems() end,
-  ["vendorinfo"] = function() AddLine("system", "Usage: vendorinfo <index>") end,
-  ["shopinfo"] = function() AddLine("system", "Usage: shopinfo <index>") end,
-  ["iteminfo"] = function() AddLine("system", "Usage: iteminfo <index> (while vendor is open)") end,
-  ["buycheck"] = function() AddLine("system", "Usage: buycheck <index> [qty]") end,
-  ["readitem"] = function()
-    if ItemTextFrame and ItemTextFrame:IsShown() then
-      TA_ReportOpenItemText(true)
-    else
-      AddLine("system", "Usage: readitem <bag> <slot> (or open a readable item first, then use readitem).")
-    end
-  end,
   ["range"] = function() ReportRange() end,
   ["fps"] = function() TA_ReportFPS() end,
   ["framerate"] = function() TA_ReportFPS() end,
@@ -235,6 +213,10 @@ if TA_RegisterQuestCommandHandlers then
   TA_RegisterQuestCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
+if TA_RegisterEconomyCommandHandlers then
+  TA_RegisterEconomyCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
 TA_AddPatternInputHandler("^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end)
 TA_AddPatternInputHandler("^target%s+(.+)$", function(arg) DoTargetCommand(arg) end)
@@ -246,16 +228,6 @@ TA_AddPatternInputHandler("^cellyards%s+([%d%.]+)$", function(yards) SetCellSize
 TA_AddPatternInputHandler("^showmark%s+(%d+)$", function(markID) ShowMarkedCellOnMap(tonumber(markID)) end)
 TA_AddPatternInputHandler("^renamemark%s+(%d+)%s+(.+)$", function(markID, newName) TA_RenameMarkedCell(tonumber(markID), newName) end)
 TA_AddPatternInputHandler("^deletemark%s+(%d+)$", function(markID) DeleteMarkedCell(tonumber(markID)) end)
-TA_AddPatternInputHandler("^buy%s+(%d+)$", function(idx) BuyVendorItem(tonumber(idx), 1) end)
-TA_AddPatternInputHandler("^buy%s+(%d+)%s+(%d+)$", function(idx, qty) BuyVendorItem(tonumber(idx), tonumber(qty)) end)
-TA_AddPatternInputHandler("^buycheck%s+(%d+)$", function(idx) TA_CheckVendorPurchase(tonumber(idx), 1) end)
-TA_AddPatternInputHandler("^buycheck%s+(%d+)%s+(%d+)$", function(idx, qty) TA_CheckVendorPurchase(tonumber(idx), tonumber(qty)) end)
-TA_AddPatternInputHandler("^sell%s+(%d+)%s+(%d+)$", function(bag, slot) SellBagItem(tonumber(bag), tonumber(slot)) end)
-TA_AddPatternInputHandler("^destroy%s+(%d+)%s+(%d+)$", function(bag, slot) DestroyBagItem(tonumber(bag), tonumber(slot)) end)
-TA_AddPatternInputHandler("^vendorinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
-TA_AddPatternInputHandler("^shopinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
-TA_AddPatternInputHandler("^iteminfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
-TA_AddPatternInputHandler("^readitem%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReadBagItemText(tonumber(bag), tonumber(slot)) end)
 
 function TA_RunCVarList(filter)
   if not ConsoleExec then
@@ -313,36 +285,7 @@ function TA_ProcessInputCommand(msg)
     return
   end
 
-  if lower == "repair" then
-    TA_RepairVendorGear(false)
-    return
-  elseif lower == "repair guild" then
-    TA_RepairVendorGear(true)
-    return
-  elseif lower == "repairstatus" then
-    TA_ReportRepairStatus()
-    return
-  elseif lower == "selljunk" then
-    TA_SellJunk()
-    return
-  elseif lower == "restock" then
-    AddLine("system", "Usage: restock <item name> <count>")
-    return
-  end
-
-  local restockItemName, restockCount = lower:match("^restock%s+(.+)%s+(%d+)$")
-  if restockItemName and restockCount then
-    TA_RestockVendorItem(restockItemName, tonumber(restockCount))
-    return
-  end
-
-  if lower == "buyback" then
-    TA_ReportVendorBuybackItems()
-    return
-  end
-  local buybackIndex = lower:match("^buyback%s+(%d+)$")
-  if buybackIndex then
-    TA_BuybackVendorItem(tonumber(buybackIndex))
+  if TA_HandleEconomyInputCommand and TA_HandleEconomyInputCommand(lower, msg) then
     return
   end
 
