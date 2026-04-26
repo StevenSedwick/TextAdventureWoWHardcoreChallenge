@@ -67,24 +67,6 @@ TA.EXACT_INPUT_HANDLERS = {
   ["xp"] = function() ReportXP() end,
   ["level"] = function() ReportXP() end,
   ["buffs"] = function() ReportBuffs() end,
-  ["quests"] = function() ReportQuestLog() end,
-  ["questlog"] = function() ReportQuestLog() end,
-  ["quest log"] = function() ReportQuestLog() end,
-  ["questinfo"] = function() ReportQuestInfo(nil) end,
-  ["questroute"] = function() TA_ReportQuestRouteSuggestions(false, nil) end,
-  ["quest route"] = function() TA_ReportQuestRouteSuggestions(false, nil) end,
-  ["questroute explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
-  ["quest route explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
-  ["questroute weights"] = function() TA_ReportQuestRouteWeights() end,
-  ["quest route weights"] = function() TA_ReportQuestRouteWeights() end,
-  ["questroute debug"] = function() TA_ReportQuestRouteDebug() end,
-  ["quest route debug"] = function() TA_ReportQuestRouteDebug() end,
-  ["questroute mark"] = function() TA_QuestRouteTomTomWaypoint() end,
-  ["quest route mark"] = function() TA_QuestRouteTomTomWaypoint() end,
-  ["questroute on"] = function() TA_SetQuestRouteToggle(true) end,
-  ["quest route on"] = function() TA_SetQuestRouteToggle(true) end,
-  ["questroute off"] = function() TA_SetQuestRouteToggle(false) end,
-  ["quest route off"] = function() TA_SetQuestRouteToggle(false) end,
   ["tracking"] = function() ReportTracking() end,
   ["inventory"] = function() ReportInventory() end,
   ["bags"] = function() ReportInventory() end,
@@ -166,11 +148,6 @@ TA.EXACT_INPUT_HANDLERS = {
     TextAdventurerDB.autoEnable = false
     AddLine("system", "Autostart disabled.")
   end,
-  ["gossip"] = function() ReportGossipOptions() end,
-  ["complete"] = function() CompleteQuestFromTerminal() end,
-  ["turnin"] = function() CompleteQuestFromTerminal() end,
-  ["rewards"] = function() ListQuestRewards() end,
-  ["rewardinfo"] = function() AddLine("system", "Usage: rewardinfo <index>") end,
   ["prompts"] = function() ReportStaticPopups() end,
   ["debug"] = function() DebugVisiblePopups() end,
   ["debugpopups"] = function() DebugVisiblePopups() end,
@@ -222,10 +199,6 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^warlockdps%s+mapping$", function() TA_ReportWarlockSheetMapping() end },
   { "^warlockprompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end },
   { "^warlock%s+prompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end },
-  { "^questroute%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
-  { "^quest%s+route%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
-  { "^questroute%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
-  { "^quest%s+route%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
   { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
   { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
   { "^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end },
@@ -235,7 +208,6 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^sealdps%s+(%d+)$", function(level) TA_ReportSealDpsComparison(tonumber(level)) end },
   { "^sealdps%s+set%s+(%d+)%s+([%-]?[%d%.]+)%s+([%-]?[%d%.]+)$", function(level, sor, soc) TA_SetSealDpsModelRow(level, sor, soc) end },
   { "^sealdps%s+import%s+(.+)$", function(payload) TA_ImportSealDpsModel(payload) end },
-  { "^questinfo%s+(.+)$", function(arg) ReportQuestInfo(arg) end },
   { "^macroinfo%s+(%d+)$", function(idx) ShowMacroInfo(tonumber(idx)) end },
   { "^macro%s+(%d+)$", function(idx) CastMacroByIndex(tonumber(idx)) end },
   { "^macroset%s+(%d+)%s+(.+)$", function(idx, body) SetMacroBody(tonumber(idx), body) end },
@@ -255,8 +227,12 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^recipe%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
 }
 
-local function TA_AddPatternInputHandler(pattern, handler)
+function TA_AddPatternInputHandler(pattern, handler)
   table.insert(TA.PATTERN_INPUT_HANDLERS, { pattern, handler })
+end
+
+if TA_RegisterQuestCommandHandlers then
+  TA_RegisterQuestCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
@@ -270,16 +246,6 @@ TA_AddPatternInputHandler("^cellyards%s+([%d%.]+)$", function(yards) SetCellSize
 TA_AddPatternInputHandler("^showmark%s+(%d+)$", function(markID) ShowMarkedCellOnMap(tonumber(markID)) end)
 TA_AddPatternInputHandler("^renamemark%s+(%d+)%s+(.+)$", function(markID, newName) TA_RenameMarkedCell(tonumber(markID), newName) end)
 TA_AddPatternInputHandler("^deletemark%s+(%d+)$", function(markID) DeleteMarkedCell(tonumber(markID)) end)
-TA_AddPatternInputHandler("^choose%s+(%d+)$", function(idx) ChooseGossipOption(tonumber(idx)) end)
-TA_AddPatternInputHandler("^select%s+(%d+)$", function(idx) SelectQuestReward(tonumber(idx)) end)
-TA_AddPatternInputHandler("^rewardinfo%s+(%d+)$", function(idx) ReportQuestRewardInfo(tonumber(idx)) end)
-TA_AddPatternInputHandler("^reward%s+(%d+)$", function(idx)
-  idx = tonumber(idx)
-  SelectQuestReward(idx)
-  GetQuestRewardChoice(idx)
-end)
-TA_AddPatternInputHandler("^accept%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "accept") end)
-TA_AddPatternInputHandler("^decline%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "decline") end)
 TA_AddPatternInputHandler("^buy%s+(%d+)$", function(idx) BuyVendorItem(tonumber(idx), 1) end)
 TA_AddPatternInputHandler("^buy%s+(%d+)%s+(%d+)$", function(idx, qty) BuyVendorItem(tonumber(idx), tonumber(qty)) end)
 TA_AddPatternInputHandler("^buycheck%s+(%d+)$", function(idx) TA_CheckVendorPurchase(tonumber(idx), 1) end)
