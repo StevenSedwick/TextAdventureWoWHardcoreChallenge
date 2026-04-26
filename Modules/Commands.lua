@@ -20,12 +20,6 @@ TA.EXACT_INPUT_HANDLERS = {
   ["bars"] = function() ReportActionBars() end,
   ["spells"] = function() ReportSpellbook() end,
   ["spellbook"] = function() ReportSpellbook() end,
-  ["macros"] = function() ReportMacros() end,
-  ["trainer"] = function() ReportTrainerServices() end,
-  ["train list"] = function() ReportTrainerServices() end,
-  ["recipes"] = function() TA_ReportProfessionRecipes() end,
-  ["recipe"] = function() TA_ReportProfessionRecipes() end,
-  ["recipeinfo"] = function() AddLine("system", "Usage: recipeinfo <index>") end,
   ["marka"] = function() MarkFacingA() end,
   ["markb"] = function() MarkFacingB() end,
   ["spacing"] = function() ReportSpacingEstimate() end,
@@ -77,23 +71,6 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^help%s+(.+)$", function(topic) TA_ShowHelpTopic(topic) end },
   { "^skills%s+(%a+)$", function(which) TA_ReportSkillLevels(true, which) end },
   { "^skill%s+(%a+)$", function(which) TA_ReportSkillLevels(true, which) end },
-  { "^macroinfo%s+(%d+)$", function(idx) ShowMacroInfo(tonumber(idx)) end },
-  { "^macro%s+(%d+)$", function(idx) CastMacroByIndex(tonumber(idx)) end },
-  { "^macroset%s+(%d+)%s+(.+)$", function(idx, body) SetMacroBody(tonumber(idx), body) end },
-  { "^macrorename%s+(.+)$", function(rest)
-      local idx, newName = ParseRenameArgs(rest)
-      RenameMacro(idx, newName)
-    end },
-  { "^macrocreate%s+(.+)$", function(rest)
-      local name, body = ParseNameAndBodyArgs(rest)
-      CreateNewMacro(name, body)
-    end },
-  { "^macrodelete%s+(%d+)$", function(idx) DeleteMacroByIndex(tonumber(idx)) end },
-  { "^macro%s+(.+)$", function(name) CastMacroByName(name) end },
-  { "^train%s+all$", function() TrainAllAvailableServices() end },
-  { "^train%s+(%d+)$", function(idx) TrainServiceByIndex(tonumber(idx)) end },
-  { "^recipeinfo%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
-  { "^recipe%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
 }
 
 function TA_AddPatternInputHandler(pattern, handler)
@@ -118,6 +95,10 @@ end
 
 if TA_RegisterWarlockMLCommandHandlers then
   TA_RegisterWarlockMLCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
+if TA_RegisterMacroRecipeCommandHandlers then
+  TA_RegisterMacroRecipeCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
