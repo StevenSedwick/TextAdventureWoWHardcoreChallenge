@@ -4,7 +4,7 @@
 ## Author: You
 ## Version: 0.2
 ## SavedVariablesPerCharacter: TextAdventurerDB
-## OptionalDeps: !BugGrabber, BugSack
+## OptionalDeps: !BugGrabber, BugSack, Questie, Guidelime, TomTom, WoWPro
 Ace3\LibStub\LibStub.lua
 Ace3\CallbackHandler-1.0\CallbackHandler-1.0.xml
 Ace3\AceEvent-3.0\AceEvent-3.0.xml

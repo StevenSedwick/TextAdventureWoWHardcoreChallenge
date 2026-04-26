@@ -1,5 +1,5 @@
 ﻿-- TextAdventurer.lua
----@diagnostic disable: undefined-global, undefined-field, deprecated
+---@diagnostic disable: deprecated
 -- Put this file in:
 -- World of Warcraft/_classic_/Interface/AddOns/TextAdventurer/
 --
@@ -2087,6 +2087,462 @@ local function ReportQuestObjectiveChanges()
     end
   end
   TA.questObjectiveSnapshot = newSnapshot
+end
+
+local TA_QUEST_ROUTE_DEFAULT_WEIGHTS = {
+  xp = 0.32,
+  proximity = 0.30,
+  levelFit = 0.16,
+  progress = 0.12,
+  guide = 0.10,
+}
+
+local function TA_ClampQuestRouteWeight(v)
+  local n = tonumber(v) or 0
+  if n < 0 then return 0 end
+  if n > 1 then return 1 end
+  return n
+end
+
+local function TA_NormalizeQuestRouteWeights(weights)
+  local sum = 0
+  for k, _ in pairs(TA_QUEST_ROUTE_DEFAULT_WEIGHTS) do
+    local w = TA_ClampQuestRouteWeight(weights[k])
+    weights[k] = w
+    sum = sum + w
+  end
+  if sum <= 0 then
+    for k, w in pairs(TA_QUEST_ROUTE_DEFAULT_WEIGHTS) do
+      weights[k] = w
+    end
+    return
+  end
+  for k, _ in pairs(TA_QUEST_ROUTE_DEFAULT_WEIGHTS) do
+    weights[k] = (weights[k] or 0) / sum
+  end
+end
+
+local function TA_GetQuestRouterStore()
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.questRouter = type(TextAdventurerDB.questRouter) == "table" and TextAdventurerDB.questRouter or {}
+  local s = TextAdventurerDB.questRouter
+  s.weights = type(s.weights) == "table" and s.weights or {}
+  for k, w in pairs(TA_QUEST_ROUTE_DEFAULT_WEIGHTS) do
+    if type(s.weights[k]) ~= "number" then
+      s.weights[k] = w
+    end
+  end
+  TA_NormalizeQuestRouteWeights(s.weights)
+  if type(s.learningRate) ~= "number" then s.learningRate = 0.08 end
+  if type(s.topN) ~= "number" then s.topN = 3 end
+  if type(s.yardsPerPercent) ~= "number" then s.yardsPerPercent = 45 end
+  if s.enabled == nil then s.enabled = true end
+  if type(s.samples) ~= "number" then s.samples = 0 end
+  if type(s.correctSuggestions) ~= "number" then s.correctSuggestions = 0 end
+  return s
+end
+
+local function TA_GetQuestieModule(name)
+  local loader = _G.QuestieLoader
+  if not loader or type(loader.ImportModule) ~= "function" then
+    return nil
+  end
+  local ok, mod = pcall(function()
+    return loader:ImportModule(name)
+  end)
+  if ok and mod then
+    return mod
+  end
+  return nil
+end
+
+local function TA_GetQuestRouteContext()
+  local now = GetTime()
+  if TA.questRouteContext and (now - (TA.questRouteContext.at or 0)) < 5 then
+    return TA.questRouteContext
+  end
+  local ctx = {
+    at = now,
+    db = TA_GetQuestieModule("QuestieDB"),
+    xp = TA_GetQuestieModule("QuestXP"),
+  }
+  TA.questRouteContext = ctx
+  return ctx
+end
+
+local function TA_GetQuestObjectiveProgressRatio(index)
+  local total = GetNumQuestLeaderBoards and tonumber(GetNumQuestLeaderBoards(index)) or 0
+  if total <= 0 then
+    return 0
+  end
+  local finishedCount = 0
+  local sumCurrent = 0
+  local sumNeed = 0
+  for i = 1, total do
+    local desc, _, finished = GetQuestLogLeaderBoard(i, index)
+    if finished then
+      finishedCount = finishedCount + 1
+    end
+    if type(desc) == "string" then
+      local a, b = desc:match("(%d+)%s*/%s*(%d+)")
+      a = tonumber(a)
+      b = tonumber(b)
+      if a and b and b > 0 then
+        sumCurrent = sumCurrent + math.min(a, b)
+        sumNeed = sumNeed + b
+      end
+    end
+  end
+  local byDone = finishedCount / total
+  local byCount = (sumNeed > 0) and (sumCurrent / sumNeed) or 0
+  local v = math.max(byDone, byCount)
+  if v < 0 then v = 0 end
+  if v > 1 then v = 1 end
+  return v
+end
+
+local function TA_GetGuideSignal(questTitle)
+  local signal = 0
+  local lowerTitle = string.lower(tostring(questTitle or ""))
+  local gl = _G.GuidelimeDataChar
+  if type(gl) == "table" then
+    local g = string.lower(tostring(gl.currentGuide or ""))
+    if g ~= "" and lowerTitle ~= "" and string.find(g, lowerTitle, 1, true) then
+      signal = signal + 0.75
+    elseif g ~= "" then
+      signal = signal + 0.25
+    end
+  end
+  local wowpro = _G.WoWPro
+  if type(wowpro) == "table" then
+    signal = signal + 0.15
+  end
+  if _G.TomTom then
+    signal = signal + 0.10
+  end
+  if signal > 1 then signal = 1 end
+  return signal
+end
+
+local function TA_GetQuestStartFromQuestie(db, questID, currentMapID)
+  if not db or type(db.GetQuest) ~= "function" then
+    return nil
+  end
+  local quest = db.GetQuest(questID)
+  if type(quest) ~= "table" then
+    return nil
+  end
+
+  local npcList = nil
+  if quest.Starts and type(quest.Starts.NPC) == "table" then
+    npcList = quest.Starts.NPC
+  elseif quest.startedBy and type(quest.startedBy[1]) == "table" then
+    npcList = quest.startedBy[1]
+  end
+  if type(npcList) ~= "table" then
+    return nil
+  end
+
+  local fallback = nil
+  for _, npcID in ipairs(npcList) do
+    local npc = db.GetNPC and db:GetNPC(npcID) or nil
+    if type(npc) == "table" and type(npc.spawns) == "table" then
+      for zoneID, points in pairs(npc.spawns) do
+        if type(points) == "table" and points[1] then
+          local p = points[1]
+          local x = tonumber(p[1])
+          local y = tonumber(p[2])
+          local z = tonumber(zoneID)
+          if x and y and z then
+            local row = { mapID = z, xPct = x, yPct = y, npcID = npcID }
+            if z == tonumber(currentMapID) then
+              return row
+            end
+            if not fallback then fallback = row end
+          end
+        end
+      end
+    end
+  end
+  return fallback
+end
+
+local function TA_MapPercentToCells(targetXPct, targetYPct, yardsPerCell, yardsPerPercent)
+  local mapID, _, _, x, y = GetPlayerMapCell()
+  if not mapID then return nil end
+
+  local px = tonumber(x)
+  local py = tonumber(y)
+  if not px or not py then return nil end
+  if px > 1.5 then px = px / 100 end
+  if py > 1.5 then py = py / 100 end
+
+  local tx = tonumber(targetXPct)
+  local ty = tonumber(targetYPct)
+  if not tx or not ty then return nil end
+  tx = tx / 100
+  ty = ty / 100
+
+  local dxPct = (tx - px) * 100
+  local dyPct = (ty - py) * 100
+  local eastYards = dxPct * yardsPerPercent
+  local northYards = -dyPct * yardsPerPercent
+  local dxCells = eastYards / math.max(1, yardsPerCell)
+  local dyCells = northYards / math.max(1, yardsPerCell)
+  local distCells = math.sqrt((dxCells * dxCells) + (dyCells * dyCells))
+
+  return {
+    mapID = mapID,
+    dxCells = dxCells,
+    dyCells = dyCells,
+    distCells = distCells,
+  }
+end
+
+local function TA_BuildQuestRouteCandidates(topN)
+  local total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
+  if total <= 0 then
+    TA.questRouteOverlay = nil
+    TA.questRouteCandidates = {}
+    return {}
+  end
+
+  local store = TA_GetQuestRouterStore()
+  local weights = store.weights
+  local ctx = TA_GetQuestRouteContext()
+  local currentMapID = select(1, GetPlayerMapCell())
+  local yardsPerCell = TA_GetEffectiveDFYardsPerCell()
+  local playerLevel = UnitLevel("player") or 1
+  local gridSize = tonumber(TA.dfModeGridSize) or 21
+  local radius = math.max(3, math.floor(gridSize / 2))
+
+  local rows = {}
+  for i = 1, total do
+    local title, level, _, isHeader, _, isComplete, _, questID = GetQuestLogTitle(i)
+    if title and not isHeader and isComplete ~= 1 then
+      local qid = tonumber(questID)
+      local rewardXP = 0
+      if qid and ctx.xp and type(ctx.xp.GetQuestLogRewardXP) == "function" then
+        local ok, v = pcall(function() return ctx.xp:GetQuestLogRewardXP(qid, true) end)
+        if ok and tonumber(v) then rewardXP = tonumber(v) end
+      end
+
+      local xpFactor = math.min(1, math.max(0, rewardXP / 4500))
+      local lvl = tonumber(level) or playerLevel
+      local levelFit = 1 - math.min(1, math.abs(lvl - playerLevel) / 8)
+      local progress = TA_GetQuestObjectiveProgressRatio(i)
+      local guide = TA_GetGuideSignal(title)
+
+      local proximity = 0.20
+      local dxCells, dyCells = nil, nil
+      local routeMapID, routeXPct, routeYPct = nil, nil, nil
+      if qid and ctx.db then
+        local start = TA_GetQuestStartFromQuestie(ctx.db, qid, currentMapID)
+        if start then
+          routeMapID = start.mapID
+          routeXPct = start.xPct
+          routeYPct = start.yPct
+          if routeMapID == tonumber(currentMapID) then
+            local pos = TA_MapPercentToCells(start.xPct, start.yPct, yardsPerCell, store.yardsPerPercent)
+            if pos then
+              dxCells = pos.dxCells
+              dyCells = pos.dyCells
+              local d = tonumber(pos.distCells) or (radius * 2)
+              proximity = 1 - math.min(1, d / (radius * 1.5))
+            end
+          end
+        end
+      end
+
+      if proximity < 0 then proximity = 0 end
+      if proximity > 1 then proximity = 1 end
+
+      local factors = {
+        xp = xpFactor,
+        proximity = proximity,
+        levelFit = levelFit,
+        progress = progress,
+        guide = guide,
+      }
+
+      local score = 0
+      for k, w in pairs(weights) do
+        score = score + ((factors[k] or 0) * (w or 0))
+      end
+
+      table.insert(rows, {
+        index = i,
+        questID = qid,
+        title = title,
+        level = lvl,
+        score = score,
+        factors = factors,
+        rewardXP = rewardXP,
+        mapID = routeMapID,
+        xPct = routeXPct,
+        yPct = routeYPct,
+        dxCells = dxCells,
+        dyCells = dyCells,
+      })
+    end
+  end
+
+  table.sort(rows, function(a, b)
+    if a.score == b.score then
+      return (a.level or 0) < (b.level or 0)
+    end
+    return a.score > b.score
+  end)
+
+  TA.questRouteCandidates = rows
+  TA.questRouteLastAt = GetTime()
+
+  local best = rows[1]
+  if best then
+    TA.questRouteOverlay = {
+      mapID = best.mapID,
+      dxCells = best.dxCells,
+      dyCells = best.dyCells,
+      title = best.title,
+      questID = best.questID,
+      xPct = best.xPct,
+      yPct = best.yPct,
+      score = best.score,
+      updatedAt = GetTime(),
+    }
+    TA.questRouteLastSuggestedQuestID = best.questID
+    TA.questRouteLastSuggestedFactors = best.factors
+  else
+    TA.questRouteOverlay = nil
+    TA.questRouteLastSuggestedQuestID = nil
+    TA.questRouteLastSuggestedFactors = nil
+  end
+
+  local n = math.max(1, math.min(10, tonumber(topN) or store.topN or 3))
+  local top = {}
+  for i = 1, math.min(n, #rows) do
+    top[#top + 1] = rows[i]
+  end
+  return top
+end
+
+local function TA_ReportQuestRouteSuggestions(explain, topN)
+  local store = TA_GetQuestRouterStore()
+  if store.enabled == false then
+    AddLine("system", "Quest routing is disabled. Use: questroute on")
+    return
+  end
+
+  local top = TA_BuildQuestRouteCandidates(topN)
+  if #top == 0 then
+    AddLine("quest", "No in-progress quests available to route.")
+    return
+  end
+
+  AddLine("quest", string.format("Quest route suggestions (top %d):", #top))
+  for i = 1, #top do
+    local row = top[i]
+    AddLine("quest", string.format("%d. %s [id:%s lvl:%d] score %.3f xp %d", i, row.title or "?", tostring(row.questID or "?"), tonumber(row.level) or 0, tonumber(row.score) or 0, tonumber(row.rewardXP) or 0))
+    if explain then
+      local f = row.factors or {}
+      AddLine("quest", string.format("    factors: xp %.2f prox %.2f level %.2f progress %.2f guide %.2f", tonumber(f.xp) or 0, tonumber(f.proximity) or 0, tonumber(f.levelFit) or 0, tonumber(f.progress) or 0, tonumber(f.guide) or 0))
+    end
+  end
+
+  local best = top[1]
+  if best and best.mapID and best.xPct and best.yPct then
+    AddLine("quest", string.format("DF marker: Q -> %s (map %d at %.1f, %.1f).", best.title or "quest", best.mapID, best.xPct, best.yPct))
+  end
+end
+
+local function TA_ReportQuestRouteWeights()
+  local s = TA_GetQuestRouterStore()
+  local w = s.weights or {}
+  AddLine("system", string.format("Quest route weights: xp=%.3f proximity=%.3f levelFit=%.3f progress=%.3f guide=%.3f", tonumber(w.xp) or 0, tonumber(w.proximity) or 0, tonumber(w.levelFit) or 0, tonumber(w.progress) or 0, tonumber(w.guide) or 0))
+  AddLine("system", string.format("learningRate=%.3f samples=%d correct=%d", tonumber(s.learningRate) or 0, tonumber(s.samples) or 0, tonumber(s.correctSuggestions) or 0))
+end
+
+local function TA_SetQuestRouteWeight(key, value)
+  local k = string.lower(tostring(key or ""))
+  if TA_QUEST_ROUTE_DEFAULT_WEIGHTS[k] == nil then
+    AddLine("system", "Unknown weight key. Use: xp, proximity, levelFit, progress, guide")
+    return
+  end
+  local v = tonumber(value)
+  if not v then
+    AddLine("system", "Usage: questroute weight <xp|proximity|levelFit|progress|guide> <value>")
+    return
+  end
+  local s = TA_GetQuestRouterStore()
+  s.weights[k] = TA_ClampQuestRouteWeight(v)
+  TA_NormalizeQuestRouteWeights(s.weights)
+  TA_ReportQuestRouteWeights()
+end
+
+local function TA_SetQuestRouteToggle(enabled)
+  local s = TA_GetQuestRouterStore()
+  s.enabled = enabled and true or false
+  if s.enabled then
+    AddLine("system", "Quest routing enabled.")
+  else
+    AddLine("system", "Quest routing disabled.")
+    TA.questRouteOverlay = nil
+  end
+end
+
+local function TA_QuestRouteLearnFromTurnIn(questID, xpReward)
+  local qid = tonumber(questID)
+  if not qid then return end
+
+  local s = TA_GetQuestRouterStore()
+  local lastQ = tonumber(TA.questRouteLastSuggestedQuestID)
+  local factors = TA.questRouteLastSuggestedFactors
+  if not lastQ or type(factors) ~= "table" then return end
+
+  local reward = (qid == lastQ) and 1 or -0.20
+  local xp = tonumber(xpReward) or 0
+  if qid == lastQ and xp > 0 then
+    reward = reward + math.min(0.40, xp / 6000)
+  end
+
+  for k, baseline in pairs(TA_QUEST_ROUTE_DEFAULT_WEIGHTS) do
+    local oldW = tonumber(s.weights[k]) or baseline
+    local f = tonumber(factors[k]) or 0.5
+    local centered = f - 0.5
+    s.weights[k] = TA_ClampQuestRouteWeight(oldW + (s.learningRate or 0.08) * reward * centered)
+  end
+  TA_NormalizeQuestRouteWeights(s.weights)
+  s.samples = (tonumber(s.samples) or 0) + 1
+  if qid == lastQ then
+    s.correctSuggestions = (tonumber(s.correctSuggestions) or 0) + 1
+  end
+end
+
+local function TA_QuestRouteTomTomWaypoint()
+  local overlay = TA.questRouteOverlay
+  if not overlay or not overlay.mapID or not overlay.xPct or not overlay.yPct then
+    AddLine("system", "No active quest route marker. Run: questroute")
+    return
+  end
+  local tomtom = _G.TomTom
+  if not tomtom or type(tomtom.AddWaypoint) ~= "function" then
+    AddLine("system", "TomTom is not available.")
+    return
+  end
+
+  local ok = pcall(function()
+    tomtom:AddWaypoint(overlay.mapID, overlay.xPct / 100, overlay.yPct / 100, {
+      title = "TA Route: " .. tostring(overlay.title or "Quest"),
+      persistent = false,
+      minimap = true,
+      world = true,
+    })
+  end)
+  if ok then
+    AddLine("quest", string.format("TomTom waypoint set for %s.", tostring(overlay.title or "quest")))
+  else
+    AddLine("system", "Failed to create TomTom waypoint for this quest marker.")
+  end
 end
 
 local function FormatSecondsRemaining(expirationTime)
@@ -7465,6 +7921,30 @@ local function BuildDFModeDisplay()
     end
   end
 
+  -- Quest route marker overlay: show the best suggested next-quest origin as Q.
+  if TA_GetQuestRouterStore and TA_BuildQuestRouteCandidates then
+    local qstore = TA_GetQuestRouterStore()
+    if qstore and qstore.enabled ~= false then
+      if not TA.questRouteOverlay or (now - (TA.questRouteLastAt or 0)) > 3 then
+        TA_BuildQuestRouteCandidates(1)
+      end
+      local overlay = TA.questRouteOverlay
+      if overlay and overlay.mapID == mapID and overlay.dxCells and overlay.dyCells then
+        local qx = overlay.dxCells >= 0 and math.floor(overlay.dxCells + 0.5) or math.ceil(overlay.dxCells - 0.5)
+        local qy = overlay.dyCells >= 0 and math.floor(overlay.dyCells + 0.5) or math.ceil(overlay.dyCells - 0.5)
+        if qx > innerRadius then qx = innerRadius end
+        if qx < -innerRadius then qx = -innerRadius end
+        if qy > innerRadius then qy = innerRadius end
+        if qy < -innerRadius then qy = -innerRadius end
+        if grid[qy] and grid[qy][qx] and grid[qy][qx] == "." then
+          grid[qy][qx] = "Q"
+        elseif grid[qy] and grid[qy][qx] and grid[qy][qx] ~= "P" and grid[qy][qx] ~= "@" then
+          grid[qy][qx] = "*"
+        end
+      end
+    end
+  end
+
   -- Sonar echo overlay: recent exact-contact memory to improve map definition between direct sightings.
   for _, c in pairs(TA.dfModeSonarContacts or {}) do
     if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
@@ -9016,6 +9496,18 @@ TA.EXACT_INPUT_HANDLERS = {
   ["questlog"] = function() ReportQuestLog() end,
   ["quest log"] = function() ReportQuestLog() end,
   ["questinfo"] = function() ReportQuestInfo(nil) end,
+  ["questroute"] = function() TA_ReportQuestRouteSuggestions(false, nil) end,
+  ["quest route"] = function() TA_ReportQuestRouteSuggestions(false, nil) end,
+  ["questroute explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
+  ["quest route explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
+  ["questroute weights"] = function() TA_ReportQuestRouteWeights() end,
+  ["quest route weights"] = function() TA_ReportQuestRouteWeights() end,
+  ["questroute mark"] = function() TA_QuestRouteTomTomWaypoint() end,
+  ["quest route mark"] = function() TA_QuestRouteTomTomWaypoint() end,
+  ["questroute on"] = function() TA_SetQuestRouteToggle(true) end,
+  ["quest route on"] = function() TA_SetQuestRouteToggle(true) end,
+  ["questroute off"] = function() TA_SetQuestRouteToggle(false) end,
+  ["quest route off"] = function() TA_SetQuestRouteToggle(false) end,
   ["tracking"] = function() ReportTracking() end,
   ["inventory"] = function() ReportInventory() end,
   ["bags"] = function() ReportInventory() end,
@@ -9148,6 +9640,10 @@ TA.PATTERN_INPUT_HANDLERS = {
   { "^warlockdps%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockDpsConfigValue(k, v) end },
   { "^warlockdps%s+reset$", function() TA_ResetWarlockDpsConfigDefaults() end },
   { "^warlockdps%s+mapping$", function() TA_ReportWarlockSheetMapping() end },
+  { "^questroute%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
+  { "^quest%s+route%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
+  { "^questroute%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
+  { "^quest%s+route%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
   { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
   { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
   { "^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end },
@@ -9996,6 +10492,13 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.skillSnapshot = TA_BuildSkillSnapshot()
     TA.lastBuffSnapshot = SnapshotBuffs()
     TA.questObjectiveSnapshot = BuildQuestObjectiveSnapshot()
+    local qStore = TA_GetQuestRouterStore()
+    TA.questRouteOverlay = nil
+    TA.questRouteCandidates = {}
+    TA.questRouteLastAt = 0
+    if qStore.enabled ~= false then
+      TA_BuildQuestRouteCandidates(qStore.topN or 3)
+    end
     TA.dpsSessionStart = GetTime()
     TA.dpsTotalDamage = TA.dpsTotalDamage or 0
     TA.dpsCombatStart = 0
@@ -10015,6 +10518,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     AddLine("system", "Type /ta xp for experience.")
     AddLine("system", "Type /ta quests to list your quest log.")
     AddLine("system", "Type /ta questinfo <index or name> to read full quest details.")
+    AddLine("quest", "Route planner: /ta questroute, /ta questroute explain, /ta questroute top 5, /ta questroute mark.")
     AddLine("system", "Type /ta buffs to list your current buffs and timers.")
     AddLine("system", "Type /ta where for your current place.")
     AddLine("system", "Type /ta tracking for active tracking modes.")
@@ -10094,6 +10598,8 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
   elseif event == "QUEST_TURNED_IN" then
     TA_HandleMLXPSourceEvent(event, ...)
+    local questID, xpReward = ...
+    TA_QuestRouteLearnFromTurnIn(questID, xpReward)
   elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
     TA_HandleMLXPSourceEvent(event, ...)
   elseif event == "PLAYER_XP_UPDATE" or event == "PLAYER_LEVEL_UP" then
@@ -10186,6 +10692,12 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TryGetQuestReward()
   elseif event == "QUEST_LOG_UPDATE" then
     ReportQuestObjectiveChanges()
+    local qStore = TA_GetQuestRouterStore()
+    if qStore.enabled ~= false then
+      if (GetTime() - (TA.questRouteLastAt or 0)) > 1 then
+        TA_BuildQuestRouteCandidates(qStore.topN or 3)
+      end
+    end
   elseif event == "ZONE_CHANGED" or event == "ZONE_CHANGED_INDOORS" or event == "ZONE_CHANGED_NEW_AREA" then
     ReportLocation(true)
     CheckLandmarkEntry()
