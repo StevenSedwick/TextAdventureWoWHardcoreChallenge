@@ -9670,6 +9670,7 @@ function TA_ShowHelpOverview()
   AddLine("system", "  economy - bags, gear, vendor, buying/selling")
   AddLine("system", "  social - chat and targeting shortcuts")
   AddLine("system", "  advanced - macros, bindings, diagnostics")
+  AddLine("system", "All commands support both: <command> (terminal) and /ta <command> (chat).")
   AddLine("system", "Type: help <topic>. Example: help navigation")
 end
 
@@ -9775,6 +9776,14 @@ function TA_ShowHelpTopic(topicArg)
     AddLine("system", "Help: Quests & NPC")
     AddLine("system", "  quests - quest log summary.")
     AddLine("system", "  questinfo <index or name> - detailed quest info.")
+    AddLine("system", "  questroute - ranked recommendation for your next quest objective.")
+    AddLine("system", "  questroute top <n> - show more ranked route suggestions.")
+    AddLine("system", "  questroute explain - include score factors for each suggestion.")
+    AddLine("system", "  questroute weights - print current route scoring weights.")
+    AddLine("system", "  questroute weight <key> <value> - tune one route scoring weight.")
+    AddLine("system", "  questroute on/off - enable or disable route recommendation output.")
+    AddLine("system", "  questroute mark - place waypoint marker on top recommendation.")
+    AddLine("system", "  questroute debug - dump candidate source/debug data for troubleshooting.")
     AddLine("system", "  gossip, choose <n> - navigate gossip without mouse.")
     AddLine("system", "  complete/turnin - complete active quest interaction.")
     AddLine("system", "  rewards, select <n>, reward <n> - choose turn-in rewards.")
@@ -10063,6 +10072,17 @@ TA.EXACT_INPUT_HANDLERS = {
     panel.text:Clear()
     AddLine("system", "Log cleared.")
   end,
+  ["show"] = function()
+    panel:Show()
+    AddLine("system", "Text Adventurer opened.")
+  end,
+  ["hide"] = function()
+    panel:Hide()
+    if ChatFrame1 then ChatFrame1:Show() end
+  end,
+  ["toggle"] = function() TogglePanel() end,
+  ["textmode on"] = function() EnableTextMode() end,
+  ["textmode off"] = function() DisableTextMode() end,
   ["help"] = function() TA_ShowHelpOverview() end,
   ["performance"] = function() TA_ReportPerformanceStatus() end,
   ["performance status"] = function() TA_ReportPerformanceStatus() end,
@@ -10779,27 +10799,8 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
   local lower = original:lower()
   if lower == "" then
     TA_FocusTerminalInput()
-  elseif lower == "show" then
-    panel:Show()
-    AddLine("system", "Text Adventurer opened.")
   elseif lower == "input" or lower == "i" or lower == "t" then
     TA_FocusTerminalInput()
-  elseif lower == "hide" then
-    panel:Hide()
-    if ChatFrame1 then ChatFrame1:Show() end
-  elseif lower == "toggle" then
-    TogglePanel()
-  elseif lower == "textmode on" then
-    EnableTextMode()
-  elseif lower == "textmode off" then
-    DisableTextMode()
-  elseif lower == "autostart on" then
-    TextAdventurerDB.autoEnable = true
-    TextAdventurerDB.firstRunSafetyAcknowledged = true
-    AddLine("system", "Autostart enabled.")
-  elseif lower == "autostart off" then
-    TextAdventurerDB.autoEnable = false
-    AddLine("system", "Autostart disabled.")
   else
     TA_ProcessInputCommand(original)
   end
