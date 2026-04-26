@@ -142,7 +142,9 @@
         "AchievementFrame_ToggleAchievementFrame",
         "AchievementFrame_SelectAchievement",
         "AchievementFrameAchievements",
-        "StaticPopup_Hide"
+        "StaticPopup_Hide",
+        "NUM_BAG_SLOTS",
+        "ItemTextFrame"
     ],
     "Lua.type.weakUnionCheck":  true
 }
