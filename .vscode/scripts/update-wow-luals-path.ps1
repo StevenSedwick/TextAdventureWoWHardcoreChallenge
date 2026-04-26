@@ -1,7 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent $workspaceRoot
 $settingsPath = Join-Path $workspaceRoot "settings.json"
+$luarcPath = Join-Path $projectRoot ".luarc.json"
 $extensionsRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
 
 if (-not (Test-Path -Path $settingsPath)) {
@@ -33,22 +35,43 @@ if (-not (Test-Path -Path $annotationsCore)) {
 
 $portablePath = "`${env:USERPROFILE}/.vscode/extensions/$($latestWowApi.Name)/Annotations/Core"
 
-$settingsRaw = Get-Content -Path $settingsPath -Raw
-$settings = $settingsRaw | ConvertFrom-Json
+function Set-JsonArrayProperty {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$JsonPath,
 
-if (-not $settings.PSObject.Properties.Name.Contains("Lua.workspace.library") -or -not $settings."Lua.workspace.library") {
-    $settings | Add-Member -MemberType NoteProperty -Name "Lua.workspace.library" -Value @($portablePath)
-} else {
-    $library = @($settings."Lua.workspace.library")
-    if ($library.Count -eq 0) {
-        $library = @($portablePath)
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyValue
+    )
+
+    if (Test-Path -Path $JsonPath) {
+        $jsonRaw = Get-Content -Path $JsonPath -Raw
+        $jsonObject = $jsonRaw | ConvertFrom-Json
     } else {
-        $library[0] = $portablePath
+        $jsonObject = [pscustomobject]@{}
     }
-    $settings."Lua.workspace.library" = $library
+
+    $property = $jsonObject.PSObject.Properties[$PropertyName]
+    if (-not $property -or -not $property.Value) {
+        $jsonObject | Add-Member -MemberType NoteProperty -Name $PropertyName -Value @($PropertyValue) -Force
+    } else {
+        $propertyValues = @($property.Value)
+        if ($propertyValues.Count -eq 0) {
+            $propertyValues = @($PropertyValue)
+        } else {
+            $propertyValues[0] = $PropertyValue
+        }
+        $property.Value = $propertyValues
+    }
+
+    $updatedJson = $jsonObject | ConvertTo-Json -Depth 100
+    Set-Content -Path $JsonPath -Value $updatedJson -Encoding UTF8
 }
 
-$updatedJson = $settings | ConvertTo-Json -Depth 100
-Set-Content -Path $settingsPath -Value $updatedJson -Encoding UTF8
+Set-JsonArrayProperty -JsonPath $settingsPath -PropertyName "Lua.workspace.library" -PropertyValue $portablePath
+Set-JsonArrayProperty -JsonPath $luarcPath -PropertyName "workspace.library" -PropertyValue $portablePath
 
-Write-Output "Updated Lua.workspace.library to: $portablePath"
+Write-Output "Updated Lua.workspace.library and workspace.library to: $portablePath"

@@ -25,8 +25,27 @@ local GetNumSpellTabs = GetNumSpellTabs
 local GetSpellBookItemInfo = GetSpellBookItemInfo
 local GetSpellBookItemName = GetSpellBookItemName
 local PickupSpellBookItem = PickupSpellBookItem
+local IsSpellKnown = IsSpellKnown
 local BOOKTYPE_SPELL = BOOKTYPE_SPELL or "spell"
 local BOOKTYPE_PET = BOOKTYPE_PET or "pet"
+
+local function TA_IsSpellKnownCompat(spellID)
+  if not IsSpellKnown or not spellID then
+    return false
+  end
+
+  local ok, known = pcall(IsSpellKnown, spellID)
+  if ok then
+    return not not known
+  end
+
+  ok, known = pcall(IsSpellKnown, spellID, false)
+  if ok then
+    return not not known
+  end
+
+  return false
+end
 
 TextAdventurerDB = TextAdventurerDB or {}
 TextAdventurerDB.exploration = TextAdventurerDB.exploration or {}
@@ -2603,7 +2622,7 @@ function TA_PlayerKnowsSpellIDs(spellIDs)
   for i = 1, #spellIDs do
     local spellID = tonumber(spellIDs[i])
     if spellID then
-      if IsSpellKnown and IsSpellKnown(spellID) then
+      if TA_IsSpellKnownCompat(spellID) then
         return true
       end
       if GetSpellInfo then
