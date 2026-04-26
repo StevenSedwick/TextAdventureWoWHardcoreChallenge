@@ -120,14 +120,6 @@ TA.EXACT_INPUT_HANDLERS = {
     TA.autoQuests = false
     AddLine("quest", "Auto quest handling disabled.")
   end,
-  ["chat on"] = function()
-    TA.captureChat = true
-    AddLine("chat", "Chat capture enabled.")
-  end,
-  ["chat off"] = function()
-    TA.captureChat = false
-    AddLine("chat", "Chat capture disabled.")
-  end,
   ["autostart on"] = function()
     TextAdventurerDB = TextAdventurerDB or {}
     TextAdventurerDB.autoEnable = true
@@ -217,9 +209,12 @@ if TA_RegisterEconomyCommandHandlers then
   TA_RegisterEconomyCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
+if TA_RegisterSocialCommandHandlers then
+  TA_RegisterSocialCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
 TA_AddPatternInputHandler("^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end)
-TA_AddPatternInputHandler("^target%s+(.+)$", function(arg) DoTargetCommand(arg) end)
 TA_AddPatternInputHandler("^markcell%s+(.+)$", function(name) MarkCurrentCell(name) end)
 TA_AddPatternInputHandler("^mark cell%s+(.+)$", function(name) MarkCurrentCell(name) end)
 TA_AddPatternInputHandler("^cellsize%s+(%d+)$", function(size) SetGridSize(tonumber(size)) end)
@@ -289,13 +284,7 @@ function TA_ProcessInputCommand(msg)
     return
   end
 
-  if lower == "who" then
-    TA_ReportWhoList()
-    return
-  end
-  local whoQuery = msg:match("^%s*[Ww][Hh][Oo]%s+(.+)$")
-  if whoQuery then
-    TA_RunWhoQuery(whoQuery)
+  if TA_HandleSocialInputCommand and TA_HandleSocialInputCommand(lower, msg) then
     return
   end
 
