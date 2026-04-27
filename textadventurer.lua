@@ -196,10 +196,87 @@ overlay:SetFrameStrata("FULLSCREEN_DIALOG")
 overlay:SetFrameLevel(10000)
 overlay:EnableMouse(false)
 overlay:Hide()
+overlay.__taCommandPreviewInit = nil
+if overlay.commandPreviewBox then
+  overlay.commandPreviewBox:Hide()
+  overlay.commandPreviewBox = nil
+end
 
 overlay.tex = overlay:CreateTexture(nil, "BACKGROUND")
 overlay.tex:SetAllPoints()
 overlay.tex:SetColorTexture(0, 0, 0, 1)
+
+function TA_InitCommandPreviewBox()
+  if not overlay or overlay.__taCommandPreviewInit then return end
+  local box = CreateFrame("Frame", nil, overlay, "BackdropTemplate")
+  box:SetSize(560, 34)
+  box:SetPoint("BOTTOMLEFT", overlay, "BOTTOMLEFT", 24, 24)
+  box:SetFrameStrata("FULLSCREEN_DIALOG")
+  box:SetFrameLevel(12000)
+  box:SetBackdrop({
+    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = true,
+    tileSize = 16,
+    edgeSize = 14,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+  })
+  box:SetBackdropColor(1, 1, 1, 1)
+  box:SetBackdropBorderColor(0, 0, 0, 1)
+  box:Hide()
+
+  box.text = box:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  box.text:SetPoint("LEFT", box, "LEFT", 8, 0)
+  box.text:SetPoint("RIGHT", box, "RIGHT", -8, 0)
+  box.text:SetJustifyH("LEFT")
+  box.text:SetTextColor(0.05, 0.05, 0.05, 1)
+  box.text:SetText("")
+
+  overlay.commandPreviewBox = box
+  overlay.__taCommandPreviewInit = true
+end
+
+function TA_FindActiveChatEditBox()
+  local total = NUM_CHAT_WINDOWS or 10
+  for i = 1, total do
+    local editBox = _G["ChatFrame" .. i .. "EditBox"]
+    if editBox and editBox:IsShown() then
+      return editBox
+    end
+  end
+  return nil
+end
+
+function TA_UpdateCommandPreviewBox()
+  if not TA or not TA.textMode or not overlay or not overlay:IsShown() then
+    if overlay and overlay.commandPreviewBox then overlay.commandPreviewBox:Hide() end
+    return
+  end
+
+  if not overlay.__taCommandPreviewInit then
+    TA_InitCommandPreviewBox()
+  end
+  local editBox = TA_FindActiveChatEditBox()
+  if not editBox then
+    if overlay.commandPreviewBox then overlay.commandPreviewBox:Hide() end
+    return
+  end
+
+  local txt = editBox:GetText() or ""
+  if txt == "" then txt = "/" end
+  if overlay.commandPreviewBox and overlay.commandPreviewBox.text then
+    overlay.commandPreviewBox.text:SetText(txt)
+    overlay.commandPreviewBox:Show()
+  end
+  if overlay.tex then overlay.tex:Show() end
+end
+
+overlay:SetScript("OnUpdate", function(self, elapsed)
+  self.__taCommandPreviewElapsed = (self.__taCommandPreviewElapsed or 0) + (elapsed or 0)
+  if self.__taCommandPreviewElapsed < 0.05 then return end
+  self.__taCommandPreviewElapsed = 0
+  TA_UpdateCommandPreviewBox()
+end)
 
 local ResetSwingTimer
 local CheckSwingTimer
@@ -208,6 +285,48 @@ local RecordOutgoingDamage
 local ReportCurrentCell
 local UpdateMapCellOverlay
 local TA_RecordDFCorpseFromGUID
+local SyncTextModeOverlay
+TA.chatEditBoxLayerState = TA.chatEditBoxLayerState or {}
+
+function TA_SyncProtectedCommandEditBoxes(enabled)
+  local total = NUM_CHAT_WINDOWS or 10
+  for i = 1, total do
+    local editBox = _G["ChatFrame" .. i .. "EditBox"]
+    if editBox then
+      if enabled then
+        if not TA.chatEditBoxLayerState[editBox] then
+          TA.chatEditBoxLayerState[editBox] = {
+            strata = editBox:GetFrameStrata(),
+            level = editBox:GetFrameLevel(),
+            alpha = editBox:GetAlpha(),
+          }
+        end
+        if not editBox.__taLayerHooked then
+          editBox:HookScript("OnShow", function(self)
+            if TA and TA.textMode then
+              self:SetFrameStrata("TOOLTIP")
+              self:SetFrameLevel(12050)
+              self:SetAlpha(1)
+            end
+          end)
+          editBox.__taLayerHooked = true
+        end
+        -- Keep slash-command typing visible above blackout while preserving
+        -- world blindness.
+        editBox:SetFrameStrata("TOOLTIP")
+        editBox:SetFrameLevel(12050)
+        editBox:SetAlpha(1)
+      else
+        local state = TA.chatEditBoxLayerState[editBox]
+        if state then
+          if state.strata then editBox:SetFrameStrata(state.strata) end
+          if state.level then editBox:SetFrameLevel(state.level) end
+          if state.alpha then editBox:SetAlpha(state.alpha) end
+        end
+      end
+    end
+  end
+end
 
 local panel = CreateFrame("Frame", "TextAdventurerPanel", UIParent, "BackdropTemplate")
 panel:SetSize(920, 560)
@@ -10950,31 +11069,42 @@ local function ApplyTextModeFrames()
   for _, name in ipairs(hiddenFrames) do ForceHideFrameByName(name) end
 end
 
+SyncTextModeOverlay = function()
+  if TA.textMode then
+    overlay:Show()
+  else
+    overlay:Hide()
+  end
+  TA_SyncProtectedCommandEditBoxes(TA.textMode and true or false)
+  TA_UpdateCommandPreviewBox()
+end
+
 local function EnableTextMode()
   TA.textMode = true
-  overlay:Show()
-  overlay.tex:Show()
   panel:Show()
   panel:SetFrameStrata("TOOLTIP")
   panel:SetFrameLevel(11000)
   panel.inputBox:Show()
+  SyncTextModeOverlay()
   ApplyTextModeFrames()
   AddLine("system", "Text mode enabled.")
 end
 
 local function DisableTextMode()
   TA.textMode = false
-  overlay:Hide()
+  SyncTextModeOverlay()
   panel.inputBox:Hide()
   AddLine("system", "Text mode disabled. Hidden frames may need /reload to return.")
 end
 
 local function TogglePanel()
-  if panel:IsShown() then 
+  if panel:IsShown() then
     panel:Hide()
+    SyncTextModeOverlay()
     if ChatFrame1 then ChatFrame1:Show() end
-  else 
+  else
     panel:Show()
+    SyncTextModeOverlay()
   end
 end
 
@@ -10986,11 +11116,13 @@ end
 
 function TA_ShowPanelCommand()
   panel:Show()
+  SyncTextModeOverlay()
   AddLine("system", "Text Adventurer opened.")
 end
 
 function TA_HidePanelCommand()
   panel:Hide()
+  SyncTextModeOverlay()
   if ChatFrame1 then ChatFrame1:Show() end
 end
 
@@ -11037,7 +11169,26 @@ function TA_SendFromTerminal(msg)
       AddLine("system", "Whisper format: /w Name message")
     end
   else
-    AddLine("system", "Unknown chat prefix. Use /s, /p, /g, /w, /raid, or /rw.")
+    -- Pass unknown slash commands (e.g., /logout) to Blizzard's chat parser.
+    if ChatFrame_OpenChat then
+      TA.deferTerminalRefocus = true
+      ChatFrame_OpenChat(msg)
+      if TA.textMode then
+        TA_SyncProtectedCommandEditBoxes(true)
+      end
+      if ChatFrame1EditBox then
+        ChatFrame1EditBox:Show()
+        ChatFrame1EditBox:SetText(msg)
+        ChatFrame1EditBox:SetFocus()
+        if ChatEdit_ActivateChat then
+          ChatEdit_ActivateChat(ChatFrame1EditBox)
+        end
+      end
+      TA_UpdateCommandPreviewBox()
+      AddLine("system", "Slash command opened in chat input.")
+    else
+      AddLine("system", "Unknown chat prefix. Use /s, /p, /g, /w, /raid, or /rw.")
+    end
   end
   return true
 end
@@ -11374,7 +11525,12 @@ panel.inputBox:SetScript("OnEnterPressed", function(self)
     TA.inputDraft = ""
   end
   self:SetText("")
+  TA.deferTerminalRefocus = false
   TA_ProcessInputCommand(msg)
+  if TA.deferTerminalRefocus then
+    self:ClearFocus()
+    return
+  end
   self:SetFocus()
 end)
 panel.inputBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -11658,6 +11814,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
       EnableTextMode()
       panel.inputBox:SetFocus()
     end
+    TA_InitCommandPreviewBox()
   elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
     HandleCombatLog()
   elseif CHAT_EVENT_INFO[event] then
@@ -11721,11 +11878,11 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.bagState = SnapshotBags()
     if TA.textMode then
       ApplyTextModeFrames()
-      overlay:Show()
       panel:Show()
       panel.inputBox:Show()
       panel.inputBox:SetFocus()
     end
+    SyncTextModeOverlay()
     ReportLocation(true)
     UpdateExplorationMemory()
     UpdateRecentPath()
