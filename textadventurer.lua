@@ -190,6 +190,55 @@ local COLORS = {
   whisper  = { 1.00, 0.60, 1.00 },
 }
 
+-- Performance profiling system
+TA.profiler = {
+  data = {},
+  enabled = false,
+}
+
+function TA:ProfileStart(label)
+  if not self.profiler.enabled then return end
+  if not self.profiler.data[label] then
+    self.profiler.data[label] = { count = 0, totalMs = 0, maxMs = 0, minMs = 999999 }
+  end
+  self.profiler.data[label].__startTime = debugprofilestop()
+end
+
+function TA:ProfileEnd(label)
+  if not self.profiler.enabled then return end
+  local entry = self.profiler.data[label]
+  if not entry or not entry.__startTime then return end
+  local elapsed = debugprofilestop() - entry.__startTime
+  entry.count = entry.count + 1
+  entry.totalMs = entry.totalMs + elapsed
+  entry.maxMs = math.max(entry.maxMs, elapsed)
+  entry.minMs = math.min(entry.minMs, elapsed)
+  entry.__startTime = nil
+end
+
+function TA:PrintProfiler()
+  if not self.profiler.enabled then AddLine("system", "Profiler disabled") return end
+  AddLine("system", "=== TextAdventurer Performance Profile ===")
+  for label, data in pairs(self.profiler.data) do
+    if data.count > 0 then
+      local avg = data.totalMs / data.count
+      AddLine("system", string.format("%s: %.2fms avg (%.2f min, %.2f max) - %d calls", 
+        label, avg, data.minMs, data.maxMs, data.count))
+    end
+  end
+end
+
+function TA:EnableProfiler()
+  self.profiler.enabled = true
+  self.profiler.data = {}
+  AddLine("system", "TextAdventurer profiler enabled")
+end
+
+function TA:DisableProfiler()
+  self.profiler.enabled = false
+  AddLine("system", "TextAdventurer profiler disabled")
+end
+
 local overlay = CreateFrame("Frame", "TextAdventurerOverlay", UIParent)
 overlay:SetAllPoints(UIParent)
 overlay:SetFrameStrata("FULLSCREEN_DIALOG")
@@ -272,11 +321,15 @@ function TA_UpdateCommandPreviewBox()
 end
 
 overlay:SetScript("OnUpdate", function(self, elapsed)
+  if not TA or not TA.textMode then return end
+  TA:ProfileStart("overlay.OnUpdate")
   self.__taCommandPreviewElapsed = (self.__taCommandPreviewElapsed or 0) + (elapsed or 0)
-  if self.__taCommandPreviewElapsed < 0.05 then return end
+  if self.__taCommandPreviewElapsed < 0.05 then TA:ProfileEnd("overlay.OnUpdate") return end
   self.__taCommandPreviewElapsed = 0
   TA_UpdateCommandPreviewBox()
+  TA:ProfileEnd("overlay.OnUpdate")
 end)
+overlay.__taOnUpdateScript = nil
 
 local ResetSwingTimer
 local CheckSwingTimer
@@ -11446,19 +11499,24 @@ end
 function TA_EnsureRuntimeTickers()
   if not TA.moveTicker then
     TA.moveTicker = C_Timer.NewTicker(TA.tickerIntervals.move or 0.01, function()
+      TA:ProfileStart("moveTicker")
       CheckMovement()
       CheckFallState()
       CheckWallHeuristic()
       CheckSwingTimer()
+      TA:ProfileEnd("moveTicker")
     end)
   end
   if not TA.awarenessNearbyTicker then
     TA.awarenessNearbyTicker = C_Timer.NewTicker(TA.tickerIntervals.nearby or 0.01, function()
+      TA:ProfileStart("awarenessNearbyTicker")
       CheckAwareness()
+      TA:ProfileEnd("awarenessNearbyTicker")
     end)
   end
   if not TA.awarenessMemoryTicker then
     TA.awarenessMemoryTicker = C_Timer.NewTicker(TA.tickerIntervals.memory or 0.01, function()
+      TA:ProfileStart("awarenessMemoryTicker")
       UpdateExplorationMemory()
       UpdateRecentPath()
       ReportExplorationMemory(false)
@@ -11477,11 +11535,14 @@ function TA_EnsureRuntimeTickers()
           end
         end
       end
+      TA:ProfileEnd("awarenessMemoryTicker")
     end)
   end
   if not TA.dfModeTicker then
     TA.dfModeTicker = C_Timer.NewTicker(TA.tickerIntervals.df or 0.01, function()
+      TA:ProfileStart("dfModeTicker")
       TA_UpdateDFMode()
+      TA:ProfileEnd("dfModeTicker")
     end)
   end
   if not TA.warlockPromptTicker then
@@ -11816,9 +11877,13 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA_InitCommandPreviewBox()
   elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
+    TA:ProfileStart("COMBAT_LOG_EVENT_UNFILTERED")
     HandleCombatLog()
+    TA:ProfileEnd("COMBAT_LOG_EVENT_UNFILTERED")
   elseif CHAT_EVENT_INFO[event] then
+    TA:ProfileStart("HandleChatEvent")
     HandleChatEvent(event, ...)
+    TA:ProfileEnd("HandleChatEvent")
   elseif event == "PLAYER_TARGET_CHANGED" then
     CheckTarget()
   elseif event == "PLAYER_REGEN_DISABLED" then

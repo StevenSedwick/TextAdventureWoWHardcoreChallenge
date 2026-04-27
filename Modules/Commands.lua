@@ -97,6 +97,9 @@ TA.EXACT_INPUT_HANDLERS = {
     local tiles = (type(data.tilesPresent) == "table") and #data.tilesPresent or 0
     AddLine("system", string.format("Terrain loaded: zone=%s map=%s chunks=%d markers=%d tiles=%d", tostring(data.zoneKey or "?"), tostring(data.mapName or "?"), chunks, markers, tiles))
   end,
+  ["profile enable"] = function() TA:EnableProfiler() end,
+  ["profile disable"] = function() TA:DisableProfiler() end,
+  ["profile results"] = function() TA:PrintProfiler() end,
 }
 
 TA.PATTERN_INPUT_HANDLERS = {

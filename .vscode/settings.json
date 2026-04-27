@@ -144,7 +144,8 @@
         "AchievementFrameAchievements",
         "StaticPopup_Hide",
         "NUM_BAG_SLOTS",
-        "ItemTextFrame"
+        "ItemTextFrame",
+        "ChatEdit_ActivateChat"
     ],
     "Lua.type.weakUnionCheck":  true
 }
