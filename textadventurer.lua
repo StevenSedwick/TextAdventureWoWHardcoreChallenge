@@ -148,6 +148,7 @@ TA.dfModeTerrainStandingLabel = nil
 TA.dfModeTerrainStandingShort = nil
 TA.dfModeHueEnabled = false
 TA.dfModeCalibrationEnabled = false
+TA.dfModeLegendEnabled = true
 TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
@@ -9918,6 +9919,7 @@ local function BuildDFModeDisplay()
   local display = table.concat(lines, "\n")
 
   if viewMode == "threat" or viewMode == "combined" then
+    local legendEnabled = (TA.dfModeLegendEnabled ~= false)
     local legend = {
       "",
       "Legend: P player  E enemy  T/t target  M mark  * contested",
@@ -9968,7 +9970,9 @@ local function BuildDFModeDisplay()
         table.insert(legend, "Cal target: no target selected")
       end
     end
-    display = display .. "\n" .. table.concat(legend, "\n")
+    if legendEnabled then
+      display = display .. "\n" .. table.concat(legend, "\n")
+    end
   end
 
   return display
@@ -10078,9 +10082,12 @@ function TA_DFModeStatus()
   end
   AddLine("system", "Zone: " .. zoneName .. cellText)
   AddLine("system", "Facing: " .. dirStr .. " (" .. facingDegrees .. " deg)")
-  AddLine("system", "Legend: P=Player  E=Enemy  T/t=Target  M=Mark  *=Contested")
-  AddLine("system", "Threat: !=high  ~=medium  .=empty  x=corpse")
-  AddLine("system", "Terrain: ^=steep  /=incline  A/V=up/down  X/#=obstacles")
+  AddLine("system", "Legend overlay: " .. ((TA.dfModeLegendEnabled ~= false) and "ON" or "OFF") .. " (use /ta df legend on|off)")
+  if TA.dfModeLegendEnabled ~= false then
+    AddLine("system", "Legend: P=Player  E=Enemy  T/t=Target  M=Mark  *=Contested")
+    AddLine("system", "Threat: !=high  ~=medium  .=empty  x=corpse")
+    AddLine("system", "Terrain: ^=steep  /=incline  A/V=up/down  X/#=obstacles")
+  end
   AddLine("system", "Terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF") .. " (use /ta df hue on|off)")
   AddLine("system", "DF calibration: " .. (TA.dfModeCalibrationEnabled and "ON" or "OFF") .. " (use /ta df calibrate on|off)")
   AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 1) .. " cell(s)")
@@ -10228,13 +10235,7 @@ function TA_UpdateDFMode()
   local terrain = TA.dfModeTerrainContext
   if terrain and terrain.resolved then
     local waterFlag = terrain.hasWater and "W" or "D"
-    local slope = terrain.avgSlope and string.format("%.1f", terrain.avgSlope) or "?"
-    local standingShort = TA.dfModeTerrainStandingShort
-    if standingShort then
-      dfTitle:SetText(string.format("%s | %s | s:%s | %s", viewMode, waterFlag, slope, standingShort))
-    else
-      dfTitle:SetText(string.format("%s | %s | s:%s", viewMode, waterFlag, slope))
-    end
+    dfTitle:SetText(string.format("%s | %s", viewMode, waterFlag))
   else
     dfTitle:SetText(viewMode)
   end
@@ -11202,6 +11203,12 @@ function TA_SendFromTerminal(msg)
   local cmd, rest = msg:match("^/(%S+)%s*(.*)$")
   if not cmd then return false end
   cmd = cmd:lower()
+  local protectedSlashCommands = {
+    logout = true,
+    camp = true,
+    quit = true,
+    exit = true,
+  }
   if cmd == "s" or cmd == "say" then
     SendChatMessage(rest, "SAY")
   elseif cmd == "y" or cmd == "yell" then
@@ -11225,20 +11232,30 @@ function TA_SendFromTerminal(msg)
     -- Pass unknown slash commands (e.g., /logout) to Blizzard's chat parser.
     if ChatFrame_OpenChat then
       TA.deferTerminalRefocus = true
-      ChatFrame_OpenChat(msg)
+      local openText = msg
+      if protectedSlashCommands[cmd] then
+        -- Do not inject protected commands via addon code; require manual typing
+        -- in the chat edit box to avoid tainting secure slash handlers.
+        openText = ""
+        TA.deferTerminalRefocus = false
+      end
+      ChatFrame_OpenChat(openText)
       if TA.textMode then
         TA_SyncProtectedCommandEditBoxes(true)
       end
       if ChatFrame1EditBox then
         ChatFrame1EditBox:Show()
-        ChatFrame1EditBox:SetText(msg)
         ChatFrame1EditBox:SetFocus()
         if ChatEdit_ActivateChat then
           ChatEdit_ActivateChat(ChatFrame1EditBox)
         end
       end
       TA_UpdateCommandPreviewBox()
-      AddLine("system", "Slash command opened in chat input.")
+      if protectedSlashCommands[cmd] then
+        AddLine("system", "Protected command requires manual typing. Type /" .. cmd .. " in chat input, then press Enter.")
+      else
+        AddLine("system", "Slash command opened in chat input.")
+      end
     else
       AddLine("system", "Unknown chat prefix. Use /s, /p, /g, /w, /raid, or /rw.")
     end
@@ -11716,6 +11733,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeCalibrationEnabled = false
     end
     TA.dfModeCalibrationEnabled = TextAdventurerDB.dfModeCalibrationEnabled and true or false
+    if TextAdventurerDB.dfModeLegendEnabled == nil then
+      TextAdventurerDB.dfModeLegendEnabled = true
+    end
+    TA.dfModeLegendEnabled = (TextAdventurerDB.dfModeLegendEnabled ~= false)
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
       local savedGrid = math.floor(TextAdventurerDB.dfModeGridSize)
       if savedGrid < 5 then savedGrid = 5 end

@@ -307,6 +307,35 @@ function TA_HandleNavigationInputCommand(lower, msg)
     return true
   end
 
+  local dfLegend = lower:match("^df%s+legend%s+(%w+)$") or lower:match("^dfmode%s+legend%s+(%w+)$")
+  if dfLegend then
+    if dfLegend == "on" then
+      TA.dfModeLegendEnabled = true
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeLegendEnabled = true
+      AddLine("system", "DF legend overlay enabled.")
+    elseif dfLegend == "off" then
+      TA.dfModeLegendEnabled = false
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeLegendEnabled = false
+      AddLine("system", "DF legend overlay disabled.")
+    elseif dfLegend == "status" then
+      AddLine("system", "DF legend overlay: " .. ((TA.dfModeLegendEnabled ~= false) and "ON" or "OFF"))
+    else
+      AddLine("system", "Unknown DF legend option. Use: on, off, or status")
+    end
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
+    return true
+  end
+  if lower == "df legend" or lower == "dfmode legend" then
+    AddLine("system", "DF legend overlay: " .. ((TA.dfModeLegendEnabled ~= false) and "ON" or "OFF"))
+    AddLine("system", "Usage: /ta df legend <on|off|status>")
+    return true
+  end
+
   local dfCalibrate = lower:match("^df%s+calibrate%s+(%w+)$") or lower:match("^dfmode%s+calibrate%s+(%w+)$")
   if dfCalibrate then
     if dfCalibrate == "on" then
