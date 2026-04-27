@@ -307,6 +307,35 @@ function TA_HandleNavigationInputCommand(lower, msg)
     return true
   end
 
+  local dfCalibrate = lower:match("^df%s+calibrate%s+(%w+)$") or lower:match("^dfmode%s+calibrate%s+(%w+)$")
+  if dfCalibrate then
+    if dfCalibrate == "on" then
+      TA.dfModeCalibrationEnabled = true
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeCalibrationEnabled = true
+      AddLine("system", "DF calibration diagnostics enabled.")
+    elseif dfCalibrate == "off" then
+      TA.dfModeCalibrationEnabled = false
+      TextAdventurerDB = TextAdventurerDB or {}
+      TextAdventurerDB.dfModeCalibrationEnabled = false
+      AddLine("system", "DF calibration diagnostics disabled.")
+    elseif dfCalibrate == "status" then
+      AddLine("system", "DF calibration: " .. (TA.dfModeCalibrationEnabled and "ON" or "OFF"))
+    else
+      AddLine("system", "Unknown DF calibrate option. Use: on, off, or status")
+    end
+    if TA.dfModeEnabled then
+      TA.dfModeLastUpdate = 0
+      TA_UpdateDFMode()
+    end
+    return true
+  end
+  if lower == "df calibrate" or lower == "dfmode calibrate" then
+    AddLine("system", "DF calibration: " .. (TA.dfModeCalibrationEnabled and "ON" or "OFF"))
+    AddLine("system", "Usage: /ta df calibrate <on|off|status>")
+    return true
+  end
+
   local dfModeView = lower:match("^dfmode%s+(%w+)$") or lower:match("^df%s+(%w+)$")
   if dfModeView then
     if dfModeView == "hybrid" or dfModeView == "all" then

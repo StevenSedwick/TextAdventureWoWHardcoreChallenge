@@ -147,6 +147,7 @@ TA.dfModeTerrainContext = nil
 TA.dfModeTerrainStandingLabel = nil
 TA.dfModeTerrainStandingShort = nil
 TA.dfModeHueEnabled = false
+TA.dfModeCalibrationEnabled = false
 TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
@@ -8809,129 +8810,66 @@ local function TA_GetTerrainGlyph(terrain, referenceHeight, referenceSlope, forw
     return "."
   end
 
-  local obstacleCount = tonumber(terrain.obstacleCount) or 0
-  local avgSlope = tonumber(terrain.avgSlope) or 0
-  local maxSlope = tonumber(terrain.maxSlope) or avgSlope
-  local baselineSlope = tonumber(localSlopeBaseline)
-  if baselineSlope == nil then
-    baselineSlope = tonumber(referenceSlope)
-  end
-  if baselineSlope == nil then
-    baselineSlope = avgSlope
-  end
-  local avgSlopeDelta = avgSlope - baselineSlope
-  local height = tonumber(terrain.avgHeight)
-  local slopeRelief = tonumber(localSlopeRelief) or 0
-  local heightRelief = tonumber(localHeightRelief) or 0
-  local forward = tonumber(forwardBias) or 0
-  local dist = tonumber(distCells) or 999
-  local deltaHeight = nil
-  local gradePerCell = nil
-  local nearAhead = (forward >= 0.72) and (dist <= 6)
-  local nearWeight = 0
-  if dist <= 6 then
-    nearWeight = (6 - dist) / 6
-  end
-  local forwardWeight = math.max(0, math.min(1, forward))
-  local closeBoost = nearWeight * (0.6 + (0.4 * forwardWeight))
+  -- Focus: detect deadly drop hazards only, ignore rolling hills.
+  -- Show: water, deadly drops (V), obstacles, else ignore.
 
   if terrain.hasWater then
     return "~"
   end
 
-  if referenceHeight and height then
-    deltaHeight = height - referenceHeight
-    local gradeDiv = dist
-    if gradeDiv < 1 then gradeDiv = 1 end
-    gradePerCell = deltaHeight / gradeDiv
-
-    -- Keep A/V directional and local: show only near and strongly ahead.
-    local showGrade = (dist <= 8) and (forward >= 0.55)
-    if showGrade then
-      local localDeltaPassUp = true
-      local localDeltaPassDown = true
-      if localHeightBaseline and height then
-        local localDelta = height - localHeightBaseline
-        local reliefHeightBoost = math.max(0, heightRelief - 2.0) * 0.25
-        local localThreshold = (nearAhead and 1.5 or 2.5) - reliefHeightBoost
-        if localThreshold < 0.8 then localThreshold = 0.8 end
-        localDeltaPassUp = localDelta >= localThreshold
-        localDeltaPassDown = localDelta <= -localThreshold
-      end
-
-      local deltaThreshold = nearAhead and 6 or 8
-      local gradeThreshold = nearAhead and 1.1 or 1.5
-      if localDeltaPassUp and deltaHeight >= deltaThreshold and gradePerCell >= gradeThreshold then
-        return "A"
-      end
-      if localDeltaPassDown and deltaHeight <= -deltaThreshold and gradePerCell <= -gradeThreshold then
-        return "V"
-      end
-    end
-  end
-
-  if baselineSlope ~= nil then
-    -- Compare against local neighborhood slope when available so hill edges
-    -- still warn even when the player is already on uneven terrain.
-    local steepAbs = (nearAhead and 9.5 or 11) - (1.5 * closeBoost)
-    local steepDelta = (nearAhead and 1.6 or 2.3) - (1.0 * closeBoost)
-    local inclineAbs = (nearAhead and 5.8 or 7) - (1.8 * closeBoost)
-    local inclineDelta = (nearAhead and 0.5 or 1.0) - (0.7 * closeBoost)
-
-    if steepAbs < 8.5 then steepAbs = 8.5 end
-    if steepDelta < 1.2 then steepDelta = 1.2 end
-    if inclineAbs < 4.8 then inclineAbs = 4.8 end
-    if inclineDelta < 0.35 then inclineDelta = 0.35 end
-
-    local reliefSlopeTerm = math.max(0, slopeRelief - 2)
-    local reliefHeightTerm = math.max(0, heightRelief - 2)
-    local localReliefBoost = (reliefSlopeTerm * 0.18) + (reliefHeightTerm * 0.05)
-    if localReliefBoost > 2.2 then localReliefBoost = 2.2 end
-    if avgSlope < 6 then
-      -- On mostly flat ground, treat relief as a hint, not a hard slope verdict.
-      localReliefBoost = localReliefBoost * 0.35
-    end
-    local effectiveSlopeDelta = avgSlopeDelta + localReliefBoost
-
-    if (nearAhead or dist <= 5) and slopeRelief >= 10 and avgSlope >= 9 and avgSlopeDelta >= 0.8 then
-      return "^"
-    end
-    if (nearAhead or dist <= 6) and slopeRelief >= 7 and avgSlope >= 6.5 and avgSlopeDelta >= 0.4 then
-      return "/"
-    end
-
-    if avgSlope >= steepAbs and effectiveSlopeDelta >= steepDelta then return "^" end
-
-    if (nearAhead or (dist <= 6 and forward >= 0.45)) and maxSlope >= 16 and effectiveSlopeDelta >= 1.1 then
-      return "^"
-    end
-
-    -- Directly ahead, allow abrupt max-slope spikes to show as incline warning
-    -- even when avg slope is still ramping up.
-    if (nearAhead or (dist <= 6 and forward >= 0.45)) and maxSlope >= 12 and effectiveSlopeDelta >= 0.4 then
-      return "/"
-    end
-
-    if avgSlope >= inclineAbs and effectiveSlopeDelta >= inclineDelta then return "/" end
-  else
-    if avgSlope >= 14 then return "^" end
-    if avgSlope >= 9 then return "/" end
-  end
-
+  local obstacleCount = tonumber(terrain.obstacleCount) or 0
   if obstacleCount >= 4 then return "#" end
   if obstacleCount >= 2 then return "X" end
-
   if obstacleCount >= 1 then return "+" end
 
-  local texture = tostring(terrain.texture or "")
-  if texture == "road" then return "=" end
-  if texture == "sand" then return ":" end
-  if texture == "snow" then return "`" end
-  if texture == "rock" then return ";" end
+  -- Check for deadly drop differences only.
+  -- Anchor to player reference height for stability while moving.
+  local height = tonumber(terrain.avgHeight)
+  local baselineHeight = tonumber(referenceHeight)
+  if baselineHeight == nil then baselineHeight = tonumber(localHeightBaseline) end
+  if baselineHeight and height then
+    local deltaHeight = height - baselineHeight
+    local dist = tonumber(distCells) or 1
+    local forward = tonumber(forwardBias) or 0
+    local localDeltaHeight = nil
+    local localRelief = tonumber(localHeightRelief) or 0
+    if localHeightBaseline ~= nil then
+      local localBaseline = tonumber(localHeightBaseline)
+      if localBaseline ~= nil then
+        localDeltaHeight = height - localBaseline
+      end
+    end
+    if dist < 1 then dist = 1 end
+    local gradePerCell = deltaHeight / dist
 
-  -- Always show a terrain base glyph for resolved chunks in threat mode,
-  -- otherwise most normal ground appears as plain dots.
-  return ","
+    -- Safety filter: ignore impossible near-field deltas caused by bad chunk
+    -- samples or coordinate mismatches.
+    if math.abs(deltaHeight) > 300 then
+      return "."
+    end
+
+    -- Fall-risk focus: only render cliffs that are close enough to matter.
+    if dist > 5 then
+      return "."
+    end
+
+    -- Suppress side/back jitter; prioritize hazards in travel/front arc.
+    if forward < 0 then
+      return "."
+    end
+
+    -- Deadly drop: strict requirements to avoid false positives on fields.
+    local localDropPass = true
+    if localDeltaHeight ~= nil then
+      localDropPass = localDeltaHeight <= -4
+    end
+    if deltaHeight <= -10 and gradePerCell <= -1.6 and localDropPass and localRelief >= 2.5 then
+      return "V"
+    end
+  end
+
+  -- Ignore everything else (rolling hills, small slopes, textures, etc)
+  return "."
 
 end
 
@@ -9054,6 +8992,7 @@ local function BuildDFModeDisplay()
   -- Each DF grid cell represents this many in-game yards. Must be a whole number
   -- so mark and unit positions map cleanly: N yards = exactly N/yardsPerCell cells.
   local yardsPerCell = TA_GetEffectiveDFYardsPerCell()
+  local calibrationEnabled = TA.dfModeCalibrationEnabled and true or false
   local viewMode = TA.dfModeViewMode or "threat"
   local profile = TA.dfModeProfile or "full"
   local orientation = TA.dfModeOrientation or "fixed"
@@ -9095,6 +9034,10 @@ local function BuildDFModeDisplay()
   local targetName = UnitName("target")
   local targetUnit = targetName and "target" or nil
   local targetDistance = nil
+  local targetDistanceExact = nil
+  local targetDistanceApprox = nil
+  local targetRenderedCellDist = nil
+  local targetUsedFallback = false
   local glyphEnemy = "|cffff4040E|r"
   local glyphFriendly = "|cffb366ffF|r"
   local targetGlyphNear = "T"
@@ -9216,26 +9159,33 @@ local function BuildDFModeDisplay()
       local dx = targetX - playerX
       local dy = targetY - playerY
       targetDistance = math.sqrt(dx * dx + dy * dy)
+      targetDistanceExact = targetDistance
       local east = dx
       local north = dy
       tx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
       ty = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
     else
+      targetUsedFallback = true
       local nameHash = 0
       for i = 1, #(targetName or "") do
         nameHash = nameHash + string.byte(targetName, i)
       end
       local angle = math.rad(nameHash % 360)
-      tx = math.floor(math.cos(angle) * 2)
-      ty = math.floor(math.sin(angle) * 2)
 
+      -- Determine actual distance before placement
       if CheckInteractDistance then
         if TA_TryInteractDistance("target", 1) then targetDistance = 10
         elseif TA_TryInteractDistance("target", 2) then targetDistance = 11
         elseif TA_TryInteractDistance("target", 3) then targetDistance = 28
         elseif TA_TryInteractDistance("target", 4) then targetDistance = 30
         end
+        targetDistanceApprox = targetDistance
       end
+
+      -- Place target at angle using actual distance (or default 2 cells if no distance)
+      local cellDist = targetDistance and math.floor(targetDistance / yardsPerCell + 0.5) or 2
+      tx = math.floor(math.cos(angle) * cellDist)
+      ty = math.floor(math.sin(angle) * cellDist)
     end
 
     if tx and ty then
@@ -9243,11 +9193,13 @@ local function BuildDFModeDisplay()
       if tx < -innerRadius then tx = -innerRadius end
       if ty > innerRadius then ty = innerRadius end
       if ty < -innerRadius then ty = -innerRadius end
+      targetRenderedCellDist = math.sqrt((tx * tx) + (ty * ty))
 
       if tx == 0 and ty == 0 then
         tx = math.floor((-math.sin(facing)) + 0.5)
         ty = math.floor((math.cos(facing)) + 0.5)
         if tx == 0 and ty == 0 then tx = 1 end
+        targetRenderedCellDist = math.sqrt((tx * tx) + (ty * ty))
       end
 
       if math.abs(tx) <= innerRadius and math.abs(ty) <= innerRadius and grid[ty] and grid[ty][tx] ~= "P" then
@@ -9482,6 +9434,11 @@ local function BuildDFModeDisplay()
     noGlyph = 0,
     heatMin = nil,
     heatMax = nil,
+    compared = 0,
+    ignoredOutlier = 0,
+    deltaMin = nil,
+    deltaMax = nil,
+    cliffDrops = 0,
   }
   local terrainCache = {}
 
@@ -9611,6 +9568,37 @@ local function BuildDFModeDisplay()
           heat = TA_TerrainHeatFromContext(terrainCell, localSlopeRelief, localHeightRelief)
           if terrainStats.heatMin == nil or heat < terrainStats.heatMin then terrainStats.heatMin = heat end
           if terrainStats.heatMax == nil or heat > terrainStats.heatMax then terrainStats.heatMax = heat end
+          local sampleHeight = terrainCell and tonumber(terrainCell.avgHeight) or nil
+          local baselineHeight = tonumber(localHeightBaseline)
+          if baselineHeight == nil then baselineHeight = centerTerrainHeight end
+          if baselineHeight and sampleHeight then
+            local deltaHeight = sampleHeight - baselineHeight
+            if math.abs(deltaHeight) > 300 then
+              terrainStats.ignoredOutlier = terrainStats.ignoredOutlier + 1
+            else
+              terrainStats.compared = terrainStats.compared + 1
+              if terrainStats.deltaMin == nil or deltaHeight < terrainStats.deltaMin then terrainStats.deltaMin = deltaHeight end
+              if terrainStats.deltaMax == nil or deltaHeight > terrainStats.deltaMax then terrainStats.deltaMax = deltaHeight end
+              local gradeDist = dist
+              if gradeDist < 1 then gradeDist = 1 end
+              local gradePerCell = deltaHeight / gradeDist
+              local localRelief = tonumber(localHeightRelief) or 0
+              local localDeltaHeight = nil
+              if localHeightBaseline ~= nil then
+                local localBaseline = tonumber(localHeightBaseline)
+                if localBaseline ~= nil then
+                  localDeltaHeight = sampleHeight - localBaseline
+                end
+              end
+              local localDropPass = true
+              if localDeltaHeight ~= nil then
+                localDropPass = localDeltaHeight <= -4
+              end
+              if dist <= 5 and forwardBias >= 0 and deltaHeight <= -10 and gradePerCell <= -1.6 and localDropPass and localRelief >= 2.5 then
+                terrainStats.cliffDrops = terrainStats.cliffDrops + 1
+              end
+            end
+          end
           glyph = TA_GetTerrainGlyph(
             terrainCell,
             centerTerrainHeight,
@@ -9665,8 +9653,13 @@ local function BuildDFModeDisplay()
       end
     end
 
-    if (raw == "A" or raw == "V") and counts[raw] < 2 and counts["/"] + counts["^"] < 3 then
-      return ","
+    -- Cliff-only mode: require stronger local consensus and never propagate
+    -- A/V into neighbors (prevents wave-like advancing vertical bands).
+    if raw == "V" then
+      if counts[raw] < 3 then
+        return "."
+      end
+      return raw
     end
     if raw == "^" and counts["^"] < 2 and counts["/"] >= 2 then
       return "/"
@@ -9674,7 +9667,7 @@ local function BuildDFModeDisplay()
 
     local bestGlyph = raw
     local bestCount = counts[raw] or 0
-    local candidates = { "^", "/", "A", "V" }
+    local candidates = { "^", "/" }
     for i = 1, #candidates do
       local g = candidates[i]
       local c = counts[g] or 0
@@ -9712,8 +9705,12 @@ local function BuildDFModeDisplay()
         local glyph = TA_GetSmoothedTerrainGlyph(x, y)
         if glyph and glyph ~= "." then
           if TA.dfModeHueEnabled then
-            local heat = (terrainHeatLayer[y] and terrainHeatLayer[y][x]) or 0
-            cell = TA_ColorizeCellByHeat(glyph, heat)
+            if glyph == "V" or glyph == "A" then
+              cell = glyph
+            else
+              local heat = (terrainHeatLayer[y] and terrainHeatLayer[y][x]) or 0
+              cell = TA_ColorizeCellByHeat(glyph, heat)
+            end
           else
             cell = glyph
           end
@@ -9753,13 +9750,51 @@ local function BuildDFModeDisplay()
       "",
       "Legend: P player  E enemy  T/t target  M mark  * contested",
       "Threat: ! high  ~ medium  . empty  x corpse",
-      "Terrain: ^ steep  / incline  A/V up/down  X/# obstacles",
+      "Terrain: V drop hazard  X/# obstacles",
     }
     if TA.dfModeHueEnabled then
       table.insert(legend, "Terrain hue: blue low  green medium  yellow high  red extreme")
     end
     if standingLabel then
       table.insert(legend, standingLabel)
+    end
+    if calibrationEnabled then
+      local radiusYards = radius * yardsPerCell
+      local ring2 = 2 * yardsPerCell
+      local ring4 = 4 * yardsPerCell
+      local ring6 = 6 * yardsPerCell
+      table.insert(legend, string.format("Cal: grid=%dx%d radius=%d cells (~%d yd) cell=%d yd", gridSize, gridSize, radius, radiusYards, yardsPerCell))
+      table.insert(legend, string.format("Cal: rings 2/4/6 cells => ~%d/%d/%d yd", ring2, ring4, ring6))
+      if centerTerrainHeight and terrainStats.compared > 0 and terrainStats.deltaMin and terrainStats.deltaMax then
+        table.insert(legend, string.format("Cal terrain: centerH=%.1f dH[min/max]=%.1f/%.1f yd compared=%d ignored=%d", centerTerrainHeight, terrainStats.deltaMin, terrainStats.deltaMax, terrainStats.compared, terrainStats.ignoredOutlier))
+        table.insert(legend, string.format("Cal terrain: cliff cells V=%d (rule: dH<=-10 & grade<=-1.6 & localDrop<=-4 & relief>=2.5 & dist<=5 & forward>=0)", terrainStats.cliffDrops))
+      elseif centerTerrainHeight then
+        table.insert(legend, string.format("Cal terrain: centerH=%.1f (no comparable terrain samples, ignored=%d)", centerTerrainHeight, terrainStats.ignoredOutlier))
+      else
+        table.insert(legend, "Cal terrain: center terrain unresolved")
+      end
+      if targetUnit and targetRenderedCellDist then
+        local renderedYards = targetRenderedCellDist * yardsPerCell
+        if targetDistanceExact then
+          local expectedCells = targetDistanceExact / yardsPerCell
+          local cellError = targetRenderedCellDist - expectedCells
+          local yardError = renderedYards - targetDistanceExact
+          table.insert(legend, string.format("Cal target: exact=%.1f yd expected=%.2f cells rendered=%.2f cells (err %.2f cells / %.1f yd)", targetDistanceExact, expectedCells, targetRenderedCellDist, cellError, yardError))
+        elseif targetDistanceApprox then
+          local expectedCells = targetDistanceApprox / yardsPerCell
+          local cellError = targetRenderedCellDist - expectedCells
+          local yardError = renderedYards - targetDistanceApprox
+          table.insert(legend, string.format("Cal target: approx~%.1f yd expected~%.2f cells rendered=%.2f cells (err %.2f cells / %.1f yd)", targetDistanceApprox, expectedCells, targetRenderedCellDist, cellError, yardError))
+        elseif targetUsedFallback then
+          table.insert(legend, string.format("Cal target: fallback placement rendered=%.2f cells (~%.1f yd), no distance estimate", targetRenderedCellDist, renderedYards))
+        else
+          table.insert(legend, string.format("Cal target: rendered=%.2f cells (~%.1f yd), no distance source", targetRenderedCellDist, renderedYards))
+        end
+      elseif targetUnit then
+        table.insert(legend, "Cal target: target selected but not rendered (off-grid or unresolved position)")
+      else
+        table.insert(legend, "Cal target: no target selected")
+      end
     end
     display = display .. "\n" .. table.concat(legend, "\n")
   end
@@ -9875,6 +9910,7 @@ function TA_DFModeStatus()
   AddLine("system", "Threat: !=high  ~=medium  .=empty  x=corpse")
   AddLine("system", "Terrain: ^=steep  /=incline  A/V=up/down  X/#=obstacles")
   AddLine("system", "Terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF") .. " (use /ta df hue on|off)")
+  AddLine("system", "DF calibration: " .. (TA.dfModeCalibrationEnabled and "ON" or "OFF") .. " (use /ta df calibrate on|off)")
   AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 1) .. " cell(s)")
   AddLine("system", "Orientation: " .. ((TA.dfModeOrientation or "fixed"):upper()))
   AddLine("system", "Rotation mode: " .. ((TA.dfModeRotationMode or "smooth"):upper()))
@@ -11459,6 +11495,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeHueEnabled = false
     end
     TA.dfModeHueEnabled = TextAdventurerDB.dfModeHueEnabled and true or false
+    if TextAdventurerDB.dfModeCalibrationEnabled == nil then
+      TextAdventurerDB.dfModeCalibrationEnabled = false
+    end
+    TA.dfModeCalibrationEnabled = TextAdventurerDB.dfModeCalibrationEnabled and true or false
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
       local savedGrid = math.floor(TextAdventurerDB.dfModeGridSize)
       if savedGrid < 5 then savedGrid = 5 end
