@@ -67,9 +67,13 @@ TA.awarenessNearbyTicker = nil
 TA.awarenessMemoryTicker = nil
 TA.warlockPromptTicker = nil
 TA.warriorPromptTicker = nil
-TA.lineLimit = 1000
+TA.lineLimit = 400
 TA.lines = {}
 TA.lastNearbySignature = nil
+TA.awarenessDirty = true
+TA.awarenessLastRunAt = 0
+TA.awarenessEventMinInterval = 0.20
+TA.awarenessFallbackInterval = 0.75
 TA.textMode = false
 TA.bagState = {}
 TA.pendingLoot = false
@@ -107,6 +111,9 @@ TA.mlXPSourceHints = {}
 TA.lastCombatEndedAt = 0
 TA.pendingItemTextRead = nil
 TA.lastItemTextSignature = nil
+TA.lastXPStatusBucket = nil
+TA.lastMoneyCopper = nil
+TA.sellJunkState = nil
 TA.gridSize = nil
 TA.cellSizeMode = "yards"
 TA.cellSizeYards = 30
@@ -130,7 +137,11 @@ TA.dfModeViewMode = "threat"  -- tactical, threat, exploration, combined
 TA.dfModeProfile = "full"  -- balanced, full
 TA.dfModeOrientation = "fixed"  -- fixed (north-up), rotating (heading-up)
 TA.dfModeRotationMode = "smooth"  -- smooth, octant (45-degree snaps for squarer geometry)
-TA.dfModeMarkRadius = 3  -- cells around mark center to draw edge ring
+TA.dfModeLookaheadSeconds = 0.12  -- short player-only projection to make DF cell transitions feel snappier
+TA.dfModeHysteresisEnterPct = 0.38  -- enter next DF cell early, then require backing out farther before snapping back
+TA.dfModeAnchorCellX = nil
+TA.dfModeAnchorCellY = nil
+TA.dfModeMarkRadius = 0  -- cells around mark center to draw edge ring (0 = center cell only)
 TA.dfModeRecentCells = {}  -- Track recently visited cells for breadcrumb trail
 TA.dfModeLastFacing = nil
 TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
@@ -449,7 +460,7 @@ text:SetPoint("TOPLEFT", 18, -42)
 text:SetFontObject(GameFontHighlightHuge)
 text:SetJustifyH("LEFT")
 text:SetFading(false)
-text:SetMaxLines(1000)
+text:SetMaxLines(TA.lineLimit or 400)
 text:SetInsertMode("BOTTOM")
 text:SetIndentedWordWrap(true)
 text:EnableMouseWheel(true)
@@ -683,6 +694,47 @@ local function TA_PublishPublicAPI()
 end
 
 TA_PublishPublicAPI()
+
+function TA_SetLineLimit(limit, silent)
+  local minLimit = 100
+  local maxLimit = 2000
+
+  if limit == nil then
+    AddLine("system", string.format("Text log line limit: %d", TA.lineLimit or 400))
+    AddLine("system", string.format("Usage: loglimit <n> (range %d-%d)", minLimit, maxLimit))
+    return
+  end
+
+  local n = math.floor(tonumber(limit) or 0)
+  if n < minLimit then n = minLimit end
+  if n > maxLimit then n = maxLimit end
+
+  TA.lineLimit = n
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.lineLimit = n
+
+  while #TA.lines > TA.lineLimit do
+    table.remove(TA.lines, 1)
+  end
+
+  if panel and panel.text then
+    if panel.text.SetMaxLines then
+      panel.text:SetMaxLines(TA.lineLimit)
+    end
+    panel.text:Clear()
+    for i = 1, #TA.lines do
+      local line = TA.lines[i]
+      if line and line.text then
+        panel.text:AddMessage(line.text, line.r or 1, line.g or 1, line.b or 1)
+      end
+    end
+    panel.text:ScrollToBottom()
+  end
+
+  if not silent then
+    AddLine("system", string.format("Text log line limit set to %d.", TA.lineLimit))
+  end
+end
 
 function AddLine(kind, msg)
   if not msg or msg == "" then return end
@@ -1018,6 +1070,8 @@ function HandleCombatLog()
     local mapID = (C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")) or nil
     TA_RecordDFCorpseFromGUID(destGUID, destName, mapID)
   end
+
+  return subevent
 end
 
 function DescribeUnit(unit)
@@ -1828,6 +1882,9 @@ function CellKey(x, y)
 end
 
 function MarkCurrentCell(name)
+  -- Always recenter the grid anchor on the player before marking so the cell
+  -- center lands on top of the player, matching the delete-and-remark behavior.
+  RecenterCurrentCellAnchor(true)
   local mapID, cellX, cellY, x, y, continentX, continentY, continentID, gridX, gridY, offsetX, offsetY = GetPlayerMapCell()
   if not mapID then 
     AddLine("system", "Could not determine current location - mapID is nil.")
@@ -4339,7 +4396,7 @@ function TA_ReportLiveWarlockDps()
   AddLine("system", "Tune with: warlockdps set <key> <value> | warlockdps mode <shadow|fire> | warlockdps assumptions | warlockdps mapping")
 end
 
-local function TA_GetWarlockPromptConfig()
+function TA_GetWarlockPromptConfig()
   TextAdventurerDB = TextAdventurerDB or {}
   if type(TextAdventurerDB.warlockPrompt) ~= "table" then
     TextAdventurerDB.warlockPrompt = {}
@@ -4387,6 +4444,7 @@ local function TA_GetWarlockPromptState()
   end
 
   local c = TA_GetWarlockLiveConfig()
+  local promptCfg = TA_GetWarlockPromptConfig()
   local spec = TA_GetWarlockModeSpec(c)
   local powerType = UnitPowerType and UnitPowerType("player") or 0
   local mana = UnitPower and (UnitPower("player", powerType) or 0) or 0
@@ -6764,14 +6822,23 @@ function TA_SellJunk()
     AddLine("system", "No merchant window is open.")
     return
   end
+  if InCombatLockdown and InCombatLockdown() then
+    AddLine("system", "You cannot sell items while in combat.")
+    return
+  end
   if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo and C_Container.UseContainerItem) then
     AddLine("system", "Container API unavailable.")
     return
   end
 
-  local soldStacks = 0
-  local soldUnits = 0
-  local totalValue = 0
+  if TA.sellJunkState and TA.sellJunkState.active then
+    AddLine("system", "selljunk is already in progress.")
+    return
+  end
+
+  local queue = {}
+  local queuedUnits = 0
+  local estimatedValue = 0
   local maxBag = tonumber(NUM_BAG_SLOTS) or 4
 
   for bag = 0, maxBag do
@@ -6787,21 +6854,130 @@ function TA_SellJunk()
           quality = itemQuality
         end
         if quality == 0 then
-          local value = (tonumber(sellPrice) or 0) * stackCount
-          C_Container.UseContainerItem(bag, slot)
-          soldStacks = soldStacks + 1
-          soldUnits = soldUnits + stackCount
-          totalValue = totalValue + value
+          table.insert(queue, {
+            bag = bag,
+            slot = slot,
+            itemRef = itemRef,
+            stackCount = stackCount,
+          })
+          queuedUnits = queuedUnits + stackCount
+          estimatedValue = estimatedValue + ((tonumber(sellPrice) or 0) * stackCount)
         end
       end
     end
   end
 
-  if soldStacks == 0 then
+  if #queue == 0 then
     AddLine("loot", "No junk-quality items found to sell.")
   else
-    AddLine("loot", string.format("Sold junk: %d stack(s), %d item(s), estimated value %s.", soldStacks, soldUnits, FormatMoney(totalValue)))
+    TA.sellJunkState = {
+      active = true,
+      queue = queue,
+      index = 1,
+      soldStacks = 0,
+      soldUnits = 0,
+      totalValue = 0,
+      queuedStacks = #queue,
+      queuedUnits = queuedUnits,
+      estimatedValue = estimatedValue,
+      waitingForBagUpdate = false,
+      moneyChanged = false,
+      lastActionAt = 0,
+      warnedCombat = false,
+    }
+    AddLine("loot", string.format("Selling junk (%d stack(s), %d item(s), est. %s)...", #queue, queuedUnits, FormatMoney(estimatedValue)))
+    TA_ProcessSellJunkQueue("start")
   end
+end
+
+function TA_ProcessSellJunkQueue(trigger)
+  local state = TA.sellJunkState
+  if not state or not state.active then
+    return
+  end
+
+  if not TA.vendorOpen then
+    AddLine("system", "Stopped selljunk: merchant window is no longer open.")
+    TA.sellJunkState = nil
+    return
+  end
+
+  if InCombatLockdown and InCombatLockdown() then
+    if not state.warnedCombat then
+      AddLine("system", "Paused selljunk: you are in combat.")
+      state.warnedCombat = true
+    end
+    return
+  end
+  state.warnedCombat = false
+
+  local now = GetTime()
+  if state.waitingForBagUpdate and trigger ~= "bagupdate" then
+    if (now - (state.lastActionAt or 0)) < 0.40 then
+      return
+    end
+    state.waitingForBagUpdate = false
+  end
+
+  while state.index <= #state.queue do
+    local entry = state.queue[state.index]
+    state.index = state.index + 1
+
+    local info = C_Container.GetContainerItemInfo(entry.bag, entry.slot)
+    if info and (info.hyperlink or info.itemID) then
+      local quality = info.quality
+      local itemRef = info.hyperlink or info.itemID
+      local stackCount = tonumber(info.stackCount) or tonumber(entry.stackCount) or 1
+      local _, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemRef)
+      if quality == nil then
+        quality = itemQuality
+      end
+      if quality == 0 then
+        C_Container.UseContainerItem(entry.bag, entry.slot)
+        state.soldStacks = state.soldStacks + 1
+        state.soldUnits = state.soldUnits + stackCount
+        state.totalValue = state.totalValue + ((tonumber(sellPrice) or 0) * stackCount)
+        state.waitingForBagUpdate = true
+        state.lastActionAt = now
+        C_Timer.After(0.45, function()
+          TA_ProcessSellJunkQueue("timeout")
+        end)
+        return
+      end
+    end
+  end
+
+  AddLine("loot", string.format("Sold junk: %d/%d stack(s), %d item(s), estimated value %s.", state.soldStacks, state.queuedStacks, state.soldUnits, FormatMoney(state.totalValue)))
+  if state.moneyChanged then
+    ReportMoney()
+  end
+  TA.sellJunkState = nil
+end
+
+function TA:ReportXPStatusEvent()
+  local level = UnitLevel("player") or 0
+  local xp = UnitXP("player") or 0
+  local xpMax = UnitXPMax("player") or 0
+  local pct = xpMax > 0 and (xp / xpMax * 100) or 0
+  local bucket = string.format("%d:%d", level, math.floor(pct / 5))
+  if bucket ~= TA.lastXPStatusBucket then
+    TA.lastXPStatusBucket = bucket
+    ReportXP()
+  end
+end
+
+function TA:ReportMoneyStatusEvent()
+  local copper = GetMoney() or 0
+  if copper == TA.lastMoneyCopper then
+    return
+  end
+  TA.lastMoneyCopper = copper
+  local sellState = TA.sellJunkState
+  if sellState and sellState.active then
+    sellState.moneyChanged = true
+    return
+  end
+  ReportMoney()
 end
 
 function TA_RestockVendorItem(itemQuery, desiredCount)
@@ -7250,6 +7426,10 @@ end
 local function SellBagItem(bag, slot)
   if not TA.vendorOpen then
     AddLine("system", "No merchant window is open.")
+    return
+  end
+  if InCombatLockdown and InCombatLockdown() then
+    AddLine("system", "You cannot sell items while in combat.")
     return
   end
   local info = C_Container and C_Container.GetContainerItemInfo(bag, slot)
@@ -9174,7 +9354,7 @@ local function BuildDFModeDisplay()
 
   -- Get facing direction
   local facing = GetPlayerFacing() or 0
-  local playerWorldX, playerWorldY = UnitPosition("player")
+  local playerWorldX, playerWorldY = TA_GetProjectedDFPlayerWorldPosition()
   local now = GetTime()
   local facingDegrees = math.floor(math.deg(facing))
   TA.dfModeNavHint = nil
@@ -9305,7 +9485,7 @@ local function BuildDFModeDisplay()
   -- Place target with near-visual emphasis in balanced mode.
   if targetUnit then
     local tx, ty
-    local playerX, playerY = UnitPosition("player")
+    local playerX, playerY = playerWorldX, playerWorldY
     local targetX, targetY = nil, nil
 
     local targetGUID = UnitGUID("target")
@@ -9384,7 +9564,7 @@ local function BuildDFModeDisplay()
   end
 
   -- Place marked cells last so marks stay visible over other map symbols.
-  local markRadius = math.floor(tonumber(TA.dfModeMarkRadius) or 1)
+  local markRadius = math.floor(tonumber(TA.dfModeMarkRadius) or 0)
   local maxMarkRadius = math.floor((TA.dfModeGridSize or 35) / 2)
   local markEdgeGlyph = "|cff33ff66o|r"
   local markCenterGlyph = "|cff33ff66M|r"
@@ -10020,7 +10200,7 @@ function TA_SetDFModeMarkRadius(radius, silent)
   local maxR = math.floor((TA.dfModeGridSize or 35) / 2)
 
   if radius == nil then
-    local current = tonumber(TA.dfModeMarkRadius) or 1
+    local current = tonumber(TA.dfModeMarkRadius) or 0
     AddLine("system", "DF mark radius: " .. math.floor(current) .. " cell(s)")
     AddLine("system", "Usage: /ta df markradius <0-" .. maxR .. ">")
     return
@@ -10090,7 +10270,7 @@ function TA_DFModeStatus()
   end
   AddLine("system", "Terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF") .. " (use /ta df hue on|off)")
   AddLine("system", "DF calibration: " .. (TA.dfModeCalibrationEnabled and "ON" or "OFF") .. " (use /ta df calibrate on|off)")
-  AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 1) .. " cell(s)")
+  AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 0) .. " cell(s)")
   AddLine("system", "Orientation: " .. ((TA.dfModeOrientation or "fixed"):upper()))
   AddLine("system", "Rotation mode: " .. ((TA.dfModeRotationMode or "smooth"):upper()))
   local terrain = nil
@@ -10439,6 +10619,68 @@ function TA_GetEffectiveDFYardsPerCell()
   return yards
 end
 
+function TA_GetProjectedDFPlayerWorldPosition()
+  local playerWorldX, playerWorldY = UnitPosition("player")
+  if not playerWorldX or not playerWorldY then
+    return nil, nil
+  end
+
+  local speed = tonumber(GetUnitSpeed("player")) or 0
+  if speed <= 0 then
+    return playerWorldX, playerWorldY
+  end
+
+  local facing = GetPlayerFacing()
+  if not facing then
+    return playerWorldX, playerWorldY
+  end
+
+  local lookaheadSeconds = tonumber(TA.dfModeLookaheadSeconds) or 0
+  local projectedWorldX = playerWorldX
+  local projectedWorldY = playerWorldY
+  if lookaheadSeconds > 0 then
+    local lookaheadYards = math.min(speed * lookaheadSeconds, 1.25)
+    local forwardX = -math.sin(facing)
+    local forwardY = math.cos(facing)
+    projectedWorldX = projectedWorldX + (forwardX * lookaheadYards)
+    projectedWorldY = projectedWorldY + (forwardY * lookaheadYards)
+  end
+
+  local yardsPerCell = TA_GetEffectiveDFYardsPerCell()
+  if not yardsPerCell or yardsPerCell <= 0 then
+    return projectedWorldX, projectedWorldY
+  end
+
+  local threshold = tonumber(TA.dfModeHysteresisEnterPct) or 0.38
+  if threshold < 0.05 then threshold = 0.05 end
+  if threshold > 0.49 then threshold = 0.49 end
+
+  local function RoundNearest(n)
+    if n >= 0 then
+      return math.floor(n + 0.5)
+    end
+    return math.ceil(n - 0.5)
+  end
+
+  local function SnapAxis(rawCell, stateKey)
+    local snappedCell = tonumber(TA[stateKey])
+    if not snappedCell or math.abs(rawCell - snappedCell) > 2 then
+      snappedCell = RoundNearest(rawCell)
+    else
+      while (rawCell - snappedCell) >= threshold do
+        snappedCell = snappedCell + 1
+      end
+      while (rawCell - snappedCell) <= -threshold do
+        snappedCell = snappedCell - 1
+      end
+    end
+    TA[stateKey] = snappedCell
+    return snappedCell * yardsPerCell
+  end
+
+  return SnapAxis(projectedWorldX / yardsPerCell, "dfModeAnchorCellX"), SnapAxis(projectedWorldY / yardsPerCell, "dfModeAnchorCellY")
+end
+
 
 local function BuildNearbyLine(kind, units)
   if #units == 0 then return nil end
@@ -10527,6 +10769,18 @@ local function CheckAwareness()
     end
     TA.lastNearbySignature = signature
   end
+end
+
+function TA_RequestAwarenessRefresh(force)
+  TA.awarenessDirty = true
+  local now = GetTime()
+  local minInterval = tonumber(TA.awarenessEventMinInterval) or 0.20
+  if not force and (now - (TA.awarenessLastRunAt or 0)) < minInterval then
+    return
+  end
+  CheckAwareness()
+  TA.awarenessLastRunAt = now
+  TA.awarenessDirty = false
 end
 
 local CHAT_EVENT_INFO = {
@@ -11112,15 +11366,15 @@ local function RespondToPopup(index, action)
   end
 end
 
-local hiddenFrames = { "MinimapCluster", "MiniMapTracking", "MinimapZoneTextButton", "GameTimeFrame", "PlayerFrame", "TargetFrame", "BuffFrame", "DurabilityFrame" }
+TA.hiddenFrames = { "MinimapCluster", "MiniMapTracking", "MinimapZoneTextButton", "GameTimeFrame", "PlayerFrame", "TargetFrame", "BuffFrame", "DurabilityFrame" }
 
-local function ForceHideFrameByName(name)
+function TA_ForceHideFrameByName(name)
   local frame = _G[name]
   if frame then frame:Hide() end
 end
 
-local function ApplyTextModeFrames()
-  for _, name in ipairs(hiddenFrames) do ForceHideFrameByName(name) end
+function TA_ApplyTextModeFrames()
+  for _, name in ipairs(TA.hiddenFrames or {}) do TA_ForceHideFrameByName(name) end
 end
 
 SyncTextModeOverlay = function()
@@ -11133,18 +11387,18 @@ SyncTextModeOverlay = function()
   TA_UpdateCommandPreviewBox()
 end
 
-local function EnableTextMode()
+function TA_EnableTextModeInternal()
   TA.textMode = true
   panel:Show()
   panel:SetFrameStrata("TOOLTIP")
   panel:SetFrameLevel(11000)
   panel.inputBox:Show()
   SyncTextModeOverlay()
-  ApplyTextModeFrames()
+  TA_ApplyTextModeFrames()
   AddLine("system", "Text mode enabled.")
 end
 
-local function DisableTextMode()
+function TA_DisableTextModeInternal()
   TA.textMode = false
   SyncTextModeOverlay()
   panel.inputBox:Hide()
@@ -11185,11 +11439,11 @@ function TA_TogglePanelCommand()
 end
 
 function TA_EnableTextModeCommand()
-  EnableTextMode()
+  TA_EnableTextModeInternal()
 end
 
 function TA_DisableTextModeCommand()
-  DisableTextMode()
+  TA_DisableTextModeInternal()
 end
 
 function TA_FocusTerminalInput()
@@ -11527,7 +11781,11 @@ function TA_EnsureRuntimeTickers()
   if not TA.awarenessNearbyTicker then
     TA.awarenessNearbyTicker = C_Timer.NewTicker(TA.tickerIntervals.nearby or 0.01, function()
       TA:ProfileStart("awarenessNearbyTicker")
-      CheckAwareness()
+      local now = GetTime()
+      local fallbackInterval = tonumber(TA.awarenessFallbackInterval) or 0.75
+      if TA.awarenessDirty or (now - (TA.awarenessLastRunAt or 0)) >= fallbackInterval then
+        TA_RequestAwarenessRefresh(false)
+      end
       TA:ProfileEnd("awarenessNearbyTicker")
     end)
   end
@@ -11761,9 +12019,14 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeHeight = DF_MODE_DEFAULT_HEIGHT
     end
     local maxMarkRadius = math.floor((TA.dfModeGridSize or 35) / 2)
-    if type(TextAdventurerDB.dfModeMarkRadius) ~= "number" or TextAdventurerDB.dfModeMarkRadius > 5 then
-      -- Reset oversized values (e.g. old default of 17) to default perimeter of 3.
-      TextAdventurerDB.dfModeMarkRadius = 3
+    if type(TextAdventurerDB.dfModeMarkRadius) ~= "number" or TextAdventurerDB.dfModeMarkRadius < 0 or TextAdventurerDB.dfModeMarkRadius > maxMarkRadius then
+      TextAdventurerDB.dfModeMarkRadius = 0
+    end
+    -- One-time migration: old default radius 3 drew extra edge glyphs around marks.
+    -- New default is single-cell marks (radius 0) for exact cell visualization.
+    if TextAdventurerDB.dfModeMarkRadiusMigratedToZero ~= true and TextAdventurerDB.dfModeMarkRadius == 3 then
+      TextAdventurerDB.dfModeMarkRadius = 0
+      TextAdventurerDB.dfModeMarkRadiusMigratedToZero = true
     end
     TA_SetDFModeMarkRadius(TextAdventurerDB.dfModeMarkRadius, true)
     if type(TextAdventurerDB.dfModeWidth) ~= "number" or type(TextAdventurerDB.dfModeHeight) ~= "number" then
@@ -11792,6 +12055,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
     elseif TextAdventurerDB.autoEnable == nil then
       TextAdventurerDB.autoEnable = false
     end
+    if type(TextAdventurerDB.lineLimit) ~= "number" then
+      TextAdventurerDB.lineLimit = TA.lineLimit or 400
+    end
+    TA_SetLineLimit(TextAdventurerDB.lineLimit, true)
     if ChatFrame1 then
       ChatFrame1:Show()
       ChatFrame1:SetFrameLevel(5000)
@@ -11893,13 +12160,20 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA_PublishPublicAPI()
     TA_EmitExternal("READY", TA_GetIntegrationStateSnapshot())
     if TextAdventurerDB.autoEnable then
-      EnableTextMode()
+      TA_EnableTextModeInternal()
       panel.inputBox:SetFocus()
     end
     TA_InitCommandPreviewBox()
   elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
     TA:ProfileStart("COMBAT_LOG_EVENT_UNFILTERED")
-    HandleCombatLog()
+    local subevent = HandleCombatLog()
+    if subevent and (
+      string.find(subevent, "DAMAGE", 1, true)
+      or string.find(subevent, "HEAL", 1, true)
+      or string.find(subevent, "THREAT", 1, true)
+      or subevent == "UNIT_DIED") then
+      TA_RequestAwarenessRefresh(false)
+    end
     TA:ProfileEnd("COMBAT_LOG_EVENT_UNFILTERED")
   elseif CHAT_EVENT_INFO[event] then
     TA:ProfileStart("HandleChatEvent")
@@ -11907,6 +12181,9 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA:ProfileEnd("HandleChatEvent")
   elseif event == "PLAYER_TARGET_CHANGED" then
     CheckTarget()
+    TA_RequestAwarenessRefresh(true)
+  elseif event == "PLAYER_MONEY" then
+    TA:ReportMoneyStatusEvent()
   elseif event == "PLAYER_REGEN_DISABLED" then
     TA.dpsCombatStart = GetTime()
     TA.dpsCombatDamage = 0
@@ -11928,6 +12205,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.mlFightSnapshot = nil
     AddLine("playerCombat", "You leave combat.")
     ReportStatus(true)
+    TA_ProcessSellJunkQueue("combat_end")
     if TA.performanceModeEnabled and TA.performancePendingApply then
       TA_ApplyPerformanceFrameSuppression()
     end
@@ -11942,6 +12220,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     if TA_RecordGuideXPSample then
       TA_RecordGuideXPSample()
     end
+    TA:ReportXPStatusEvent()
   elseif event == "UNIT_SPELLCAST_START" then
     local unit, _, spellID = ...
     if unit == "player" or unit == "target" then ReportCastStart(unit, spellID, false) end
@@ -11963,7 +12242,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "PLAYER_ENTERING_WORLD" then
     TA.bagState = SnapshotBags()
     if TA.textMode then
-      ApplyTextModeFrames()
+      TA_ApplyTextModeFrames()
       panel:Show()
       panel.inputBox:Show()
       panel.inputBox:SetFocus()
@@ -11989,6 +12268,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
       end
     end
     TA.bagState = newState
+    TA_ProcessSellJunkQueue("bagupdate")
   elseif event == "MERCHANT_SHOW" then
     TA.vendorOpen = true
     AddLine("loot", "A merchant opens their wares. Type 'vendor' to browse, 'buy <n>', 'buyback [n]', 'sell <bag> <slot>', 'selljunk', or 'repair'/'repairstatus'.")
@@ -11996,6 +12276,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "WHO_LIST_UPDATE" then
     TA_ReportWhoList()
   elseif event == "MERCHANT_CLOSED" then
+    if TA.sellJunkState and TA.sellJunkState.active then
+      AddLine("system", "Stopped selljunk: merchant window closed.")
+      TA.sellJunkState = nil
+    end
     TA.vendorOpen = false
     AddLine("loot", "The merchant closes their wares.")
   elseif event == "GOSSIP_SHOW" then
@@ -12046,12 +12330,19 @@ TA:SetScript("OnEvent", function(self, event, ...)
       ReportStatus(false)
     elseif unit == "target" then
       ReportTargetCondition(false)
+      TA_RequestAwarenessRefresh(false)
+    elseif unit == "focus" then
+      TA_RequestAwarenessRefresh(false)
     end
   elseif event == "UNIT_AURA" then
     local unit = ...
     if unit == "player" then
       ReportBuffChanges()
+    elseif unit == "target" or unit == "focus" then
+      TA_RequestAwarenessRefresh(false)
     end
+  elseif event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" then
+    TA_RequestAwarenessRefresh(true)
   elseif event == "PLAYER_EQUIPMENT_CHANGED" then
     local slotId = ...
     ReportEquipmentChange(slotId)
@@ -12075,6 +12366,8 @@ TA:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 TA:RegisterEvent("PLAYER_TARGET_CHANGED")
 TA:RegisterEvent("PLAYER_REGEN_DISABLED")
 TA:RegisterEvent("PLAYER_REGEN_ENABLED")
+TA:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+TA:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
 TA:RegisterEvent("PLAYER_XP_UPDATE")
 TA:RegisterEvent("PLAYER_LEVEL_UP")
 TA:RegisterEvent("QUEST_TURNED_IN")

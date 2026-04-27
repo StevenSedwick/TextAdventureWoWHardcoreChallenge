@@ -100,6 +100,7 @@ TA.EXACT_INPUT_HANDLERS = {
   ["profile enable"] = function() TA:EnableProfiler() end,
   ["profile disable"] = function() TA:DisableProfiler() end,
   ["profile results"] = function() TA:PrintProfiler() end,
+  ["loglimit"] = function() TA_SetLineLimit(nil, false) end,
 }
 
 TA.PATTERN_INPUT_HANDLERS = {
@@ -138,6 +139,7 @@ end
 
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
 TA_AddPatternInputHandler("^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end)
+TA_AddPatternInputHandler("^loglimit%s+(%d+)$", function(n) TA_SetLineLimit(tonumber(n), false) end)
 
 function TA_ProcessInputCommand(msg)
   msg = (msg or ""):match("^%s*(.-)%s*$")
