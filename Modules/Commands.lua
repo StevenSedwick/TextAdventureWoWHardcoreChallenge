@@ -31,6 +31,9 @@ TA.EXACT_INPUT_HANDLERS = {
   ["backstab"] = function() ReportTargetPositioning() end,
   ["ta input"] = function() TA_FocusTerminalInput() end,
   ["input"] = function() TA_FocusTerminalInput() end,
+  ["runlast"] = function() TA_RunLastInputBlock() end,
+  ["run last"] = function() TA_RunLastInputBlock() end,
+  ["rerun"] = function() TA_RunLastInputBlock() end,
   ["autoquests on"] = function()
     TA.autoQuests = true
     AddLine("quest", "Auto quest handling enabled.")
@@ -214,6 +217,7 @@ function TA_ProcessInputCommand(msg)
     end
     return
   end
+
   local exactHandler = TA.EXACT_INPUT_HANDLERS[lower]
   if exactHandler then
     exactHandler()

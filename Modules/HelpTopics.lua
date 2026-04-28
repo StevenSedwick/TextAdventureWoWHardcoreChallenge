@@ -215,6 +215,8 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  textmode on/off - toggle immersive black-screen text mode.")
     AddLine("system", "  autostart on/off - auto-load addon on login.")
     AddLine("system", "  input - focus text input quickly (same as /ta input).")
+    AddLine("system", "  runlast/run last/rerun - replay the last submitted multiline command block.")
+    AddLine("system", "  multiline notes: lines starting with # are treated as comments and ignored.")
     AddLine("system", "  hide/show/toggle - hide/show the text panel.")
     AddLine("system", "  clear - clear the addon text log.")
     return

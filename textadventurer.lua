@@ -91,6 +91,8 @@ TA.inputHistory = {}
 TA.inputHistoryMax = 50
 TA.inputHistoryPos = 0
 TA.inputDraft = ""
+TA.lastInputBlock = nil
+TA.isReplayingLastBlock = false
 TA.lastSubzone = nil
 TA.vendorOpen = false
 TA.questObjectiveSnapshot = {}
@@ -493,13 +495,68 @@ flashOut:SetToAlpha(0.0)
 
 panel.text = text
 
+TA.INPUTBOX_LAYOUT = TA.INPUTBOX_LAYOUT or {
+  baseHeight = 24,
+  lineHeight = 14,
+  minLines = 1,
+  maxLines = 6,
+  x = 18,
+  baseY = 16,
+  insetLeft = 8,
+  insetRight = 8,
+  insetTop = 6,
+  insetBottom = 6,
+}
+
 local inputBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-inputBox:SetSize(840, 24)
-inputBox:SetPoint("BOTTOMLEFT", 18, 16)
+inputBox:SetSize(840, TA.INPUTBOX_LAYOUT.baseHeight)
+inputBox:SetPoint("BOTTOMLEFT", TA.INPUTBOX_LAYOUT.x, TA.INPUTBOX_LAYOUT.baseY)
 inputBox:SetAutoFocus(false)
 inputBox:SetMaxLetters(200)
+inputBox:SetMultiLine(true)
+inputBox:SetFontObject(ChatFontNormal)
+inputBox:SetTextColor(1, 1, 1, 1)
+inputBox:SetJustifyH("LEFT")
+inputBox:SetJustifyV("TOP")
+inputBox:SetTextInsets(TA.INPUTBOX_LAYOUT.insetLeft, TA.INPUTBOX_LAYOUT.insetRight, TA.INPUTBOX_LAYOUT.insetTop, TA.INPUTBOX_LAYOUT.insetBottom)
+if inputBox.SetBlinkSpeed then
+  inputBox:SetBlinkSpeed(0.5)
+end
+inputBox.customCaret = inputBox:CreateTexture(nil, "OVERLAY")
+inputBox.customCaret:SetColorTexture(0.90, 1.00, 0.85, 0.90)
+inputBox.customCaret:SetSize(2, 14)
+inputBox.customCaret:Hide()
+inputBox.customCaretFlash = inputBox.customCaret:CreateAnimationGroup()
+inputBox.customCaretFlash:SetLooping("REPEAT")
+inputBox.customCaretFlashA = inputBox.customCaretFlash:CreateAnimation("Alpha")
+inputBox.customCaretFlashA:SetOrder(1)
+inputBox.customCaretFlashA:SetDuration(0.50)
+inputBox.customCaretFlashA:SetFromAlpha(0.95)
+inputBox.customCaretFlashA:SetToAlpha(0.05)
+inputBox.customCaretFlashB = inputBox.customCaretFlash:CreateAnimation("Alpha")
+inputBox.customCaretFlashB:SetOrder(2)
+inputBox.customCaretFlashB:SetDuration(0.50)
+inputBox.customCaretFlashB:SetFromAlpha(0.05)
+inputBox.customCaretFlashB:SetToAlpha(0.95)
 inputBox:Hide()
 panel.inputBox = inputBox
+
+function TA_UpdateInputBoxLayout(editBox)
+  local textValue = editBox:GetText() or ""
+  local lineCount = 1
+  for _ in textValue:gmatch("\n") do
+    lineCount = lineCount + 1
+  end
+  lineCount = math.max(TA.INPUTBOX_LAYOUT.minLines, math.min(TA.INPUTBOX_LAYOUT.maxLines, lineCount))
+
+  local height = TA.INPUTBOX_LAYOUT.baseHeight + ((lineCount - 1) * TA.INPUTBOX_LAYOUT.lineHeight)
+  editBox:SetHeight(height)
+  -- Keep top edge stable and grow downward so multiline input doesn't cover log text.
+  editBox:ClearAllPoints()
+  editBox:SetPoint("BOTTOMLEFT", TA.INPUTBOX_LAYOUT.x, TA.INPUTBOX_LAYOUT.baseY - (height - TA.INPUTBOX_LAYOUT.baseHeight))
+end
+
+TA_UpdateInputBoxLayout(inputBox)
 
 local DF_MODE_DEFAULT_WIDTH = 400
 local DF_MODE_DEFAULT_HEIGHT = 625
@@ -5948,9 +6005,9 @@ local EQUIP_SLOTS = {
   {16,"Main Hand"},{17,"Off Hand"},{18,"Ranged"},{1,"Head"},{2,"Neck"},{3,"Shoulder"},{5,"Chest"},{6,"Waist"},{7,"Legs"},{8,"Feet"},{9,"Wrist"},{10,"Hands"},{11,"Finger 1"},{12,"Finger 2"},{13,"Trinket 1"},{14,"Trinket 2"},{15,"Back"}
 }
 
-local QUALITY_NAMES = { "Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary" }
+TA.QUALITY_NAMES = TA.QUALITY_NAMES or { "Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary" }
 
-local STAT_LABELS = {
+TA.STAT_LABELS = TA.STAT_LABELS or {
   ITEM_MOD_STAMINA_SHORT            = "Stamina",
   ITEM_MOD_STRENGTH_SHORT           = "Strength",
   ITEM_MOD_AGILITY_SHORT            = "Agility",
@@ -5979,7 +6036,7 @@ local STAT_LABELS = {
 }
 
 local function ReportEquipment()
-  local qualityNames = QUALITY_NAMES
+  local qualityNames = TA.QUALITY_NAMES or {}
   for _, entry in ipairs(EQUIP_SLOTS) do
     local slotId, label = entry[1], entry[2]
     local link = GetInventoryItemLink("player", slotId)
@@ -6020,7 +6077,7 @@ local function ReportEquipment()
       end
       local statLines = {}
       for k, v in pairs(statsTable) do
-        local friendlyName = STAT_LABELS[k] or k
+        local friendlyName = (TA.STAT_LABELS and TA.STAT_LABELS[k]) or k
         table.insert(statLines, string.format("%s +%s", friendlyName, tostring(v)))
       end
       if #statLines > 0 then
@@ -7518,6 +7575,133 @@ function TA_EquipItemByQuery(query)
   end
 
   AddLine("system", string.format("No bag item matched '%s'.", itemName))
+end
+
+-- INVSLOT 16 = MainHandSlot, 17 = SecondaryHandSlot (off-hand)
+TA.WEAPON_SLOT_IDS = TA.WEAPON_SLOT_IDS or { mainhand = 16, offhand = 17, main = 16, off = 17, mh = 16, oh = 17 }
+
+function TA_ApplyWeaponBuff(bag, slot, weaponSlotArg)
+  local function Feedback(msg, ch) AddLine(ch or "system", msg) end
+
+  if InCombatLockdown and InCombatLockdown() then
+    Feedback("Cannot apply weapon buffs while in combat.")
+    return
+  end
+
+  local info = C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)
+  if not info then
+    Feedback(string.format("No item found in %s slot %d.", BagLabel(bag), slot))
+    return
+  end
+  local itemRef = info.hyperlink or tostring(info.itemID or "item")
+
+  -- Guard against accidentally trying to equip non-consumables to weapon slots.
+  if GetItemInfoInstant then
+    local _, _, _, _, _, itemClassID = GetItemInfoInstant(info.hyperlink or info.itemID)
+    local consumableClassID = LE_ITEM_CLASS_CONSUMABLE or 0
+    if itemClassID ~= nil and itemClassID ~= consumableClassID then
+      Feedback("That item is not a consumable weapon buff (stone/oil/poison).")
+      return
+    end
+  end
+
+  local targetSlotID = nil
+  if weaponSlotArg then
+    targetSlotID = TA.WEAPON_SLOT_IDS[weaponSlotArg:lower()]
+    if not targetSlotID then
+      Feedback(string.format("Unknown weapon slot '%s'. Use: mainhand, offhand, mh, oh.", weaponSlotArg))
+      return
+    end
+  end
+
+  -- Pick up the buff item from the bag onto the cursor.
+  ClearCursor()
+  if C_Container and C_Container.PickupContainerItem then
+    C_Container.PickupContainerItem(bag, slot)
+  elseif PickupContainerItem then
+    PickupContainerItem(bag, slot)
+  else
+    Feedback("Container pickup API unavailable.")
+    return
+  end
+
+  local cursorType = GetCursorInfo and GetCursorInfo() or nil
+  if cursorType ~= "item" then
+    ClearCursor()
+    Feedback(string.format("Could not pick up %s — may be on cooldown or already in use.", itemRef))
+    return
+  end
+
+  if not targetSlotID then
+    -- UseContainerItem opens a protected Blizzard dialog and cannot be called from addon code.
+    ClearCursor()
+    Feedback("Weapon slot required. Usage: wbuff <bag> <slot> mainhand|offhand", "error")
+    return
+  end
+
+  -- Apply to the specified weapon slot via EquipCursorItem (safe outside combat).
+  if EquipCursorItem then
+    EquipCursorItem(targetSlotID)
+
+    -- If the cursor still holds the same item, the use/apply attempt failed.
+    local postCursorType = GetCursorInfo and GetCursorInfo() or nil
+    if postCursorType == "item" then
+      ClearCursor()
+      Feedback("Could not apply that buff to the selected weapon slot.")
+      return
+    end
+
+    local slotName = (targetSlotID == 16) and "Main Hand" or "Off Hand"
+    Feedback(string.format("Applied %s to %s.", itemRef, slotName), "loot")
+  else
+    ClearCursor()
+    Feedback("EquipCursorItem API unavailable.")
+  end
+end
+
+function TA_ApplyWeaponBuffByQuery(query, weaponSlotArg)
+  local itemName = (query or ""):match("^%s*(.-)%s*$")
+  if itemName == "" then
+    AddLine("system", "Usage: wbuff <item name> <mainhand|offhand>")
+    return
+  end
+  if not weaponSlotArg then
+    AddLine("system", "Usage: wbuff <item name> <mainhand|offhand>")
+    return
+  end
+  if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then
+    AddLine("system", "Container API unavailable.")
+    return
+  end
+
+  local queryLower = itemName:lower()
+  local maxBag = tonumber(NUM_BAG_SLOTS) or 4
+  local exactBag, exactSlot, partialBag, partialSlot = nil, nil, nil, nil
+
+  for bag = 0, maxBag do
+    local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+    for slot = 1, numSlots do
+      local info = C_Container.GetContainerItemInfo(bag, slot)
+      if info then
+        local name = info.itemName
+        if not name and GetItemInfo then name = GetItemInfo(info.hyperlink or info.itemID) end
+        if name then
+          local nameLower = name:lower()
+          if nameLower == queryLower then exactBag, exactSlot = bag, slot; break end
+          if not partialBag and nameLower:find(queryLower, 1, true) then partialBag, partialSlot = bag, slot end
+        end
+      end
+    end
+    if exactBag then break end
+  end
+
+  local foundBag = exactBag or partialBag
+  local foundSlot = exactSlot or partialSlot
+  if foundBag then
+    TA_ApplyWeaponBuff(foundBag, foundSlot, weaponSlotArg)
+  else
+    AddLine("system", string.format("No bag item matched '%s'.", itemName))
+  end
 end
 
 local function SellBagItem(bag, slot)
@@ -11543,11 +11727,82 @@ function TA_DisableTextModeCommand()
   TA_DisableTextModeInternal()
 end
 
-function TA_FocusTerminalInput()
+function TA_FocusTerminalInput(deferFocus)
   panel:Show()
   panel.inputBox:Show()
-  panel.inputBox:SetFocus()
+
+  local function FocusNow()
+    if panel and panel.inputBox then
+      panel.inputBox:SetFocus()
+    end
+  end
+
+  if deferFocus and C_Timer and C_Timer.After then
+    C_Timer.After(0, FocusNow)
+  else
+    FocusNow()
+  end
+
   AddLine("system", "Terminal input ready.")
+end
+
+local function TA_ExecuteTerminalInputLines(lines, opts)
+  opts = opts or {}
+  if type(lines) ~= "table" or #lines == 0 then
+    return false
+  end
+
+  if opts.recordLastBlock ~= false then
+    TA.lastInputBlock = {}
+    for i = 1, #lines do
+      TA.lastInputBlock[i] = lines[i]
+    end
+  end
+
+  for i = 1, #lines do
+    local line = lines[i]
+    AddLine("system", "> " .. line)
+    table.insert(TA.inputHistory, line)
+    if #TA.inputHistory > TA.inputHistoryMax then table.remove(TA.inputHistory, 1) end
+  end
+  TA.inputHistoryPos = 0
+  TA.inputDraft = ""
+
+  TA.deferTerminalRefocus = false
+  for i = 1, #lines do
+    TA_ProcessInputCommand(lines[i])
+    if TA.deferTerminalRefocus then
+      return true
+    end
+  end
+
+  return false
+end
+
+function TA_RunLastInputBlock()
+  if TA.isReplayingLastBlock then
+    AddLine("system", "runlast is already replaying.")
+    return
+  end
+  if type(TA.lastInputBlock) ~= "table" or #TA.lastInputBlock == 0 then
+    AddLine("system", "No previous multiline block to replay.")
+    return
+  end
+
+  local lines = {}
+  for i = 1, #TA.lastInputBlock do
+    lines[i] = TA.lastInputBlock[i]
+  end
+
+  TA.isReplayingLastBlock = true
+  local ok, err = pcall(function()
+    TA_ExecuteTerminalInputLines(lines, { recordLastBlock = false })
+  end)
+  TA.isReplayingLastBlock = false
+
+  if not ok then
+    AddLine("system", "runlast failed: " .. tostring(err))
+  end
 end
 
 function TA_SendFromTerminal(msg)
@@ -11559,6 +11814,22 @@ function TA_SendFromTerminal(msg)
     camp = true,
     quit = true,
     exit = true,
+    cast = true,
+    stopcasting = true,
+    castsequence = true,
+    use = true,
+    equip = true,
+    equipslot = true,
+    petattack = true,
+    petfollow = true,
+    petpassive = true,
+    petdefensive = true,
+    petaggressive = true,
+    startattack = true,
+    stopattack = true,
+    cancelaura = true,
+    cancelform = true,
+    click = true,
   }
   if cmd == "s" or cmd == "say" then
     SendChatMessage(rest, "SAY")
@@ -11948,19 +12219,72 @@ function TA_RestartRuntimeTickers()
 end
 
 panel.inputBox:EnableKeyboard(true)
-panel.inputBox:SetScript("OnEnterPressed", function(self)
-  local msg = self:GetText()
-  if msg and msg ~= "" then
-    AddLine("system", "> " .. msg)
-    table.insert(TA.inputHistory, msg)
-    if #TA.inputHistory > TA.inputHistoryMax then table.remove(TA.inputHistory, 1) end
-    TA.inputHistoryPos = 0
-    TA.inputDraft = ""
+panel.inputBox:SetScript("OnEditFocusGained", function(self)
+  self:SetCursorPosition((self:GetText() and #self:GetText()) or 0)
+  if self.customCaret then
+    self.customCaret:Show()
+    if self.customCaretFlash and not self.customCaretFlash:IsPlaying() then
+      self.customCaretFlash:Play()
+    end
   end
+end)
+panel.inputBox:SetScript("OnEditFocusLost", function(self)
+  if self.customCaretFlash and self.customCaretFlash:IsPlaying() then
+    self.customCaretFlash:Stop()
+  end
+  if self.customCaret then
+    self.customCaret:Hide()
+  end
+end)
+panel.inputBox:SetScript("OnCursorChanged", function(self, x, y, w, h)
+  if not self.customCaret then
+    return
+  end
+  self.customCaret:ClearAllPoints()
+  self.customCaret:SetPoint("TOPLEFT", self, "TOPLEFT", (x or 0) + (TA.INPUTBOX_LAYOUT.insetLeft or 8), (y or 0) - (TA.INPUTBOX_LAYOUT.insetTop or 6))
+  if h and h > 0 then
+    self.customCaret:SetHeight(h)
+  end
+end)
+panel.inputBox:SetScript("OnTextChanged", function(self)
+  TA_UpdateInputBoxLayout(self)
+end)
+panel.inputBox:SetScript("OnEnterPressed", function(self)
+  if IsShiftKeyDown and IsShiftKeyDown() then
+    local text = self:GetText() or ""
+    local cursor = self:GetCursorPosition() or #text
+    local before = text:sub(1, cursor)
+    local after = text:sub(cursor + 1)
+    local combined = before .. "\n" .. after
+    self:SetText(combined)
+    self:SetCursorPosition(cursor + 1)
+    return
+  end
+
+  local msg = self:GetText()
+  local lines = {}
+  if msg and msg ~= "" then
+    for line in msg:gmatch("[^\r\n]+") do
+      local trimmed = line:match("^%s*(.-)%s*$")
+      if trimmed ~= "" and not trimmed:match("^#") then
+        table.insert(lines, trimmed)
+      end
+    end
+    if #lines == 0 then
+      local trimmed = msg:match("^%s*(.-)%s*$")
+      if trimmed ~= "" and not trimmed:match("^#") then
+        table.insert(lines, trimmed)
+      end
+    end
+  end
+
   self:SetText("")
-  TA.deferTerminalRefocus = false
-  TA_ProcessInputCommand(msg)
+  local shouldBlur = TA_ExecuteTerminalInputLines(lines, { recordLastBlock = true })
   if TA.deferTerminalRefocus then
+    self:ClearFocus()
+    return
+  end
+  if shouldBlur then
     self:ClearFocus()
     return
   end
@@ -11988,6 +12312,80 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
       end
       self:SetCursorPosition(#self:GetText())
     end
+  elseif key == "TAB" then
+    local partial = (self:GetText() or ""):match("^%s*(.-)%s*$")
+    if partial == "" then return end
+    local partialLower = partial:lower()
+
+    -- Collect candidates from exact handlers + a static prefix list
+    local candidates = {}
+    local seen = {}
+    if TA.EXACT_INPUT_HANDLERS then
+      for cmd in pairs(TA.EXACT_INPUT_HANDLERS) do
+        if not seen[cmd] and cmd:sub(1, #partialLower) == partialLower then
+          seen[cmd] = true
+          table.insert(candidates, cmd)
+        end
+      end
+    end
+    -- Also include known prefix commands not fully in EXACT_INPUT_HANDLERS
+    local prefixCmds = {
+      "equip ", "binditem ", "bind ", "bindmacro ",
+      "actions ", "bars ", "sell ", "destroy ", "use ",
+      "mark ", "unmark ", "renamemark ", "goto ", "route ",
+      "ml xp ", "ml xp warrior ", "ml xp set ", "ml xp mode ",
+      "recipes ", "recipes search", "recipes makeable",
+      "bug show ", "bug copy ",
+      "df ", "df rotation ", "df profile ", "df view ",
+      "memory ", "focus ", "castfocus ", "macro ", "macroinfo ",
+      "skills weapons", "skills professions", "skills defense",
+      "help ", "help advanced", "help combat", "help economy",
+      "help navigation", "help social", "help quests",
+    }
+    for _, cmd in ipairs(prefixCmds) do
+      local cmdLower = cmd:lower()
+      if not seen[cmdLower] and cmdLower:sub(1, #partialLower) == partialLower then
+        seen[cmdLower] = true
+        table.insert(candidates, cmd)
+      end
+    end
+
+    if #candidates == 0 then return end
+
+    table.sort(candidates)
+
+    if #candidates == 1 then
+      -- Unique match: complete it
+      self:SetText(candidates[1])
+      self:SetCursorPosition(#candidates[1])
+    else
+      -- Multiple matches: find longest common prefix then show list
+      local common = candidates[1]
+      for i = 2, #candidates do
+        local c = candidates[i]
+        local newCommon = ""
+        for j = 1, math.min(#common, #c) do
+          if common:sub(j, j):lower() == c:sub(j, j):lower() then
+            newCommon = newCommon .. common:sub(j, j)
+          else
+            break
+          end
+        end
+        common = newCommon
+      end
+      if #common > #partial then
+        self:SetText(common)
+        self:SetCursorPosition(#common)
+      end
+      -- Print candidates to terminal
+      local MAX_SHOW = 12
+      local display = {}
+      for i = 1, math.min(#candidates, MAX_SHOW) do
+        table.insert(display, candidates[i])
+      end
+      local suffix = #candidates > MAX_SHOW and string.format(" (+%d more)", #candidates - MAX_SHOW) or ""
+      AddLine("system", "  " .. table.concat(display, "  |  ") .. suffix)
+    end
   end
 end)
 
@@ -11996,9 +12394,9 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
   local original = (msg or ""):match("^%s*(.-)%s*$")
   local lower = original:lower()
   if lower == "" then
-    TA_FocusTerminalInput()
+    TA_FocusTerminalInput(true)
   elseif lower == "input" or lower == "i" or lower == "t" then
-    TA_FocusTerminalInput()
+    TA_FocusTerminalInput(true)
   else
     TA_ProcessInputCommand(original)
   end

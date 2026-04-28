@@ -76,13 +76,8 @@ local function TA_OpenProfessionByCommandName(rawProfession)
     AddLine("system", "Known professions: " .. table.concat(PROFESSION_DISPLAY_LIST, ", "))
     return
   end
-  if not CastSpellByName then
-    AddLine("system", "Cannot open profession: CastSpellByName API unavailable.")
-    return
-  end
-
-  CastSpellByName(spellName)
-  AddLine("quest", string.format("Opening %s. Then use recipeinfo to list available recipes.", spellName))
+  -- Opening professions through CastSpellByName can trigger protected-action taint.
+  AddLine("system", string.format("Open %s manually from your spellbook/trade skills, then run recipes list.", spellName))
 end
 
 local function TA_CraftRecipeIndex(index, count)
