@@ -192,7 +192,9 @@ function TA_Help_ShowTopic(topicArg)
 
   if key == "advanced" then
     AddLine("system", "Help: Advanced & Diagnostics")
-    AddLine("system", "  actions/bars - action bar slot report.")
+    AddLine("system", "  actions/bars - all bound action bar slots.")
+    AddLine("system", "  actions <from> <to> - slots in a specific slot range (e.g. actions 61 72).")
+    AddLine("system", "  actions bar<N> - all slots on bar N, e.g. actions bar6 for slots 61-72.")
     AddLine("system", "  spells/spellbook - spellbook summary.")
     AddLine("system", "  macros - list all macros.")
     AddLine("system", "  macro <index|name> - run a macro by index or name.")

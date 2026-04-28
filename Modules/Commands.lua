@@ -139,6 +139,10 @@ end
 
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
 TA_AddPatternInputHandler("^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end)
+TA_AddPatternInputHandler("^actions%s+(%d+)%s+(%d+)$", function(a, b) ReportActionBars(tonumber(a), tonumber(b)) end)
+TA_AddPatternInputHandler("^bars%s+(%d+)%s+(%d+)$", function(a, b) ReportActionBars(tonumber(a), tonumber(b)) end)
+TA_AddPatternInputHandler("^actions%s+bar(%d+)$", function(n) local b = (tonumber(n) - 1) * 12 + 1; ReportActionBars(b, b + 11) end)
+TA_AddPatternInputHandler("^bars%s+bar(%d+)$", function(n) local b = (tonumber(n) - 1) * 12 + 1; ReportActionBars(b, b + 11) end)
 TA_AddPatternInputHandler("^loglimit%s+(%d+)$", function(n) TA_SetLineLimit(tonumber(n), false) end)
 
 function TA_ProcessInputCommand(msg)

@@ -5948,14 +5948,104 @@ local EQUIP_SLOTS = {
   {16,"Main Hand"},{17,"Off Hand"},{18,"Ranged"},{1,"Head"},{2,"Neck"},{3,"Shoulder"},{5,"Chest"},{6,"Waist"},{7,"Legs"},{8,"Feet"},{9,"Wrist"},{10,"Hands"},{11,"Finger 1"},{12,"Finger 2"},{13,"Trinket 1"},{14,"Trinket 2"},{15,"Back"}
 }
 
+local QUALITY_NAMES = { "Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary" }
+
+local STAT_LABELS = {
+  ITEM_MOD_STAMINA_SHORT            = "Stamina",
+  ITEM_MOD_STRENGTH_SHORT           = "Strength",
+  ITEM_MOD_AGILITY_SHORT            = "Agility",
+  ITEM_MOD_INTELLECT_SHORT          = "Intellect",
+  ITEM_MOD_SPIRIT_SHORT             = "Spirit",
+  ITEM_MOD_SPELL_POWER              = "Spell Power",
+  ITEM_MOD_HEALING_POWER            = "Healing Power",
+  ITEM_MOD_SPELL_HIT_RATING         = "Spell Hit",
+  ITEM_MOD_SPELL_CRIT_RATING        = "Spell Crit",
+  ITEM_MOD_HIT_RATING               = "Hit",
+  ITEM_MOD_CRIT_RATING              = "Crit",
+  ITEM_MOD_DODGE_RATING             = "Dodge",
+  ITEM_MOD_PARRY_RATING             = "Parry",
+  ITEM_MOD_BLOCK_RATING             = "Block Rating",
+  ITEM_MOD_BLOCK_VALUE              = "Block Value",
+  ITEM_MOD_DEFENSE_SKILL_RATING     = "Defense",
+  ITEM_MOD_ATTACK_POWER             = "Attack Power",
+  ITEM_MOD_RANGED_ATTACK_POWER      = "Ranged AP",
+  ITEM_MOD_FERAL_ATTACK_POWER       = "Feral AP",
+  ITEM_MOD_ARMOR_PENETRATION_RATING = "Armor Pen",
+  ITEM_MOD_RESILIENCE_RATING        = "Resilience",
+  ITEM_MOD_HASTE_RATING             = "Haste",
+  ITEM_MOD_EXPERTISE_RATING         = "Expertise",
+  ITEM_MOD_MANA_REGENERATION        = "MP5",
+  ITEM_MOD_HEALTH_REGEN             = "HP5",
+}
+
 local function ReportEquipment()
+  local qualityNames = QUALITY_NAMES
   for _, entry in ipairs(EQUIP_SLOTS) do
     local slotId, label = entry[1], entry[2]
     local link = GetInventoryItemLink("player", slotId)
-    if link then
-      AddLine("target", string.format("%s: %s", label, link))
-    else
+    if not link then
       AddLine("target", string.format("%s: Empty", label))
+    else
+      -- Basic info
+      local name = link
+      local quality
+      local itemLevel
+      local className
+      local subClassName
+      local sellPrice
+      if GetItemInfo then
+        local itemName, _, itemQuality, itemItemLevel, _, itemClassName, itemSubClassName, _, _, _, itemSellPrice = GetItemInfo(link)
+        name = itemName or link
+        quality = itemQuality
+        itemLevel = itemItemLevel
+        className = itemClassName
+        subClassName = itemSubClassName
+        sellPrice = itemSellPrice
+      end
+      local qualityStr = quality and (qualityNames[quality + 1] or tostring(quality)) or "?"
+      local ilvlStr = (itemLevel and itemLevel > 0) and ("ilvl " .. itemLevel) or ""
+      local typeStr = className or ""
+      if subClassName and subClassName ~= "" and subClassName ~= className then
+        typeStr = typeStr .. " - " .. subClassName
+      end
+      local headerParts = { qualityStr }
+      if ilvlStr ~= "" then table.insert(headerParts, ilvlStr) end
+      if typeStr ~= "" then table.insert(headerParts, typeStr) end
+      AddLine("target", string.format("%s: %s [%s]", label, link, table.concat(headerParts, ", ")))
+
+      -- Stats via GetItemStats
+      local statsTable = {}
+      if GetItemStats and link then
+        GetItemStats(link, statsTable)
+      end
+      local statLines = {}
+      for k, v in pairs(statsTable) do
+        local friendlyName = STAT_LABELS[k] or k
+        table.insert(statLines, string.format("%s +%s", friendlyName, tostring(v)))
+      end
+      if #statLines > 0 then
+        table.sort(statLines)
+        AddLine("system", "  Stats: " .. table.concat(statLines, ", "))
+      end
+
+      -- Armor value (from stats table)
+      local rawArmor = statsTable["RESISTANCE0_NAME"] or statsTable["ITEM_MOD_ARMOR"]
+      if rawArmor and tonumber(rawArmor) and tonumber(rawArmor) > 0 then
+        AddLine("system", string.format("  Armor: %d", tonumber(rawArmor)))
+      end
+
+      -- Durability
+      if GetInventoryItemDurability then
+        local curDur, maxDur = GetInventoryItemDurability(slotId)
+        if maxDur and maxDur > 0 then
+          AddLine("system", string.format("  Durability: %d / %d", curDur or 0, maxDur))
+        end
+      end
+
+      -- Sell value
+      if sellPrice and sellPrice > 0 then
+        AddLine("system", string.format("  Sell value: %s", FormatMoney(sellPrice)))
+      end
     end
   end
 end
@@ -5998,8 +6088,11 @@ local function ResolveActionLabel(actionType, id)
   return string.format("%s %s", tostring(actionType), tostring(id))
 end
 
-local function ReportActionBars()
-  for slot = 1, 120 do
+local function ReportActionBars(fromSlot, toSlot)
+  fromSlot = fromSlot or 1
+  toSlot = toSlot or 120
+  local found = 0
+  for slot = fromSlot, toSlot do
     local actionType, id = GetActionInfo(slot)
     if actionType and id then
       local start, duration, enable = GetActionCooldown(slot)
@@ -6008,7 +6101,11 @@ local function ReportActionBars()
         cdText = string.format("%.1fs cooldown", math.max(0, (start + duration) - GetTime()))
       end
       AddLine("cast", string.format("%s: %s - %s", GetActionSlotName(slot), ResolveActionLabel(actionType, id), cdText))
+      found = found + 1
     end
+  end
+  if found == 0 then
+    AddLine("system", string.format("No bound actions in slots %d-%d.", fromSlot, toSlot))
   end
 end
 
