@@ -26,6 +26,19 @@
                 "${workspaceFolder}\\.vscode\\scripts\\generate-warlock-sheet-data.ps1"
             ],
             "problemMatcher": []
+        },
+        {
+            "label": "Package CurseForge Release",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\.vscode\\scripts\\package-curseforge-release.ps1"
+            ],
+            "problemMatcher": []
         }
     ]
 }

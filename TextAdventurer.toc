@@ -2,7 +2,7 @@
 ## Title: Text Adventurer
 ## Notes: EXTREMELY DANGEROUS HARDCORE ADDON. WILL eventually get your character killed. First-run autostart is OFF for safety.
 ## Author: You
-## Version: 0.3-alpha9
+## Version: 0.3-alpha10
 ## SavedVariablesPerCharacter: TextAdventurerDB
 ## OptionalDeps: !BugGrabber, BugSack, Questie, Guidelime, TomTom, WoWPro
 Ace3\LibStub\LibStub.lua
