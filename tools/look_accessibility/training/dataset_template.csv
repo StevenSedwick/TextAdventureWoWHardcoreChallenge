@@ -1,0 +1,2 @@
+sample_id,image_path,source_env,zone,map_id,pos_x,pos_y,facing_radians,camera_pitch,camera_zoom,label_tags,description
+example_0001,samples/example_0001.png,live_classic_era,Elwynn Forest,1429,0.4215,0.6782,1.5708,0.15,2.6,terrain_road;obstacle_tree;building_inn;enemy_none,You are facing a road with trees to the side and a nearby building.

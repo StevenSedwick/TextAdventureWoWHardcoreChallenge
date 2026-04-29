@@ -1,8 +1,8 @@
 ## Interface: 11508
 ## Title: Text Adventurer
-## Notes: EXTREMELY DANGEROUS HARDCORE ADDON. WILL eventually get your character killed. First-run autostart is OFF for safety.
+## Notes: Text-first command console for Classic Era telemetry, tactical overlays, and DPS helpers. Hardcore warning: WILL eventually get your character killed. First-run autostart is OFF.
 ## Author: You
-## Version: 0.2
+## Version: 0.3-alpha10
 ## SavedVariablesPerCharacter: TextAdventurerDB
 ## OptionalDeps: !BugGrabber, BugSack, Questie, Guidelime, TomTom, WoWPro
 Ace3\LibStub\LibStub.lua
@@ -10,4 +10,16 @@ Ace3\CallbackHandler-1.0\CallbackHandler-1.0.xml
 Ace3\AceEvent-3.0\AceEvent-3.0.xml
 Ace3\AceConsole-3.0\AceConsole-3.0.xml
 WarlockSheetData.lua
-TextAdventurer.lua
+TerrainData_Azeroth.lua
+textadventurer.lua
+Modules\HelpTopics.lua
+Modules\Commands.lua
+Modules\QuestCommands.lua
+Modules\EconomyCommands.lua
+Modules\SocialCommands.lua
+Modules\NavigationCommands.lua
+Modules\AccessibilityCommands.lua
+Modules\DFDanger.lua
+Modules\SettingsCommands.lua
+Modules\WarlockMLCommands.lua
+Modules\MacroRecipeCommands.lua

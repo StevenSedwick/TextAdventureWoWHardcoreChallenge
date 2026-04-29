@@ -1,4 +1,4 @@
-﻿-- TextAdventurer.lua
+-- TextAdventurer.lua
 ---@diagnostic disable: deprecated
 -- Put this file in:
 -- World of Warcraft/_classic_/Interface/AddOns/TextAdventurer/
@@ -13,21 +13,8 @@
 -- TextAdventurer.lua
 
 -- WoW API compatibility aliases for Lua diagnostics and mixed client API surfaces.
-local GetSpellInfo = GetSpellInfo
-local GetSpellTabInfo = GetSpellTabInfo
-local UnitFacing = UnitFacing
-local UnitBuff = UnitBuff
-local GetNumQuestLogEntries = GetNumQuestLogEntries
-local GetQuestLogTitle = GetQuestLogTitle
-local GetQuestLogSelection = GetQuestLogSelection
-local SelectQuestLogEntry = SelectQuestLogEntry
-local GetNumSpellTabs = GetNumSpellTabs
-local GetSpellBookItemInfo = GetSpellBookItemInfo
-local GetSpellBookItemName = GetSpellBookItemName
-local PickupSpellBookItem = PickupSpellBookItem
-local IsSpellKnown = IsSpellKnown
-local BOOKTYPE_SPELL = BOOKTYPE_SPELL or "spell"
-local BOOKTYPE_PET = BOOKTYPE_PET or "pet"
+BOOKTYPE_SPELL = BOOKTYPE_SPELL or "spell"
+BOOKTYPE_PET = BOOKTYPE_PET or "pet"
 
 local function TA_IsSpellKnownCompat(spellID)
   if not IsSpellKnown or not spellID then
@@ -50,7 +37,7 @@ end
 TextAdventurerDB = TextAdventurerDB or {}
 TextAdventurerDB.exploration = TextAdventurerDB.exploration or {}
 
-local TA = CreateFrame("Frame", "TextAdventurerFrame")
+TA = CreateFrame("Frame", "TextAdventurerFrame")
 TA.lastTargetGUID = nil
 TA.lastTargetName = nil
 TA.lastMoving = false
@@ -79,9 +66,14 @@ TA.moveTicker = nil
 TA.awarenessNearbyTicker = nil
 TA.awarenessMemoryTicker = nil
 TA.warlockPromptTicker = nil
-TA.lineLimit = 1000
+TA.warriorPromptTicker = nil
+TA.lineLimit = 400
 TA.lines = {}
 TA.lastNearbySignature = nil
+TA.awarenessDirty = true
+TA.awarenessLastRunAt = 0
+TA.awarenessEventMinInterval = 0.20
+TA.awarenessFallbackInterval = 0.75
 TA.textMode = false
 TA.bagState = {}
 TA.pendingLoot = false
@@ -99,6 +91,8 @@ TA.inputHistory = {}
 TA.inputHistoryMax = 50
 TA.inputHistoryPos = 0
 TA.inputDraft = ""
+TA.lastInputBlock = nil
+TA.isReplayingLastBlock = false
 TA.lastSubzone = nil
 TA.vendorOpen = false
 TA.questObjectiveSnapshot = {}
@@ -119,6 +113,9 @@ TA.mlXPSourceHints = {}
 TA.lastCombatEndedAt = 0
 TA.pendingItemTextRead = nil
 TA.lastItemTextSignature = nil
+TA.lastXPStatusBucket = nil
+TA.lastMoneyCopper = nil
+TA.sellJunkState = nil
 TA.gridSize = nil
 TA.cellSizeMode = "yards"
 TA.cellSizeYards = 30
@@ -136,13 +133,21 @@ TA.pendingWhoQuery = nil
 TA.pendingCVarList = false
 TA.dfModeEnabled = false
 TA.lastNearbyUnits = {}
+TA.nearbyUnitsCacheAt = 0
+TA.nearbyUnitsCacheInterval = 0.15
 TA.dfModeGridSize = 35
+TA.dfModeInnerRadius = nil
+TA.dfModeInnerRadiusGridSize = nil
 TA.dfModeLastUpdate = 0
 TA.dfModeViewMode = "threat"  -- tactical, threat, exploration, combined
 TA.dfModeProfile = "full"  -- balanced, full
 TA.dfModeOrientation = "fixed"  -- fixed (north-up), rotating (heading-up)
 TA.dfModeRotationMode = "smooth"  -- smooth, octant (45-degree snaps for squarer geometry)
-TA.dfModeMarkRadius = 3  -- cells around mark center to draw edge ring
+TA.dfModeLookaheadSeconds = 0.12  -- short player-only projection to make DF cell transitions feel snappier
+TA.dfModeHysteresisEnterPct = 0.38  -- enter next DF cell early, then require backing out farther before snapping back
+TA.dfModeAnchorCellX = nil
+TA.dfModeAnchorCellY = nil
+TA.dfModeMarkRadius = 0  -- cells around mark center to draw edge ring (0 = center cell only)
 TA.dfModeRecentCells = {}  -- Track recently visited cells for breadcrumb trail
 TA.dfModeLastFacing = nil
 TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
@@ -152,12 +157,22 @@ TA.dfModeLastNearestMarkDist = nil
 TA.dfModeSonarContacts = {}
 TA.dfModeSonarPulseUntil = 0
 TA.dfModeSonarTTL = 8
+TA.dfModeLastKnownUnits = {}
+TA.dfModeCorpseContacts = {}
+TA.dfModeCorpseTTL = 45
+TA.dfModeTerrainContext = nil
+TA.dfModeTerrainStandingLabel = nil
+TA.dfModeTerrainStandingShort = nil
+TA.dfModeHueEnabled = false
+TA.dfModeCalibrationEnabled = false
+TA.dfModeLegendEnabled = true
 TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
 TA.performanceFrameHooks = {}
-TA.tickerIntervals = { move = 0.01, nearby = 0.01, memory = 0.01, df = 0.01 }
+TA.tickerIntervals = { move = 0.01, nearby = 0.01, memory = 0.01, df = 0.1 }
 TA.tickerIntervals.warlockPrompt = 0.75
+TA.tickerIntervals.warriorPrompt = 0.75
 
 local GRID_SIZE_LEGACY_DEFAULT = 12
 local GRID_SIZE_STANDARD = 80
@@ -193,16 +208,146 @@ local COLORS = {
   whisper  = { 1.00, 0.60, 1.00 },
 }
 
+-- Performance profiling system
+TA.profiler = {
+  data = {},
+  enabled = false,
+}
+
+function TA:ProfileStart(label)
+  if not self.profiler.enabled then return end
+  if not self.profiler.data[label] then
+    self.profiler.data[label] = { count = 0, totalMs = 0, maxMs = 0, minMs = 999999 }
+  end
+  self.profiler.data[label].__startTime = debugprofilestop()
+end
+
+function TA:ProfileEnd(label)
+  if not self.profiler.enabled then return end
+  local entry = self.profiler.data[label]
+  if not entry or not entry.__startTime then return end
+  local elapsed = debugprofilestop() - entry.__startTime
+  entry.count = entry.count + 1
+  entry.totalMs = entry.totalMs + elapsed
+  entry.maxMs = math.max(entry.maxMs, elapsed)
+  entry.minMs = math.min(entry.minMs, elapsed)
+  entry.__startTime = nil
+end
+
+function TA:PrintProfiler()
+  if not self.profiler.enabled then AddLine("system", "Profiler disabled") return end
+  AddLine("system", "=== TextAdventurer Performance Profile ===")
+  for label, data in pairs(self.profiler.data) do
+    if data.count > 0 then
+      local avg = data.totalMs / data.count
+      AddLine("system", string.format("%s: %.2fms avg (%.2f min, %.2f max) - %d calls", 
+        label, avg, data.minMs, data.maxMs, data.count))
+    end
+  end
+end
+
+function TA:EnableProfiler()
+  self.profiler.enabled = true
+  self.profiler.data = {}
+  AddLine("system", "TextAdventurer profiler enabled")
+end
+
+function TA:DisableProfiler()
+  self.profiler.enabled = false
+  AddLine("system", "TextAdventurer profiler disabled")
+end
+
 local overlay = CreateFrame("Frame", "TextAdventurerOverlay", UIParent)
 overlay:SetAllPoints(UIParent)
 overlay:SetFrameStrata("FULLSCREEN_DIALOG")
 overlay:SetFrameLevel(10000)
 overlay:EnableMouse(false)
 overlay:Hide()
+overlay.__taCommandPreviewInit = nil
+if overlay.commandPreviewBox then
+  overlay.commandPreviewBox:Hide()
+  overlay.commandPreviewBox = nil
+end
 
 overlay.tex = overlay:CreateTexture(nil, "BACKGROUND")
 overlay.tex:SetAllPoints()
 overlay.tex:SetColorTexture(0, 0, 0, 1)
+
+function TA_InitCommandPreviewBox()
+  if not overlay or overlay.__taCommandPreviewInit then return end
+  local box = CreateFrame("Frame", nil, overlay, "BackdropTemplate")
+  box:SetSize(560, 34)
+  box:SetPoint("BOTTOMLEFT", overlay, "BOTTOMLEFT", 24, 24)
+  box:SetFrameStrata("FULLSCREEN_DIALOG")
+  box:SetFrameLevel(12000)
+  box:SetBackdrop({
+    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = true,
+    tileSize = 16,
+    edgeSize = 14,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+  })
+  box:SetBackdropColor(1, 1, 1, 1)
+  box:SetBackdropBorderColor(0, 0, 0, 1)
+  box:Hide()
+
+  box.text = box:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  box.text:SetPoint("LEFT", box, "LEFT", 8, 0)
+  box.text:SetPoint("RIGHT", box, "RIGHT", -8, 0)
+  box.text:SetJustifyH("LEFT")
+  box.text:SetTextColor(0.05, 0.05, 0.05, 1)
+  box.text:SetText("")
+
+  overlay.commandPreviewBox = box
+  overlay.__taCommandPreviewInit = true
+end
+
+function TA_FindActiveChatEditBox()
+  local total = NUM_CHAT_WINDOWS or 10
+  for i = 1, total do
+    local editBox = _G["ChatFrame" .. i .. "EditBox"]
+    if editBox and editBox:IsShown() then
+      return editBox
+    end
+  end
+  return nil
+end
+
+function TA_UpdateCommandPreviewBox()
+  if not TA or not TA.textMode or not overlay or not overlay:IsShown() then
+    if overlay and overlay.commandPreviewBox then overlay.commandPreviewBox:Hide() end
+    return
+  end
+
+  if not overlay.__taCommandPreviewInit then
+    TA_InitCommandPreviewBox()
+  end
+  local editBox = TA_FindActiveChatEditBox()
+  if not editBox then
+    if overlay.commandPreviewBox then overlay.commandPreviewBox:Hide() end
+    return
+  end
+
+  local txt = editBox:GetText() or ""
+  if txt == "" then txt = "/" end
+  if overlay.commandPreviewBox and overlay.commandPreviewBox.text then
+    overlay.commandPreviewBox.text:SetText(txt)
+    overlay.commandPreviewBox:Show()
+  end
+  if overlay.tex then overlay.tex:Show() end
+end
+
+overlay:SetScript("OnUpdate", function(self, elapsed)
+  if not TA or not TA.textMode then return end
+  TA:ProfileStart("overlay.OnUpdate")
+  self.__taCommandPreviewElapsed = (self.__taCommandPreviewElapsed or 0) + (elapsed or 0)
+  if self.__taCommandPreviewElapsed < 0.05 then TA:ProfileEnd("overlay.OnUpdate") return end
+  self.__taCommandPreviewElapsed = 0
+  TA_UpdateCommandPreviewBox()
+  TA:ProfileEnd("overlay.OnUpdate")
+end)
+overlay.__taOnUpdateScript = nil
 
 local ResetSwingTimer
 local CheckSwingTimer
@@ -210,6 +355,49 @@ local GetPlayerMapCell
 local RecordOutgoingDamage
 local ReportCurrentCell
 local UpdateMapCellOverlay
+local TA_RecordDFCorpseFromGUID
+local SyncTextModeOverlay
+TA.chatEditBoxLayerState = TA.chatEditBoxLayerState or {}
+
+function TA_SyncProtectedCommandEditBoxes(enabled)
+  local total = NUM_CHAT_WINDOWS or 10
+  for i = 1, total do
+    local editBox = _G["ChatFrame" .. i .. "EditBox"]
+    if editBox then
+      if enabled then
+        if not TA.chatEditBoxLayerState[editBox] then
+          TA.chatEditBoxLayerState[editBox] = {
+            strata = editBox:GetFrameStrata(),
+            level = editBox:GetFrameLevel(),
+            alpha = editBox:GetAlpha(),
+          }
+        end
+        if not editBox.__taLayerHooked then
+          editBox:HookScript("OnShow", function(self)
+            if TA and TA.textMode then
+              self:SetFrameStrata("TOOLTIP")
+              self:SetFrameLevel(12050)
+              self:SetAlpha(1)
+            end
+          end)
+          editBox.__taLayerHooked = true
+        end
+        -- Keep slash-command typing visible above blackout while preserving
+        -- world blindness.
+        editBox:SetFrameStrata("TOOLTIP")
+        editBox:SetFrameLevel(12050)
+        editBox:SetAlpha(1)
+      else
+        local state = TA.chatEditBoxLayerState[editBox]
+        if state then
+          if state.strata then editBox:SetFrameStrata(state.strata) end
+          if state.level then editBox:SetFrameLevel(state.level) end
+          if state.alpha then editBox:SetAlpha(state.alpha) end
+        end
+      end
+    end
+  end
+end
 
 local panel = CreateFrame("Frame", "TextAdventurerPanel", UIParent, "BackdropTemplate")
 panel:SetSize(920, 560)
@@ -278,7 +466,7 @@ text:SetPoint("TOPLEFT", 18, -42)
 text:SetFontObject(GameFontHighlightHuge)
 text:SetJustifyH("LEFT")
 text:SetFading(false)
-text:SetMaxLines(1000)
+text:SetMaxLines(TA.lineLimit or 400)
 text:SetInsertMode("BOTTOM")
 text:SetIndentedWordWrap(true)
 text:EnableMouseWheel(true)
@@ -311,16 +499,71 @@ flashOut:SetToAlpha(0.0)
 
 panel.text = text
 
+TA.INPUTBOX_LAYOUT = TA.INPUTBOX_LAYOUT or {
+  baseHeight = 24,
+  lineHeight = 14,
+  minLines = 1,
+  maxLines = 6,
+  x = 18,
+  baseY = 16,
+  insetLeft = 8,
+  insetRight = 8,
+  insetTop = 6,
+  insetBottom = 6,
+}
+
 local inputBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-inputBox:SetSize(840, 24)
-inputBox:SetPoint("BOTTOMLEFT", 18, 16)
+inputBox:SetSize(840, TA.INPUTBOX_LAYOUT.baseHeight)
+inputBox:SetPoint("BOTTOMLEFT", TA.INPUTBOX_LAYOUT.x, TA.INPUTBOX_LAYOUT.baseY)
 inputBox:SetAutoFocus(false)
 inputBox:SetMaxLetters(200)
+inputBox:SetMultiLine(true)
+inputBox:SetFontObject(ChatFontNormal)
+inputBox:SetTextColor(1, 1, 1, 1)
+inputBox:SetJustifyH("LEFT")
+inputBox:SetJustifyV("TOP")
+inputBox:SetTextInsets(TA.INPUTBOX_LAYOUT.insetLeft, TA.INPUTBOX_LAYOUT.insetRight, TA.INPUTBOX_LAYOUT.insetTop, TA.INPUTBOX_LAYOUT.insetBottom)
+if inputBox.SetBlinkSpeed then
+  inputBox:SetBlinkSpeed(0.5)
+end
+inputBox.customCaret = inputBox:CreateTexture(nil, "OVERLAY")
+inputBox.customCaret:SetColorTexture(0.90, 1.00, 0.85, 0.90)
+inputBox.customCaret:SetSize(2, 14)
+inputBox.customCaret:Hide()
+inputBox.customCaretFlash = inputBox.customCaret:CreateAnimationGroup()
+inputBox.customCaretFlash:SetLooping("REPEAT")
+inputBox.customCaretFlashA = inputBox.customCaretFlash:CreateAnimation("Alpha")
+inputBox.customCaretFlashA:SetOrder(1)
+inputBox.customCaretFlashA:SetDuration(0.50)
+inputBox.customCaretFlashA:SetFromAlpha(0.95)
+inputBox.customCaretFlashA:SetToAlpha(0.05)
+inputBox.customCaretFlashB = inputBox.customCaretFlash:CreateAnimation("Alpha")
+inputBox.customCaretFlashB:SetOrder(2)
+inputBox.customCaretFlashB:SetDuration(0.50)
+inputBox.customCaretFlashB:SetFromAlpha(0.05)
+inputBox.customCaretFlashB:SetToAlpha(0.95)
 inputBox:Hide()
 panel.inputBox = inputBox
 
-local DF_MODE_DEFAULT_WIDTH = 300
-local DF_MODE_DEFAULT_HEIGHT = 600
+function TA_UpdateInputBoxLayout(editBox)
+  local textValue = editBox:GetText() or ""
+  local lineCount = 1
+  for _ in textValue:gmatch("\n") do
+    lineCount = lineCount + 1
+  end
+  lineCount = math.max(TA.INPUTBOX_LAYOUT.minLines, math.min(TA.INPUTBOX_LAYOUT.maxLines, lineCount))
+
+  local height = TA.INPUTBOX_LAYOUT.baseHeight + ((lineCount - 1) * TA.INPUTBOX_LAYOUT.lineHeight)
+  editBox:SetHeight(height)
+  -- Keep top edge stable and grow downward so multiline input doesn't cover log text.
+  editBox:ClearAllPoints()
+  editBox:SetPoint("BOTTOMLEFT", TA.INPUTBOX_LAYOUT.x, TA.INPUTBOX_LAYOUT.baseY - (height - TA.INPUTBOX_LAYOUT.baseHeight))
+end
+
+TA_UpdateInputBoxLayout(inputBox)
+
+local DF_MODE_DEFAULT_WIDTH = 400
+local DF_MODE_DEFAULT_HEIGHT = 625
 
 local dfModeFrame = CreateFrame("Frame", "TextAdventurerDFModeFrame", UIParent, "BackdropTemplate")
 dfModeFrame:SetSize(DF_MODE_DEFAULT_WIDTH, DF_MODE_DEFAULT_HEIGHT)
@@ -512,6 +755,47 @@ local function TA_PublishPublicAPI()
 end
 
 TA_PublishPublicAPI()
+
+function TA_SetLineLimit(limit, silent)
+  local minLimit = 100
+  local maxLimit = 2000
+
+  if limit == nil then
+    AddLine("system", string.format("Text log line limit: %d", TA.lineLimit or 400))
+    AddLine("system", string.format("Usage: loglimit <n> (range %d-%d)", minLimit, maxLimit))
+    return
+  end
+
+  local n = math.floor(tonumber(limit) or 0)
+  if n < minLimit then n = minLimit end
+  if n > maxLimit then n = maxLimit end
+
+  TA.lineLimit = n
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.lineLimit = n
+
+  while #TA.lines > TA.lineLimit do
+    table.remove(TA.lines, 1)
+  end
+
+  if panel and panel.text then
+    if panel.text.SetMaxLines then
+      panel.text:SetMaxLines(TA.lineLimit)
+    end
+    panel.text:Clear()
+    for i = 1, #TA.lines do
+      local line = TA.lines[i]
+      if line and line.text then
+        panel.text:AddMessage(line.text, line.r or 1, line.g or 1, line.b or 1)
+      end
+    end
+    panel.text:ScrollToBottom()
+  end
+
+  if not silent then
+    AddLine("system", string.format("Text log line limit set to %d.", TA.lineLimit))
+  end
+end
 
 function AddLine(kind, msg)
   if not msg or msg == "" then return end
@@ -788,7 +1072,7 @@ end
 
 
 function HandleCombatLog()
-  local _, subevent, _, _, sourceName, sourceFlags, _, _, destName, destFlags, _, param1, param2, _, param4 = CombatLogGetCurrentEventInfo()
+  local _, subevent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags, _, param1, param2, _, param4 = CombatLogGetCurrentEventInfo()
   if subevent == "SWING_DAMAGE" then
     if IsSourcePlayerOrPet(sourceFlags) or IsDestPlayerOrPet(destFlags) then
       local color = IsSourcePlayerOrPet(sourceFlags) and "playerCombat" or "enemyCombat"
@@ -844,7 +1128,11 @@ function HandleCombatLog()
     if destName then
       AddLine("corpse", string.format("%s dies and leaves a corpse.", destName))
     end
+    local mapID = (C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")) or nil
+    TA_RecordDFCorpseFromGUID(destGUID, destName, mapID)
   end
+
+  return subevent
 end
 
 function DescribeUnit(unit)
@@ -1655,6 +1943,9 @@ function CellKey(x, y)
 end
 
 function MarkCurrentCell(name)
+  -- Always recenter the grid anchor on the player before marking so the cell
+  -- center lands on top of the player, matching the delete-and-remark behavior.
+  RecenterCurrentCellAnchor(true)
   local mapID, cellX, cellY, x, y, continentX, continentY, continentID, gridX, gridY, offsetX, offsetY = GetPlayerMapCell()
   if not mapID then 
     AddLine("system", "Could not determine current location - mapID is nil.")
@@ -2231,7 +2522,12 @@ local function TA_GetQuestStartFromQuestie(db, questID, currentMapID)
   if not db or type(db.GetQuest) ~= "function" then
     return nil
   end
-  local quest = db.GetQuest(questID)
+  local okQuest, quest = pcall(function()
+    return db.GetQuest(questID)
+  end)
+  if not okQuest then
+    return nil
+  end
   if type(quest) ~= "table" then
     return nil
   end
@@ -2248,7 +2544,15 @@ local function TA_GetQuestStartFromQuestie(db, questID, currentMapID)
 
   local fallback = nil
   for _, npcID in ipairs(npcList) do
-    local npc = db.GetNPC and db:GetNPC(npcID) or nil
+    local npc = nil
+    if db.GetNPC then
+      local okNpc, value = pcall(function()
+        return db:GetNPC(npcID)
+      end)
+      if okNpc then
+        npc = value
+      end
+    end
     if type(npc) == "table" and type(npc.spawns) == "table" then
       for zoneID, points in pairs(npc.spawns) do
         if type(points) == "table" and points[1] then
@@ -2311,7 +2615,7 @@ local function TA_IsQuestCompleteFlag(v)
 end
 
 local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
-  local total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
+  local total = GetNumQuestLogEntries and tonumber((GetNumQuestLogEntries())) or 0
   if total <= 0 then
     return {}, 0, 0, 0, false
   end
@@ -2325,7 +2629,7 @@ local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
         table.insert(expandedHeaderIndices, i)
       end
     end
-    total = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or total
+    total = GetNumQuestLogEntries and tonumber((GetNumQuestLogEntries())) or total
   end
 
   local entries = {}
@@ -2360,7 +2664,7 @@ local function TA_CollectQuestRouteEntries(expandCollapsedHeaders)
 end
 
 local function TA_BuildQuestRouteCandidates(topN)
-  local initialTotal = GetNumQuestLogEntries and tonumber(GetNumQuestLogEntries()) or 0
+  local initialTotal = GetNumQuestLogEntries and tonumber((GetNumQuestLogEntries())) or 0
   local store = TA_GetQuestRouterStore()
   local weights = store.weights
   local ctx = TA_GetQuestRouteContext()
@@ -2455,7 +2759,15 @@ local function TA_BuildQuestRouteCandidates(topN)
     for questID, _ in pairs(ctx.player.currentQuestlog) do
       local qid = tonumber(questID)
       if qid and qid > 0 then
-        local quest = (type(ctx.db.GetQuest) == "function") and ctx.db.GetQuest(qid) or nil
+        local quest = nil
+        if type(ctx.db.GetQuest) == "function" then
+          local okQuest, value = pcall(function()
+            return ctx.db.GetQuest(qid)
+          end)
+          if okQuest then
+            quest = value
+          end
+        end
         if type(quest) == "table" then
           local title = quest.name or ("Quest " .. tostring(qid))
           local lvl = tonumber(quest.level) or tonumber(quest.questLevel) or tonumber(quest.requiredLevel) or playerLevel
@@ -4145,7 +4457,7 @@ function TA_ReportLiveWarlockDps()
   AddLine("system", "Tune with: warlockdps set <key> <value> | warlockdps mode <shadow|fire> | warlockdps assumptions | warlockdps mapping")
 end
 
-local function TA_GetWarlockPromptConfig()
+function TA_GetWarlockPromptConfig()
   TextAdventurerDB = TextAdventurerDB or {}
   if type(TextAdventurerDB.warlockPrompt) ~= "table" then
     TextAdventurerDB.warlockPrompt = {}
@@ -4193,6 +4505,7 @@ local function TA_GetWarlockPromptState()
   end
 
   local c = TA_GetWarlockLiveConfig()
+  local promptCfg = TA_GetWarlockPromptConfig()
   local spec = TA_GetWarlockModeSpec(c)
   local powerType = UnitPowerType and UnitPowerType("player") or 0
   local mana = UnitPower and (UnitPower("player", powerType) or 0) or 0
@@ -4348,6 +4661,191 @@ function TA_MaybeAutoWarlockPrompt()
     return
   end
   TA_ReportWarlockActionPrompt(false)
+end
+
+function TA_GetWarriorPromptConfig()
+  TextAdventurerDB = TextAdventurerDB or {}
+  if type(TextAdventurerDB.warriorPrompt) ~= "table" then
+    TextAdventurerDB.warriorPrompt = {}
+  end
+  local p = TextAdventurerDB.warriorPrompt
+  if p.enabled == nil then p.enabled = false end
+  if type(p.minRage) ~= "number" then p.minRage = 35 end
+  if type(p.rendRefreshSec) ~= "number" then p.rendRefreshSec = 2.0 end
+  return p
+end
+
+function TA_GetWarriorPromptState()
+  local classToken = select(2, UnitClass("player")) or "UNKNOWN"
+  if classToken ~= "WARRIOR" then
+    return nil, "warriorprompt is designed for Warrior characters."
+  end
+  if not UnitExists("target") or UnitIsDeadOrGhost("target") or (UnitCanAttack and not UnitCanAttack("player", "target")) then
+    return nil, "No hostile target selected."
+  end
+
+  local promptCfg = TA_GetWarriorPromptConfig()
+  local rage = UnitPower and (UnitPower("player", 1) or 0) or 0
+  local health = UnitHealth and (UnitHealth("player") or 0) or 0
+  local healthMax = UnitHealthMax and (UnitHealthMax("player") or 0) or 0
+  local healthPct = healthMax > 0 and (health / healthMax) or 0
+  local moving = false
+  if GetUnitSpeed then
+    moving = (tonumber(GetUnitSpeed("player")) or 0) > 0
+  end
+
+  local function cooldownReady(spellID)
+    if not spellID or not GetSpellCooldown then
+      return false
+    end
+    local start, duration = GetSpellCooldown(spellID)
+    if not start or not duration then
+      return false
+    end
+    return (start == 0) or (duration <= 1.5)
+  end
+
+  local function usableByName(name)
+    if not IsUsableSpell or not name then
+      return false
+    end
+    local usable = IsUsableSpell(name)
+    return usable == true
+  end
+
+  local function makeRec(key, action, reason)
+    return {
+      key = key,
+      action = action,
+      reason = reason,
+      detail = string.format("rage %d, hp %.0f%%", rage, healthPct * 100),
+    }
+  end
+
+  local hsRow = TA_SelectWarriorAbilityRow and TA_SelectWarriorAbilityRow("heroicStrike") or nil
+  local rendRow = TA_SelectWarriorAbilityRow and TA_SelectWarriorAbilityRow("rend") or nil
+  local opRow = TA_SelectWarriorAbilityRow and TA_SelectWarriorAbilityRow("overpower") or nil
+  local slamRow = TA_SelectWarriorAbilityRow and TA_SelectWarriorAbilityRow("slam") or nil
+  local wwRow = TA_SelectWarriorAbilityRow and TA_SelectWarriorAbilityRow("whirlwind") or nil
+  local msRow = TA_SelectWarriorAbilityRow and TA_SelectWarriorAbilityRow("mortalStrike") or nil
+
+  local hsCost = hsRow and (hsRow.rage or 15) or 15
+  local rendCost = rendRow and (rendRow.rage or 10) or 10
+  local opCost = opRow and (opRow.rage or 5) or 5
+  local slamCost = slamRow and (slamRow.rage or 15) or 15
+  local wwCost = wwRow and (wwRow.rage or 25) or 25
+  local msCost = msRow and (msRow.rage or 30) or 30
+
+  local knowsHS = TA_PlayerKnowsSpellIDs and TA_PlayerKnowsSpellIDs({ 78 })
+  local knowsRend = TA_PlayerKnowsSpellIDs and TA_PlayerKnowsSpellIDs({ 772 })
+  local knowsOP = TA_PlayerKnowsSpellIDs and TA_PlayerKnowsSpellIDs({ 7384 })
+  local knowsSlam = TA_PlayerKnowsSpellIDs and TA_PlayerKnowsSpellIDs({ 1464 })
+  local knowsWW = TA_PlayerKnowsSpellIDs and TA_PlayerKnowsSpellIDs({ 1680 })
+  local knowsMS = TA_PlayerKnowsSpellIDs and TA_PlayerKnowsSpellIDs({ 12294 })
+
+  if knowsMS and rage >= msCost and cooldownReady(12294) then
+    return makeRec("ms-ready", "Cast Mortal Strike", "high-priority strike is ready")
+  end
+
+  if knowsWW and rage >= wwCost and cooldownReady(1680) then
+    return makeRec("ww-ready", "Cast Whirlwind", "high-value instant attack is ready")
+  end
+
+  if knowsOP and rage >= opCost and usableByName("Overpower") then
+    return makeRec("op-ready", "Cast Overpower", "Overpower proc is available")
+  end
+
+  if knowsRend and rage >= rendCost then
+    local rendRemain = select(1, TA_GetPlayerDebuffRemaining("target", "Rend"))
+    if rendRemain <= (tonumber(promptCfg.rendRefreshSec) or 2.0) then
+      return makeRec("rend-refresh", "Cast Rend", "refreshing Rend uptime")
+    end
+  end
+
+  if (not moving) and knowsSlam and rage >= slamCost then
+    return makeRec("slam-filler", "Cast Slam", "stationary filler with sufficient rage")
+  end
+
+  local hsDumpThreshold = math.max(tonumber(promptCfg.minRage) or 35, hsCost)
+  if knowsHS and rage >= hsDumpThreshold then
+    return makeRec("hs-dump", "Queue Heroic Strike", "rage above dump threshold")
+  end
+
+  if rage < hsCost then
+    return makeRec("build-rage", "Build rage with auto attacks", "insufficient rage for main abilities")
+  end
+
+  return makeRec("maintain-pressure", "Maintain pressure and queue Heroic Strike", "no higher-priority cooldown ready")
+end
+
+function TA_ReportWarriorActionPrompt(force)
+  local rec, blockedReason = TA_GetWarriorPromptState()
+  if not rec then
+    if force then
+      AddLine("system", "warriorprompt: " .. tostring(blockedReason or "no prompt available"))
+    end
+    return
+  end
+
+  local now = GetTime()
+  local isSame = (TA.lastWarriorPromptKey == rec.key)
+  local shouldEmit = force or (not isSame) or (now >= (TA.lastWarriorPromptEmitAt or 0) + 5)
+  if not shouldEmit then
+    return
+  end
+
+  TA.lastWarriorPromptKey = rec.key
+  TA.lastWarriorPromptEmitAt = now
+  AddLine("playerCombat", string.format("Warrior prompt: %s (%s; %s)", rec.action, rec.reason, rec.detail or ""))
+end
+
+function TA_SetWarriorPromptEnabled(enabled)
+  local p = TA_GetWarriorPromptConfig()
+  p.enabled = enabled and true or false
+  AddLine("system", string.format("warriorprompt %s", p.enabled and "enabled" or "disabled"))
+end
+
+function TA_ReportWarriorPromptStatus()
+  local p = TA_GetWarriorPromptConfig()
+  AddLine("system", string.format("warriorprompt: %s | rage threshold %d | rend refresh %.1fs", p.enabled and "on" or "off", math.floor(tonumber(p.minRage) or 35), tonumber(p.rendRefreshSec) or 2.0))
+  TA_ReportWarriorActionPrompt(true)
+end
+
+function TA_SetWarriorPromptValue(key, value)
+  local p = TA_GetWarriorPromptConfig()
+  local k = (key or ""):lower()
+  local v = tonumber(value)
+  if not v then
+    AddLine("system", "Usage: warriorprompt set <rage|rendrefresh> <value>")
+    return
+  end
+  if k == "rage" then
+    if v < 10 then v = 10 end
+    if v > 100 then v = 100 end
+    p.minRage = math.floor(v + 0.5)
+    AddLine("system", string.format("warriorprompt rage threshold set to %d", p.minRage))
+    return
+  end
+  if k == "rendrefresh" then
+    if v < 0.5 then v = 0.5 end
+    if v > 6.0 then v = 6.0 end
+    p.rendRefreshSec = math.floor((v * 10) + 0.5) / 10
+    AddLine("system", string.format("warriorprompt rend refresh set to %.1fs", p.rendRefreshSec))
+    return
+  end
+  AddLine("system", "Unknown key. Use: rage or rendrefresh")
+end
+
+function TA_MaybeAutoWarriorPrompt()
+  local p = TA_GetWarriorPromptConfig()
+  if p.enabled ~= true then
+    return
+  end
+  local inCombat = UnitAffectingCombat and UnitAffectingCombat("player")
+  if not inCombat then
+    return
+  end
+  TA_ReportWarriorActionPrompt(false)
 end
 
 function TA_GetMLStore()
@@ -5511,14 +6009,104 @@ local EQUIP_SLOTS = {
   {16,"Main Hand"},{17,"Off Hand"},{18,"Ranged"},{1,"Head"},{2,"Neck"},{3,"Shoulder"},{5,"Chest"},{6,"Waist"},{7,"Legs"},{8,"Feet"},{9,"Wrist"},{10,"Hands"},{11,"Finger 1"},{12,"Finger 2"},{13,"Trinket 1"},{14,"Trinket 2"},{15,"Back"}
 }
 
+TA.QUALITY_NAMES = TA.QUALITY_NAMES or { "Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary" }
+
+TA.STAT_LABELS = TA.STAT_LABELS or {
+  ITEM_MOD_STAMINA_SHORT            = "Stamina",
+  ITEM_MOD_STRENGTH_SHORT           = "Strength",
+  ITEM_MOD_AGILITY_SHORT            = "Agility",
+  ITEM_MOD_INTELLECT_SHORT          = "Intellect",
+  ITEM_MOD_SPIRIT_SHORT             = "Spirit",
+  ITEM_MOD_SPELL_POWER              = "Spell Power",
+  ITEM_MOD_HEALING_POWER            = "Healing Power",
+  ITEM_MOD_SPELL_HIT_RATING         = "Spell Hit",
+  ITEM_MOD_SPELL_CRIT_RATING        = "Spell Crit",
+  ITEM_MOD_HIT_RATING               = "Hit",
+  ITEM_MOD_CRIT_RATING              = "Crit",
+  ITEM_MOD_DODGE_RATING             = "Dodge",
+  ITEM_MOD_PARRY_RATING             = "Parry",
+  ITEM_MOD_BLOCK_RATING             = "Block Rating",
+  ITEM_MOD_BLOCK_VALUE              = "Block Value",
+  ITEM_MOD_DEFENSE_SKILL_RATING     = "Defense",
+  ITEM_MOD_ATTACK_POWER             = "Attack Power",
+  ITEM_MOD_RANGED_ATTACK_POWER      = "Ranged AP",
+  ITEM_MOD_FERAL_ATTACK_POWER       = "Feral AP",
+  ITEM_MOD_ARMOR_PENETRATION_RATING = "Armor Pen",
+  ITEM_MOD_RESILIENCE_RATING        = "Resilience",
+  ITEM_MOD_HASTE_RATING             = "Haste",
+  ITEM_MOD_EXPERTISE_RATING         = "Expertise",
+  ITEM_MOD_MANA_REGENERATION        = "MP5",
+  ITEM_MOD_HEALTH_REGEN             = "HP5",
+}
+
 local function ReportEquipment()
+  local qualityNames = TA.QUALITY_NAMES or {}
   for _, entry in ipairs(EQUIP_SLOTS) do
     local slotId, label = entry[1], entry[2]
     local link = GetInventoryItemLink("player", slotId)
-    if link then
-      AddLine("target", string.format("%s: %s", label, link))
-    else
+    if not link then
       AddLine("target", string.format("%s: Empty", label))
+    else
+      -- Basic info
+      local name = link
+      local quality
+      local itemLevel
+      local className
+      local subClassName
+      local sellPrice
+      if GetItemInfo then
+        local itemName, _, itemQuality, itemItemLevel, _, itemClassName, itemSubClassName, _, _, _, itemSellPrice = GetItemInfo(link)
+        name = itemName or link
+        quality = itemQuality
+        itemLevel = itemItemLevel
+        className = itemClassName
+        subClassName = itemSubClassName
+        sellPrice = itemSellPrice
+      end
+      local qualityStr = quality and (qualityNames[quality + 1] or tostring(quality)) or "?"
+      local ilvlStr = (itemLevel and itemLevel > 0) and ("ilvl " .. itemLevel) or ""
+      local typeStr = className or ""
+      if subClassName and subClassName ~= "" and subClassName ~= className then
+        typeStr = typeStr .. " - " .. subClassName
+      end
+      local headerParts = { qualityStr }
+      if ilvlStr ~= "" then table.insert(headerParts, ilvlStr) end
+      if typeStr ~= "" then table.insert(headerParts, typeStr) end
+      AddLine("target", string.format("%s: %s [%s]", label, link, table.concat(headerParts, ", ")))
+
+      -- Stats via GetItemStats
+      local statsTable = {}
+      if GetItemStats and link then
+        GetItemStats(link, statsTable)
+      end
+      local statLines = {}
+      for k, v in pairs(statsTable) do
+        local friendlyName = (TA.STAT_LABELS and TA.STAT_LABELS[k]) or k
+        table.insert(statLines, string.format("%s +%s", friendlyName, tostring(v)))
+      end
+      if #statLines > 0 then
+        table.sort(statLines)
+        AddLine("system", "  Stats: " .. table.concat(statLines, ", "))
+      end
+
+      -- Armor value (from stats table)
+      local rawArmor = statsTable["RESISTANCE0_NAME"] or statsTable["ITEM_MOD_ARMOR"]
+      if rawArmor and tonumber(rawArmor) and tonumber(rawArmor) > 0 then
+        AddLine("system", string.format("  Armor: %d", tonumber(rawArmor)))
+      end
+
+      -- Durability
+      if GetInventoryItemDurability then
+        local curDur, maxDur = GetInventoryItemDurability(slotId)
+        if maxDur and maxDur > 0 then
+          AddLine("system", string.format("  Durability: %d / %d", curDur or 0, maxDur))
+        end
+      end
+
+      -- Sell value
+      if sellPrice and sellPrice > 0 then
+        AddLine("system", string.format("  Sell value: %s", FormatMoney(sellPrice)))
+      end
     end
   end
 end
@@ -5561,8 +6149,11 @@ local function ResolveActionLabel(actionType, id)
   return string.format("%s %s", tostring(actionType), tostring(id))
 end
 
-local function ReportActionBars()
-  for slot = 1, 120 do
+local function ReportActionBars(fromSlot, toSlot)
+  fromSlot = fromSlot or 1
+  toSlot = toSlot or 120
+  local found = 0
+  for slot = fromSlot, toSlot do
     local actionType, id = GetActionInfo(slot)
     if actionType and id then
       local start, duration, enable = GetActionCooldown(slot)
@@ -5571,7 +6162,11 @@ local function ReportActionBars()
         cdText = string.format("%.1fs cooldown", math.max(0, (start + duration) - GetTime()))
       end
       AddLine("cast", string.format("%s: %s - %s", GetActionSlotName(slot), ResolveActionLabel(actionType, id), cdText))
+      found = found + 1
     end
+  end
+  if found == 0 then
+    AddLine("system", string.format("No bound actions in slots %d-%d.", fromSlot, toSlot))
   end
 end
 
@@ -6385,14 +6980,23 @@ function TA_SellJunk()
     AddLine("system", "No merchant window is open.")
     return
   end
+  if InCombatLockdown and InCombatLockdown() then
+    AddLine("system", "You cannot sell items while in combat.")
+    return
+  end
   if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo and C_Container.UseContainerItem) then
     AddLine("system", "Container API unavailable.")
     return
   end
 
-  local soldStacks = 0
-  local soldUnits = 0
-  local totalValue = 0
+  if TA.sellJunkState and TA.sellJunkState.active then
+    AddLine("system", "selljunk is already in progress.")
+    return
+  end
+
+  local queue = {}
+  local queuedUnits = 0
+  local estimatedValue = 0
   local maxBag = tonumber(NUM_BAG_SLOTS) or 4
 
   for bag = 0, maxBag do
@@ -6408,21 +7012,130 @@ function TA_SellJunk()
           quality = itemQuality
         end
         if quality == 0 then
-          local value = (tonumber(sellPrice) or 0) * stackCount
-          C_Container.UseContainerItem(bag, slot)
-          soldStacks = soldStacks + 1
-          soldUnits = soldUnits + stackCount
-          totalValue = totalValue + value
+          table.insert(queue, {
+            bag = bag,
+            slot = slot,
+            itemRef = itemRef,
+            stackCount = stackCount,
+          })
+          queuedUnits = queuedUnits + stackCount
+          estimatedValue = estimatedValue + ((tonumber(sellPrice) or 0) * stackCount)
         end
       end
     end
   end
 
-  if soldStacks == 0 then
+  if #queue == 0 then
     AddLine("loot", "No junk-quality items found to sell.")
   else
-    AddLine("loot", string.format("Sold junk: %d stack(s), %d item(s), estimated value %s.", soldStacks, soldUnits, FormatMoney(totalValue)))
+    TA.sellJunkState = {
+      active = true,
+      queue = queue,
+      index = 1,
+      soldStacks = 0,
+      soldUnits = 0,
+      totalValue = 0,
+      queuedStacks = #queue,
+      queuedUnits = queuedUnits,
+      estimatedValue = estimatedValue,
+      waitingForBagUpdate = false,
+      moneyChanged = false,
+      lastActionAt = 0,
+      warnedCombat = false,
+    }
+    AddLine("loot", string.format("Selling junk (%d stack(s), %d item(s), est. %s)...", #queue, queuedUnits, FormatMoney(estimatedValue)))
+    TA_ProcessSellJunkQueue("start")
   end
+end
+
+function TA_ProcessSellJunkQueue(trigger)
+  local state = TA.sellJunkState
+  if not state or not state.active then
+    return
+  end
+
+  if not TA.vendorOpen then
+    AddLine("system", "Stopped selljunk: merchant window is no longer open.")
+    TA.sellJunkState = nil
+    return
+  end
+
+  if InCombatLockdown and InCombatLockdown() then
+    if not state.warnedCombat then
+      AddLine("system", "Paused selljunk: you are in combat.")
+      state.warnedCombat = true
+    end
+    return
+  end
+  state.warnedCombat = false
+
+  local now = GetTime()
+  if state.waitingForBagUpdate and trigger ~= "bagupdate" then
+    if (now - (state.lastActionAt or 0)) < 0.40 then
+      return
+    end
+    state.waitingForBagUpdate = false
+  end
+
+  while state.index <= #state.queue do
+    local entry = state.queue[state.index]
+    state.index = state.index + 1
+
+    local info = C_Container.GetContainerItemInfo(entry.bag, entry.slot)
+    if info and (info.hyperlink or info.itemID) then
+      local quality = info.quality
+      local itemRef = info.hyperlink or info.itemID
+      local stackCount = tonumber(info.stackCount) or tonumber(entry.stackCount) or 1
+      local _, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemRef)
+      if quality == nil then
+        quality = itemQuality
+      end
+      if quality == 0 then
+        C_Container.UseContainerItem(entry.bag, entry.slot)
+        state.soldStacks = state.soldStacks + 1
+        state.soldUnits = state.soldUnits + stackCount
+        state.totalValue = state.totalValue + ((tonumber(sellPrice) or 0) * stackCount)
+        state.waitingForBagUpdate = true
+        state.lastActionAt = now
+        C_Timer.After(0.45, function()
+          TA_ProcessSellJunkQueue("timeout")
+        end)
+        return
+      end
+    end
+  end
+
+  AddLine("loot", string.format("Sold junk: %d/%d stack(s), %d item(s), estimated value %s.", state.soldStacks, state.queuedStacks, state.soldUnits, FormatMoney(state.totalValue)))
+  if state.moneyChanged then
+    ReportMoney()
+  end
+  TA.sellJunkState = nil
+end
+
+function TA:ReportXPStatusEvent()
+  local level = UnitLevel("player") or 0
+  local xp = UnitXP("player") or 0
+  local xpMax = UnitXPMax("player") or 0
+  local pct = xpMax > 0 and (xp / xpMax * 100) or 0
+  local bucket = string.format("%d:%d", level, math.floor(pct / 5))
+  if bucket ~= TA.lastXPStatusBucket then
+    TA.lastXPStatusBucket = bucket
+    ReportXP()
+  end
+end
+
+function TA:ReportMoneyStatusEvent()
+  local copper = GetMoney() or 0
+  if copper == TA.lastMoneyCopper then
+    return
+  end
+  TA.lastMoneyCopper = copper
+  local sellState = TA.sellJunkState
+  if sellState and sellState.active then
+    sellState.moneyChanged = true
+    return
+  end
+  ReportMoney()
 end
 
 function TA_RestockVendorItem(itemQuery, desiredCount)
@@ -6627,6 +7340,101 @@ function TA_ReportVendorItemDetails(index)
   tip:Hide()
 end
 
+function TA_ReportBagItemDetails(bag, slot)
+  bag = tonumber(bag)
+  slot = tonumber(slot)
+  if bag == nil or slot == nil then
+    AddLine("system", "Usage: baginfo <bag> <slot>")
+    return
+  end
+  if not (C_Container and C_Container.GetContainerItemInfo) then
+    AddLine("system", "Bag API unavailable on this client.")
+    return
+  end
+
+  local info = C_Container.GetContainerItemInfo(bag, slot)
+  if not info then
+    AddLine("system", string.format("No item found in %s slot %d.", BagLabel(bag), slot))
+    return
+  end
+
+  local itemRef = info.hyperlink or info.itemID
+  local name = info.itemName or (GetItemInfo and GetItemInfo(itemRef)) or tostring(itemRef or "item")
+  local stackCount = tonumber(info.stackCount) or 1
+  AddLine("loot", string.format("%s slot %d: %s x%d", BagLabel(bag), slot, tostring(name), stackCount))
+
+  if itemRef and GetItemInfo then
+    local _, _, quality, itemLevel, reqLevel, className, subClassName, _, equipLoc, _, sellPrice = GetItemInfo(itemRef)
+    if quality ~= nil then
+      AddLine("loot", string.format("Quality: %d", quality))
+    end
+    if itemLevel and itemLevel > 0 then
+      AddLine("loot", string.format("Item level: %d", itemLevel))
+    end
+    if reqLevel and reqLevel > 0 then
+      AddLine("loot", string.format("Requires level: %d", reqLevel))
+    end
+    if className or subClassName then
+      AddLine("loot", string.format("Type: %s%s", className or "unknown", subClassName and (" - " .. subClassName) or ""))
+    end
+    if equipLoc and equipLoc ~= "" then
+      AddLine("loot", string.format("Equip slot: %s", equipLoc))
+    end
+    if sellPrice and sellPrice > 0 then
+      AddLine("loot", string.format("Vendor sell value: %s", FormatMoney(sellPrice)))
+    end
+  end
+
+  if not CreateFrame or not UIParent then
+    return
+  end
+  if not TA.bagInspectTooltip then
+    TA.bagInspectTooltip = CreateFrame("GameTooltip", "TextAdventurerBagInspectTooltip", UIParent, "GameTooltipTemplate")
+  end
+  local tip = TA.bagInspectTooltip
+  if not tip or not tip.NumLines or not tip.GetName then
+    return
+  end
+
+  tip:SetOwner(UIParent, "ANCHOR_NONE")
+  tip:ClearLines()
+  if tip.SetBagItem then
+    tip:SetBagItem(bag, slot)
+  elseif itemRef and tip.SetHyperlink then
+    tip:SetHyperlink(itemRef)
+  else
+    tip:Hide()
+    return
+  end
+
+  local tipName = tip:GetName()
+  local shown = 0
+  local maxLines = 14
+  for i = 2, tip:NumLines() do
+    local left = _G[tipName .. "TextLeft" .. i]
+    local right = _G[tipName .. "TextRight" .. i]
+    local leftText = left and left:GetText() or ""
+    local rightText = right and right:GetText() or ""
+    if leftText ~= "" or rightText ~= "" then
+      local lineText = leftText
+      if rightText ~= "" then
+        if lineText ~= "" then
+          lineText = lineText .. "  " .. rightText
+        else
+          lineText = rightText
+        end
+      end
+      AddLine("loot", lineText)
+      shown = shown + 1
+      if shown >= maxLines then
+        AddLine("loot", "(Additional item details truncated.)")
+        break
+      end
+    end
+  end
+  tip:Hide()
+end
+
 local function BuyVendorItem(index, quantity)
   if not GetMerchantNumItems then
     AddLine("system", "Merchant API unavailable.")
@@ -6773,9 +7581,140 @@ function TA_EquipItemByQuery(query)
   AddLine("system", string.format("No bag item matched '%s'.", itemName))
 end
 
+-- INVSLOT 16 = MainHandSlot, 17 = SecondaryHandSlot (off-hand)
+TA.WEAPON_SLOT_IDS = TA.WEAPON_SLOT_IDS or { mainhand = 16, offhand = 17, main = 16, off = 17, mh = 16, oh = 17 }
+
+function TA_ApplyWeaponBuff(bag, slot, weaponSlotArg)
+  local function Feedback(msg, ch) AddLine(ch or "system", msg) end
+
+  if InCombatLockdown and InCombatLockdown() then
+    Feedback("Cannot apply weapon buffs while in combat.")
+    return
+  end
+
+  local info = C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)
+  if not info then
+    Feedback(string.format("No item found in %s slot %d.", BagLabel(bag), slot))
+    return
+  end
+  local itemRef = info.hyperlink or tostring(info.itemID or "item")
+
+  -- Guard against accidentally trying to equip non-consumables to weapon slots.
+  if GetItemInfoInstant then
+    local _, _, _, _, _, itemClassID = GetItemInfoInstant(info.hyperlink or info.itemID)
+    local consumableClassID = LE_ITEM_CLASS_CONSUMABLE or 0
+    if itemClassID ~= nil and itemClassID ~= consumableClassID then
+      Feedback("That item is not a consumable weapon buff (stone/oil/poison).")
+      return
+    end
+  end
+
+  local targetSlotID = nil
+  if weaponSlotArg then
+    targetSlotID = TA.WEAPON_SLOT_IDS[weaponSlotArg:lower()]
+    if not targetSlotID then
+      Feedback(string.format("Unknown weapon slot '%s'. Use: mainhand, offhand, mh, oh.", weaponSlotArg))
+      return
+    end
+  end
+
+  -- Pick up the buff item from the bag onto the cursor.
+  ClearCursor()
+  if C_Container and C_Container.PickupContainerItem then
+    C_Container.PickupContainerItem(bag, slot)
+  elseif PickupContainerItem then
+    PickupContainerItem(bag, slot)
+  else
+    Feedback("Container pickup API unavailable.")
+    return
+  end
+
+  local cursorType = GetCursorInfo and GetCursorInfo() or nil
+  if cursorType ~= "item" then
+    ClearCursor()
+    Feedback(string.format("Could not pick up %s — may be on cooldown or already in use.", itemRef))
+    return
+  end
+
+  if not targetSlotID then
+    -- UseContainerItem opens a protected Blizzard dialog and cannot be called from addon code.
+    ClearCursor()
+    Feedback("Weapon slot required. Usage: wbuff <bag> <slot> mainhand|offhand", "error")
+    return
+  end
+
+  -- Apply to the specified weapon slot via EquipCursorItem (safe outside combat).
+  if EquipCursorItem then
+    EquipCursorItem(targetSlotID)
+
+    -- If the cursor still holds the same item, the use/apply attempt failed.
+    local postCursorType = GetCursorInfo and GetCursorInfo() or nil
+    if postCursorType == "item" then
+      ClearCursor()
+      Feedback("Could not apply that buff to the selected weapon slot.")
+      return
+    end
+
+    local slotName = (targetSlotID == 16) and "Main Hand" or "Off Hand"
+    Feedback(string.format("Applied %s to %s.", itemRef, slotName), "loot")
+  else
+    ClearCursor()
+    Feedback("EquipCursorItem API unavailable.")
+  end
+end
+
+function TA_ApplyWeaponBuffByQuery(query, weaponSlotArg)
+  local itemName = (query or ""):match("^%s*(.-)%s*$")
+  if itemName == "" then
+    AddLine("system", "Usage: wbuff <item name> <mainhand|offhand>")
+    return
+  end
+  if not weaponSlotArg then
+    AddLine("system", "Usage: wbuff <item name> <mainhand|offhand>")
+    return
+  end
+  if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then
+    AddLine("system", "Container API unavailable.")
+    return
+  end
+
+  local queryLower = itemName:lower()
+  local maxBag = tonumber(NUM_BAG_SLOTS) or 4
+  local exactBag, exactSlot, partialBag, partialSlot = nil, nil, nil, nil
+
+  for bag = 0, maxBag do
+    local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+    for slot = 1, numSlots do
+      local info = C_Container.GetContainerItemInfo(bag, slot)
+      if info then
+        local name = info.itemName
+        if not name and GetItemInfo then name = GetItemInfo(info.hyperlink or info.itemID) end
+        if name then
+          local nameLower = name:lower()
+          if nameLower == queryLower then exactBag, exactSlot = bag, slot; break end
+          if not partialBag and nameLower:find(queryLower, 1, true) then partialBag, partialSlot = bag, slot end
+        end
+      end
+    end
+    if exactBag then break end
+  end
+
+  local foundBag = exactBag or partialBag
+  local foundSlot = exactSlot or partialSlot
+  if foundBag then
+    TA_ApplyWeaponBuff(foundBag, foundSlot, weaponSlotArg)
+  else
+    AddLine("system", string.format("No bag item matched '%s'.", itemName))
+  end
+end
+
 local function SellBagItem(bag, slot)
   if not TA.vendorOpen then
     AddLine("system", "No merchant window is open.")
+    return
+  end
+  if InCombatLockdown and InCombatLockdown() then
+    AddLine("system", "You cannot sell items while in combat.")
     return
   end
   local info = C_Container and C_Container.GetContainerItemInfo(bag, slot)
@@ -7687,12 +8626,14 @@ local function TA_SetTickerProfile(profile)
     TA.tickerIntervals.memory = 0.10
     TA.tickerIntervals.df = 0.05
     TA.tickerIntervals.warlockPrompt = 1.50
+    TA.tickerIntervals.warriorPrompt = 1.50
   else
     TA.tickerIntervals.move = 0.01
     TA.tickerIntervals.nearby = 0.01
     TA.tickerIntervals.memory = 0.01
-    TA.tickerIntervals.df = 0.01
+    TA.tickerIntervals.df = 0.1
     TA.tickerIntervals.warlockPrompt = 0.75
+    TA.tickerIntervals.warriorPrompt = 0.75
   end
 end
 
@@ -7949,7 +8890,7 @@ local function TA_TryInteractDistance(unit, checkType)
   return ok and result or false
 end
 
-local function GetNearbyUnitsWithPositions()
+local function CollectNearbyUnitsWithPositions()
   local units = { hostile = {}, neutral = {}, friendly = {} }
   local nameplates = C_NamePlate.GetNamePlates()
   if not nameplates then return units end
@@ -8014,6 +8955,27 @@ local function GetNearbyUnitsWithPositions()
   return units
 end
 
+  local function GetNearbyUnitsWithPositions(forceRefresh)
+    if not GetTime then
+      return CollectNearbyUnitsWithPositions()
+    end
+
+    local now = GetTime()
+    local refreshInterval = tonumber(TA.nearbyUnitsCacheInterval) or 0.15
+    if refreshInterval < 0.1 then refreshInterval = 0.1 end
+    if refreshInterval > 0.2 then refreshInterval = 0.2 end
+
+    local hasCached = (type(TA.lastNearbyUnits) == "table") and (type(TA.nearbyUnitsCacheAt) == "number")
+    if hasCached and not forceRefresh and (now - TA.nearbyUnitsCacheAt) < refreshInterval then
+      return TA.lastNearbyUnits
+    end
+
+    local units = CollectNearbyUnitsWithPositions()
+    TA.lastNearbyUnits = units
+    TA.nearbyUnitsCacheAt = now
+    return units
+  end
+
 local function TA_ClearDFSonar()
   TA.dfModeSonarContacts = {}
 end
@@ -8023,6 +8985,7 @@ local function TA_RecordDFSonarContacts(units, mapID)
   local now = GetTime()
   local ttl = tonumber(TA.dfModeSonarTTL) or 8
   local contactTable = TA.dfModeSonarContacts or {}
+  local lastKnown = TA.dfModeLastKnownUnits or {}
   local function ingest(kind, list)
     for _, u in ipairs(list or {}) do
       if u and u.hasExactPos and u.worldX and u.worldY then
@@ -8036,6 +8999,18 @@ local function TA_RecordDFSonarContacts(units, mapID)
         existing.seenAt = now
         existing.expiresAt = now + ttl
         contactTable[key] = existing
+        if u.guid then
+          lastKnown[u.guid] = {
+            guid = u.guid,
+            name = u.name or "Unknown",
+            kind = kind,
+            mapID = mapID,
+            worldX = u.worldX,
+            worldY = u.worldY,
+            seenAt = now,
+            expiresAt = now + math.max(ttl, 30),
+          }
+        end
       end
     end
   end
@@ -8043,6 +9018,7 @@ local function TA_RecordDFSonarContacts(units, mapID)
   ingest("neutral", units.neutral)
   ingest("friendly", units.friendly)
   TA.dfModeSonarContacts = contactTable
+  TA.dfModeLastKnownUnits = lastKnown
 end
 
 local function TA_PruneDFSonarContacts(mapID)
@@ -8058,6 +9034,48 @@ local function TA_PruneDFSonarContacts(mapID)
   return count
 end
 
+local function TA_PruneDFLastKnownUnits(mapID)
+  local now = GetTime()
+  for key, u in pairs(TA.dfModeLastKnownUnits or {}) do
+    if type(u) ~= "table" or not u.expiresAt or u.expiresAt <= now or (mapID and u.mapID and u.mapID ~= mapID) then
+      TA.dfModeLastKnownUnits[key] = nil
+    end
+  end
+end
+
+TA_RecordDFCorpseFromGUID = function(guid, name, mapID)
+  if not guid then return end
+  local known = TA.dfModeLastKnownUnits and TA.dfModeLastKnownUnits[guid]
+  if type(known) ~= "table" then return end
+  if mapID and known.mapID and known.mapID ~= mapID then return end
+  if not known.worldX or not known.worldY then return end
+
+  local now = GetTime()
+  local ttl = math.max(5, tonumber(TA.dfModeCorpseTTL) or 45)
+  local corpses = TA.dfModeCorpseContacts or {}
+  local key = "corpse:" .. tostring(guid)
+  corpses[key] = {
+    key = key,
+    guid = guid,
+    name = name or known.name or "Unknown",
+    mapID = known.mapID or mapID,
+    worldX = known.worldX,
+    worldY = known.worldY,
+    seenAt = now,
+    expiresAt = now + ttl,
+  }
+  TA.dfModeCorpseContacts = corpses
+end
+
+local function TA_PruneDFCorpseContacts(mapID)
+  local now = GetTime()
+  for key, c in pairs(TA.dfModeCorpseContacts or {}) do
+    if type(c) ~= "table" or not c.expiresAt or c.expiresAt <= now or (mapID and c.mapID and c.mapID ~= mapID) then
+      TA.dfModeCorpseContacts[key] = nil
+    end
+  end
+end
+
 local function TA_TriggerDFSonarPing(seconds)
   local duration = tonumber(seconds) or 4
   if duration < 1 then duration = 1 end
@@ -8070,6 +9088,450 @@ local function TA_TriggerDFSonarPing(seconds)
   return duration
 end
 
+local function TA_GetLoadedTerrainData()
+  local data = rawget(_G, "TextAdventurerTerrainData")
+  if type(data) ~= "table" then
+    return nil
+  end
+  if type(data.chunks) ~= "table" then
+    return nil
+  end
+  return data
+end
+
+local function TA_GetTerrainChunkIndex(data)
+  if not data then
+    return nil
+  end
+  if type(data._chunkIndex) == "table" then
+    return data._chunkIndex
+  end
+
+  local index = {}
+  for i = 1, #data.chunks do
+    local c = data.chunks[i]
+    if type(c) == "table" and type(c.tile) == "table" and type(c.chunk) == "table" then
+      local tx = tonumber(c.tile[1])
+      local ty = tonumber(c.tile[2])
+      local cx = tonumber(c.chunk[1])
+      local cy = tonumber(c.chunk[2])
+      if tx and ty and cx and cy then
+        index[string.format("%d:%d:%d:%d", tx, ty, cx, cy)] = c
+      end
+    end
+  end
+
+  data._chunkIndex = index
+  return index
+end
+
+local function TA_TerrainStatsFromGrid(grid)
+  if type(grid) ~= "table" then
+    return nil
+  end
+  local sum = 0
+  local count = 0
+  for y = 1, #grid do
+    local row = grid[y]
+    if type(row) == "table" then
+      for x = 1, #row do
+        local v = tonumber(row[x])
+        if v then
+          sum = sum + v
+          count = count + 1
+        end
+      end
+    end
+  end
+  if count <= 0 then
+    return nil
+  end
+  return sum / count
+end
+
+local function TA_TerrainMaxFromGrid(grid)
+  if type(grid) ~= "table" then
+    return nil
+  end
+  local maxV = nil
+  for y = 1, #grid do
+    local row = grid[y]
+    if type(row) == "table" then
+      for x = 1, #row do
+        local v = tonumber(row[x])
+        if v and (maxV == nil or v > maxV) then
+          maxV = v
+        end
+      end
+    end
+  end
+  return maxV
+end
+
+local function TA_TerrainSampleFromGrid(grid, fx, fy)
+  if type(grid) ~= "table" or #grid <= 0 then
+    return nil
+  end
+
+  local height = #grid
+  local width = 0
+  for y = 1, height do
+    local row = grid[y]
+    if type(row) == "table" and #row > width then
+      width = #row
+    end
+  end
+  if width <= 0 then
+    return nil
+  end
+
+  local xNorm = tonumber(fx) or 0
+  local yNorm = tonumber(fy) or 0
+  if xNorm < 0 then xNorm = 0 elseif xNorm > 1 then xNorm = 1 end
+  if yNorm < 0 then yNorm = 0 elseif yNorm > 1 then yNorm = 1 end
+
+  local gx = xNorm * (width - 1) + 1
+  local gy = yNorm * (height - 1) + 1
+  local x0 = math.floor(gx)
+  local y0 = math.floor(gy)
+  local x1 = math.min(width, x0 + 1)
+  local y1 = math.min(height, y0 + 1)
+  if x0 < 1 then x0 = 1 end
+  if y0 < 1 then y0 = 1 end
+
+  local tx = gx - x0
+  local ty = gy - y0
+
+  local function getCell(ix, iy)
+    local row = grid[iy]
+    if type(row) ~= "table" then
+      return nil
+    end
+    return tonumber(row[ix])
+  end
+
+  local v00 = getCell(x0, y0)
+  local v10 = getCell(x1, y0) or v00
+  local v01 = getCell(x0, y1) or v00
+  local v11 = getCell(x1, y1) or v10 or v01 or v00
+  if not v00 then
+    return nil
+  end
+
+  local top = v00 + (v10 - v00) * tx
+  local bottom = v01 + (v11 - v01) * tx
+  return top + (bottom - top) * ty
+end
+
+local function TA_BuildTerrainMarkerDensity(data, index)
+  if not data or type(index) ~= "table" then
+    return {}
+  end
+  if type(data._markerDensityByChunk) == "table" then
+    return data._markerDensityByChunk
+  end
+
+  local markers = data.markers
+  if type(markers) ~= "table" or #markers == 0 then
+    data._markerDensityByChunk = {}
+    return data._markerDensityByChunk
+  end
+
+  local ADT_TILE_SIZE = 1600 / 3
+  local ADT_HALF = 32 * ADT_TILE_SIZE
+
+  local function worldToChunkKey(wx, wy)
+    if type(wx) ~= "number" or type(wy) ~= "number" then
+      return nil
+    end
+    local rawTileX = (wx + ADT_HALF) / ADT_TILE_SIZE
+    local rawTileY = (ADT_HALF - wy) / ADT_TILE_SIZE
+    if rawTileX < 0 or rawTileX >= 64 or rawTileY < 0 or rawTileY >= 64 then
+      return nil
+    end
+
+    local tx = math.floor(rawTileX)
+    local ty = math.floor(rawTileY)
+    local cx = math.floor((rawTileX - tx) * 16)
+    local cy = math.floor((rawTileY - ty) * 16)
+    if cx < 0 or cx > 15 or cy < 0 or cy > 15 then
+      return nil
+    end
+    return string.format("%d:%d:%d:%d", tx, ty, cx, cy)
+  end
+
+  local transforms = {
+    { name = "xy_centered", fn = function(a, b, c) return a, b end },
+    { name = "yx_centered", fn = function(a, b, c) return b, a end },
+    { name = "xz_centered", fn = function(a, b, c) return a, c end },
+    { name = "yz_centered", fn = function(a, b, c) return b, c end },
+    { name = "xy_shifted",  fn = function(a, b, c) return a - ADT_HALF, ADT_HALF - b end },
+    { name = "yx_shifted",  fn = function(a, b, c) return b - ADT_HALF, ADT_HALF - a end },
+    { name = "xz_shifted",  fn = function(a, b, c) return a - ADT_HALF, ADT_HALF - c end },
+    { name = "yz_shifted",  fn = function(a, b, c) return b - ADT_HALF, ADT_HALF - c end },
+  }
+
+  local sampleCount = math.min(#markers, 1500)
+  local best = nil
+  for i = 1, #transforms do
+    local t = transforms[i]
+    local score = 0
+    local mapped = 0
+    for mIdx = 1, sampleCount do
+      local m = markers[mIdx]
+      if type(m) == "table" and type(m.pos) == "table" then
+        local a = tonumber(m.pos[1])
+        local b = tonumber(m.pos[2])
+        local c = tonumber(m.pos[3])
+        if a and b and c then
+          local wx, wy = t.fn(a, b, c)
+          local key = worldToChunkKey(wx, wy)
+          if key then
+            mapped = mapped + 1
+            if index[key] then
+              score = score + 1
+            end
+          end
+        end
+      end
+    end
+    if (not best) or score > best.score or (score == best.score and mapped > best.mapped) then
+      best = { transform = t, score = score, mapped = mapped }
+    end
+  end
+
+  local density = {}
+  if not best or best.score <= 0 then
+    data._markerDensityByChunk = density
+    data._markerDensityTransform = best and best.transform and best.transform.name or "none"
+    return density
+  end
+
+  data._markerDensityTransform = best.transform.name
+  for i = 1, #markers do
+    local m = markers[i]
+    if type(m) == "table" and type(m.pos) == "table" then
+      local a = tonumber(m.pos[1])
+      local b = tonumber(m.pos[2])
+      local c = tonumber(m.pos[3])
+      if a and b and c then
+        local wx, wy = best.transform.fn(a, b, c)
+        local key = worldToChunkKey(wx, wy)
+        if key and index[key] then
+          local w = (m.kind == "wmo") and 2 or 1
+          density[key] = (density[key] or 0) + w
+        end
+      end
+    end
+  end
+
+  data._markerDensityByChunk = density
+  return density
+end
+
+local function TA_GetTerrainContextAtWorldPos(posX, posY, preferredMode)
+  if type(posX) ~= "number" or type(posY) ~= "number" then
+    return nil
+  end
+
+  local data = TA_GetLoadedTerrainData()
+  if not data then
+    return nil
+  end
+
+  local index = TA_GetTerrainChunkIndex(data)
+  if type(index) ~= "table" then
+    return nil
+  end
+
+  local ADT_TILE_SIZE = 1600 / 3          -- 533.333... yards per tile
+  local ADT_HALF = 32 * ADT_TILE_SIZE     -- 17066.666... yards to world center
+
+  local function buildLookup(worldX, worldY, mode)
+    local rawTileX = (worldX + ADT_HALF) / ADT_TILE_SIZE
+    local rawTileY = (ADT_HALF - worldY) / ADT_TILE_SIZE
+
+    local tileX = math.floor(rawTileX)
+    local tileY = math.floor(rawTileY)
+    local chunkPosX = (rawTileX - tileX) * 16
+    local chunkPosY = (rawTileY - tileY) * 16
+    local chunkX = math.floor(chunkPosX)
+    local chunkY = math.floor(chunkPosY)
+    local localX = chunkPosX - chunkX
+    local localY = chunkPosY - chunkY
+
+    tileX = math.max(0, math.min(63, tileX))
+    tileY = math.max(0, math.min(63, tileY))
+    chunkX = math.max(0, math.min(15, chunkX))
+    chunkY = math.max(0, math.min(15, chunkY))
+    if localX < 0 then localX = 0 elseif localX > 1 then localX = 1 end
+    if localY < 0 then localY = 0 elseif localY > 1 then localY = 1 end
+
+    local key = string.format("%d:%d:%d:%d", tileX, tileY, chunkX, chunkY)
+    return {
+      mode = mode,
+      tileX = tileX,
+      tileY = tileY,
+      chunkX = chunkX,
+      chunkY = chunkY,
+      localX = localX,
+      localY = localY,
+      key = key,
+      chunk = index[key],
+    }
+  end
+
+  local lookup = nil
+  if preferredMode == "xy" then
+    lookup = buildLookup(posX, posY, "xy")
+  elseif preferredMode == "yx" then
+    lookup = buildLookup(posY, posX, "yx")
+  else
+    lookup = buildLookup(posX, posY, "xy")
+    if not lookup.chunk then
+      local swapped = buildLookup(posY, posX, "yx")
+      if swapped.chunk then
+        lookup = swapped
+      end
+    end
+  end
+
+  local chunk = lookup.chunk
+  local markerDensity = TA_BuildTerrainMarkerDensity(data, index)
+  local selected = chunk and { lookup.tileX, lookup.tileY, lookup.chunkX, lookup.chunkY } or nil
+  local mapBounds = (type(data.mapBounds) == "table") and data.mapBounds or nil
+
+  local inCompiledTileBounds = nil
+  if mapBounds and type(mapBounds.tileMin) == "table" and type(mapBounds.tileMax) == "table" then
+    local minTx = tonumber(mapBounds.tileMin[1])
+    local minTy = tonumber(mapBounds.tileMin[2])
+    local maxTx = tonumber(mapBounds.tileMax[1])
+    local maxTy = tonumber(mapBounds.tileMax[2])
+    if minTx and minTy and maxTx and maxTy then
+      inCompiledTileBounds = (lookup.tileX >= minTx and lookup.tileX <= maxTx and lookup.tileY >= minTy and lookup.tileY <= maxTy)
+    end
+  end
+
+  if not chunk or not selected then
+    return {
+      loaded = true,
+      chunk = nil,
+      tileX = lookup.tileX,
+      tileY = lookup.tileY,
+      chunkX = lookup.chunkX,
+      chunkY = lookup.chunkY,
+      lookupMode = lookup.mode,
+      inCompiledTileBounds = inCompiledTileBounds,
+      mapBounds = mapBounds,
+      resolved = false,
+    }
+  end
+
+  local sampledHeight = TA_TerrainSampleFromGrid(chunk.heights, lookup.localX, lookup.localY)
+  local sampledSlope = TA_TerrainSampleFromGrid(chunk.slope, lookup.localX, lookup.localY)
+
+  return {
+    loaded = true,
+    chunk = chunk,
+    tileX = selected[1],
+    tileY = selected[2],
+    chunkX = selected[3],
+    chunkY = selected[4],
+    lookupMode = lookup.mode,
+    inCompiledTileBounds = inCompiledTileBounds,
+    mapBounds = mapBounds,
+    resolved = true,
+    hasWater = chunk.hasWater and true or false,
+    obstacleCount = markerDensity[lookup.key] or 0,
+    texture = chunk.texture,
+    avgHeight = sampledHeight or TA_TerrainStatsFromGrid(chunk.heights),
+    avgSlope = sampledSlope or TA_TerrainStatsFromGrid(chunk.slope),
+    maxSlope = TA_TerrainMaxFromGrid(chunk.slope),
+  }
+
+end
+
+local function TA_GetTerrainContextAtMapPos(mapX, mapY)
+  -- mapX/mapY are zone-relative fractions; ignore them.
+  -- Use UnitPosition for raw world coordinates to derive ADT tile indices.
+  -- WoW ADT grid: 64x64 tiles, each 533.333... yards.
+  -- tileX increases west→east (same direction as WoW posX, which increases east).
+  -- tileY increases north→south (opposite to WoW posY, which increases north).
+  local posX, posY = UnitPosition("player")
+  if type(posX) ~= "number" or type(posY) ~= "number" then
+    return nil
+  end
+  return TA_GetTerrainContextAtWorldPos(posX, posY)
+end
+
+local function TA_GetTerrainGlyph(terrain, referenceHeight, referenceSlope, forwardBias, distCells, localHeightBaseline, localSlopeBaseline, localSlopeRelief, localHeightRelief)
+  if type(terrain) ~= "table" or not terrain.resolved then
+    return "."
+  end
+
+  -- Focus: detect deadly drop hazards only, ignore rolling hills.
+  -- Show: water, deadly drops (V), obstacles, else ignore.
+
+  if terrain.hasWater then
+    return "~"
+  end
+
+  local obstacleCount = tonumber(terrain.obstacleCount) or 0
+  if obstacleCount >= 4 then return "#" end
+  if obstacleCount >= 2 then return "X" end
+  if obstacleCount >= 1 then return "+" end
+
+  -- Check for deadly drop differences only.
+  -- Anchor to player reference height for stability while moving.
+  local height = tonumber(terrain.avgHeight)
+  local baselineHeight = tonumber(referenceHeight)
+  if baselineHeight == nil then baselineHeight = tonumber(localHeightBaseline) end
+  if baselineHeight and height then
+    local deltaHeight = height - baselineHeight
+    local dist = tonumber(distCells) or 1
+    local forward = tonumber(forwardBias) or 0
+    local localDeltaHeight = nil
+    local localRelief = tonumber(localHeightRelief) or 0
+    if localHeightBaseline ~= nil then
+      local localBaseline = tonumber(localHeightBaseline)
+      if localBaseline ~= nil then
+        localDeltaHeight = height - localBaseline
+      end
+    end
+    if dist < 1 then dist = 1 end
+    local gradePerCell = deltaHeight / dist
+
+    -- Safety filter: ignore impossible near-field deltas caused by bad chunk
+    -- samples or coordinate mismatches.
+    if math.abs(deltaHeight) > 300 then
+      return "."
+    end
+
+    -- Fall-risk focus: only render cliffs that are close enough to matter.
+    if dist > 5 then
+      return "."
+    end
+
+    -- Suppress side/back jitter; prioritize hazards in travel/front arc.
+    if forward < 0 then
+      return "."
+    end
+
+    -- Deadly drop: strict requirements to avoid false positives on fields.
+    local localDropPass = true
+    if localDeltaHeight ~= nil then
+      localDropPass = localDeltaHeight <= -4
+    end
+    if deltaHeight <= -10 and gradePerCell <= -1.6 and localDropPass and localRelief >= 2.5 then
+      return "V"
+    end
+  end
+
+  -- Ignore everything else (rolling hills, small slopes, textures, etc)
+  return "."
+
+end
+
 local function GetEntitySymbol(unit)
   if unit.class then
     local classLower = unit.class:sub(1, 1):lower()
@@ -8078,20 +9540,122 @@ local function GetEntitySymbol(unit)
   return "?"
 end
 
+function TA_ClassifyStandingTerrain(terrain, localSlopeBaseline)
+  if type(terrain) ~= "table" or not terrain.resolved then
+    return nil, nil
+  end
+
+  if terrain.hasWater then
+    return "Ground: waterline", "WATER"
+  end
+
+  local slope = tonumber(terrain.avgSlope) or 0
+  local maxSlope = tonumber(terrain.maxSlope) or slope
+  local baseline = tonumber(localSlopeBaseline)
+  local slopeDelta = baseline and (slope - baseline) or 0
+
+  if maxSlope >= 18 or (slope >= 13 and slopeDelta >= 1.8) then
+    return "Ground: mountain face", "MTN"
+  end
+  if maxSlope >= 15 or (slope >= 10 and slopeDelta >= 1.1) then
+    return "Ground: steep hillside", "STEEP"
+  end
+  if maxSlope >= 11 or slope >= 7 then
+    return "Ground: rolling hills", "HILL"
+  end
+  return "Ground: mostly flat", "FLAT"
+end
+
+function TA_Clamp01(v)
+  if v < 0 then return 0 end
+  if v > 1 then return 1 end
+  return v
+end
+
+function TA_ColorLerp(a, b, t)
+  local s = 1 - t
+  return (a[1] * s) + (b[1] * t), (a[2] * s) + (b[2] * t), (a[3] * s) + (b[3] * t)
+end
+
+function TA_HeatToRGB(heat)
+  local t = TA_Clamp01(tonumber(heat) or 0)
+  local stops = {
+    { 0.00, { 0.22, 0.52, 1.00 } }, -- blue
+    { 0.33, { 0.20, 0.90, 0.42 } }, -- green
+    { 0.66, { 0.98, 0.83, 0.20 } }, -- yellow
+    { 1.00, { 1.00, 0.33, 0.18 } }, -- red
+  }
+
+  for i = 1, #stops - 1 do
+    local lo = stops[i]
+    local hi = stops[i + 1]
+    if t <= hi[1] then
+      local span = hi[1] - lo[1]
+      local localT = span > 0 and ((t - lo[1]) / span) or 0
+      return TA_ColorLerp(lo[2], hi[2], localT)
+    end
+  end
+
+  local last = stops[#stops][2]
+  return last[1], last[2], last[3]
+end
+
+function TA_ColorizeCellByHeat(cell, heat)
+  if type(cell) ~= "string" or cell == "" then
+    return cell
+  end
+  local r, g, b = TA_HeatToRGB(heat)
+  return string.format("|cff%02x%02x%02x%s|r", math.floor(r * 255), math.floor(g * 255), math.floor(b * 255), cell)
+end
+
+function TA_TerrainHeatFromContext(terrain, slopeRelief, heightRelief)
+  if type(terrain) ~= "table" or not terrain.resolved then
+    return 0
+  end
+  if terrain.hasWater then
+    return 0.08
+  end
+
+  local avgSlope = tonumber(terrain.avgSlope) or 0
+  local maxSlope = tonumber(terrain.maxSlope) or avgSlope
+  local reliefSlope = tonumber(slopeRelief) or 0
+  local reliefHeight = tonumber(heightRelief) or 0
+
+  -- Use average slope + local relief as primary signals. Max-slope spikes are
+  -- only used as excess over average so one outlier does not saturate all cells.
+  local avgNorm = TA_Clamp01(avgSlope / 22.0)
+  local spikeExcess = math.max(0, maxSlope - avgSlope)
+  local spikeNorm = TA_Clamp01(spikeExcess / 14.0)
+  local reliefNorm = TA_Clamp01(reliefSlope / 10.0)
+  local verticalNorm = TA_Clamp01(reliefHeight / 20.0)
+
+  local raw = (avgNorm * 0.50) + (spikeNorm * 0.20) + (reliefNorm * 0.20) + (verticalNorm * 0.10)
+  -- Slightly compress the top-end so hills and mid-slopes retain distinct hues.
+  local heat = raw ^ 1.2
+  return TA_Clamp01(heat)
+end
+
 local function BuildDFModeDisplay()
   local mapID, _, _, x, y, continentX, continentY, continentID = GetPlayerMapCell()
   if not mapID then
     return "ERROR: Could not determine map position."
   end
 
+  TA.dfModeTerrainContext = TA_GetTerrainContextAtMapPos()
+
   local gridSize = TA.dfModeGridSize or 21
   local radius = math.floor(gridSize / 2)
   -- innerRadius is large enough that after any rotation, all display cells map to valid world cells.
   -- A rotated square needs sqrt(2) * radius coverage; we use 1.45 for a small safety margin.
-  local innerRadius = math.ceil(radius * 1.45)
+  if TA.dfModeInnerRadiusGridSize ~= gridSize then
+    TA.dfModeInnerRadius = math.ceil(radius * 1.45)
+    TA.dfModeInnerRadiusGridSize = gridSize
+  end
+  local innerRadius = TA.dfModeInnerRadius or math.ceil(radius * 1.45)
   -- Each DF grid cell represents this many in-game yards. Must be a whole number
   -- so mark and unit positions map cleanly: N yards = exactly N/yardsPerCell cells.
   local yardsPerCell = TA_GetEffectiveDFYardsPerCell()
+  local calibrationEnabled = TA.dfModeCalibrationEnabled and true or false
   local viewMode = TA.dfModeViewMode or "threat"
   local profile = TA.dfModeProfile or "full"
   local orientation = TA.dfModeOrientation or "fixed"
@@ -8100,7 +9664,8 @@ local function BuildDFModeDisplay()
 
   -- Get facing direction
   local facing = GetPlayerFacing() or 0
-  local playerWorldX, playerWorldY = UnitPosition("player")
+  local basePlayerWorldX, basePlayerWorldY = UnitPosition("player")
+  local playerWorldX, playerWorldY = TA_GetProjectedDFPlayerWorldPosition(basePlayerWorldX, basePlayerWorldY)
   local now = GetTime()
   local facingDegrees = math.floor(math.deg(facing))
   TA.dfModeNavHint = nil
@@ -8126,11 +9691,26 @@ local function BuildDFModeDisplay()
     TA_RecordDFSonarContacts(units, mapID)
   end
   TA_PruneDFSonarContacts(mapID)
+  TA_PruneDFLastKnownUnits(mapID)
+  TA_PruneDFCorpseContacts(mapID)
 
   -- Get target
   local targetName = UnitName("target")
   local targetUnit = targetName and "target" or nil
   local targetDistance = nil
+  local targetDistanceExact = nil
+  local targetDistanceApprox = nil
+  local targetRenderedCellDist = nil
+  local targetUsedFallback = false
+  local glyphEnemy = "|cffff4040E|r"
+  local glyphFriendly = "|cffb366ffF|r"
+  local targetGlyphNear = "T"
+  local targetGlyphMid = "t"
+  local targetHostile = targetUnit and UnitCanAttack("player", "target") and true or false
+  if targetHostile then
+    targetGlyphNear = "|cffff4040T|r"
+    targetGlyphMid = "|cffff4040t|r"
+  end
 
   local function OctantAngle(angle)
     local step = math.pi / 4
@@ -8204,55 +9784,72 @@ local function BuildDFModeDisplay()
 
   -- Place units
   for _, unit in ipairs(units.hostile or {}) do
-    PlaceUnitByDistance(unit, "E", "hostile")
+    PlaceUnitByDistance(unit, glyphEnemy, "hostile")
   end
   for _, unit in ipairs(units.neutral or {}) do
     PlaceUnitByDistance(unit, "N", "neutral")
   end
   for _, unit in ipairs(units.friendly or {}) do
-    PlaceUnitByDistance(unit, "F", "friendly")
+    PlaceUnitByDistance(unit, glyphFriendly, "friendly")
   end
 
   -- Place target with near-visual emphasis in balanced mode.
   if targetUnit then
     local tx, ty
-    local playerX, playerY = UnitPosition("player")
-    local targetX, targetY = UnitPosition("target")
+    local playerX, playerY = playerWorldX, playerWorldY
+    local targetX, targetY = nil, nil
+
+    local targetGUID = UnitGUID("target")
+    if targetGUID then
+      local pools = { units.hostile or {}, units.neutral or {}, units.friendly or {} }
+      for i = 1, #pools do
+        local pool = pools[i]
+        for j = 1, #pool do
+          local u = pool[j]
+          if u and u.guid == targetGUID and u.hasExactPos and u.worldX and u.worldY then
+            targetX, targetY = u.worldX, u.worldY
+            break
+          end
+        end
+        if targetX and targetY then break end
+      end
+    end
+
+    if not targetX or not targetY then
+      targetX, targetY = UnitPosition("target")
+    end
 
     if playerX and playerY and targetX and targetY then
       local dx = targetX - playerX
       local dy = targetY - playerY
       targetDistance = math.sqrt(dx * dx + dy * dy)
+      targetDistanceExact = targetDistance
       local east = dx
       local north = dy
-
-      if balanced then
-        local angle = OctantAngle(math.atan2(north, east))
-        local ring = targetDistance <= 14 and 2 or (targetDistance <= 30 and 4 or nil)
-        if ring then
-          tx = math.floor(math.cos(angle) * ring)
-          ty = math.floor(math.sin(angle) * ring)
-        end
-      else
-        tx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-        ty = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
-      end
+      tx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
+      ty = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
     else
+      targetUsedFallback = true
       local nameHash = 0
       for i = 1, #(targetName or "") do
         nameHash = nameHash + string.byte(targetName, i)
       end
       local angle = math.rad(nameHash % 360)
-      tx = math.floor(math.cos(angle) * 2)
-      ty = math.floor(math.sin(angle) * 2)
 
+      -- Determine actual distance before placement
       if CheckInteractDistance then
         if TA_TryInteractDistance("target", 1) then targetDistance = 10
         elseif TA_TryInteractDistance("target", 2) then targetDistance = 11
         elseif TA_TryInteractDistance("target", 3) then targetDistance = 28
         elseif TA_TryInteractDistance("target", 4) then targetDistance = 30
         end
+        targetDistanceApprox = targetDistance
       end
+
+      -- Place target at angle using actual distance (or default 2 cells if no distance)
+      local cellDist = targetDistance and math.floor(targetDistance / yardsPerCell + 0.5) or 2
+      tx = math.floor(math.cos(angle) * cellDist)
+      ty = math.floor(math.sin(angle) * cellDist)
     end
 
     if tx and ty then
@@ -8260,26 +9857,28 @@ local function BuildDFModeDisplay()
       if tx < -innerRadius then tx = -innerRadius end
       if ty > innerRadius then ty = innerRadius end
       if ty < -innerRadius then ty = -innerRadius end
+      targetRenderedCellDist = math.sqrt((tx * tx) + (ty * ty))
 
       if tx == 0 and ty == 0 then
         tx = math.floor((-math.sin(facing)) + 0.5)
         ty = math.floor((math.cos(facing)) + 0.5)
         if tx == 0 and ty == 0 then tx = 1 end
+        targetRenderedCellDist = math.sqrt((tx * tx) + (ty * ty))
       end
 
       if math.abs(tx) <= innerRadius and math.abs(ty) <= innerRadius and grid[ty] and grid[ty][tx] ~= "P" then
-        local targetGlyph = "T"
-        if balanced and targetDistance and targetDistance > 14 then
-          targetGlyph = "t"
-        end
+        local targetGlyph = targetGlyphNear
+        if balanced and targetDistance and targetDistance > 14 then targetGlyph = targetGlyphMid end
         grid[ty][tx] = targetGlyph
       end
     end
   end
 
   -- Place marked cells last so marks stay visible over other map symbols.
-  local markRadius = math.floor(tonumber(TA.dfModeMarkRadius) or 1)
+  local markRadius = math.floor(tonumber(TA.dfModeMarkRadius) or 0)
   local maxMarkRadius = math.floor((TA.dfModeGridSize or 35) / 2)
+  local markEdgeGlyph = "|cff33ff66o|r"
+  local markCenterGlyph = "|cff33ff66M|r"
   if markRadius < 0 then markRadius = 0 end
   if markRadius > maxMarkRadius then markRadius = maxMarkRadius end
   -- Scale: 1 DF grid cell = yardsPerCell yards (integer), same as unit placement.
@@ -8333,7 +9932,7 @@ local function BuildDFModeDisplay()
                 if math.abs(ex) <= innerRadius and math.abs(ey) <= innerRadius and grid[ey] and grid[ey][ex] then
                   -- Only draw edge on empty cells so entities are never overwritten.
                   if grid[ey][ex] == "." then
-                    grid[ey][ex] = "o"
+                    grid[ey][ex] = markEdgeGlyph
                   end
                 end
               end
@@ -8343,8 +9942,8 @@ local function BuildDFModeDisplay()
 
         if grid[my] and grid[my][mx] then
           local current = grid[my][mx]
-          if current ~= "P" and current ~= "@" and current ~= "T" and current ~= "t" then
-            grid[my][mx] = "M"
+          if current ~= "P" and current ~= "@" and current ~= "T" and current ~= "t" and current ~= targetGlyphNear and current ~= targetGlyphMid then
+            grid[my][mx] = markCenterGlyph
           end
         end
       end
@@ -8355,9 +9954,6 @@ local function BuildDFModeDisplay()
   if TA_GetQuestRouterStore and TA_BuildQuestRouteCandidates then
     local qstore = TA_GetQuestRouterStore()
     if qstore and qstore.enabled ~= false then
-      if not TA.questRouteOverlay or (now - (TA.questRouteLastAt or 0)) > 3 then
-        TA_BuildQuestRouteCandidates(1)
-      end
       local overlay = TA.questRouteOverlay
       if overlay and overlay.mapID == mapID and overlay.dxCells and overlay.dyCells then
         local qx = overlay.dxCells >= 0 and math.floor(overlay.dxCells + 0.5) or math.ceil(overlay.dxCells - 0.5)
@@ -8372,6 +9968,25 @@ local function BuildDFModeDisplay()
           grid[qy][qx] = "*"
         end
       end
+    end
+  end
+
+  -- DFDanger integration: lightweight hazard overlay layer for known cliff/elevator anchors.
+  if DFDanger and DFDanger.enabled and DFDanger.AddHazardOverlayToMap then
+    local overlayContext = {
+      zone = GetZoneText and (GetZoneText() or "") or "",
+      mapID = mapID,
+      playerX = x,
+      playerY = y,
+      innerRadius = innerRadius,
+      yardsPerCell = yardsPerCell,
+      playerFacing = facing,
+    }
+    local okDangerOverlay = pcall(function()
+      DFDanger:AddHazardOverlayToMap(grid, overlayContext)
+    end)
+    if not okDangerOverlay then
+      -- Keep DF rendering resilient if danger overlay has transient errors.
     end
   end
 
@@ -8403,6 +10018,21 @@ local function BuildDFModeDisplay()
     end
   end
 
+  -- Corpse overlay: recently killed units at their last known exact position.
+  for _, c in pairs(TA.dfModeCorpseContacts or {}) do
+    if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
+      local dx_yards = c.worldX - playerWorldX
+      local dy_yards = c.worldY - playerWorldY
+      local east = dx_yards
+      local north = dy_yards
+      local cx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
+      local cy = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+      if math.abs(cx) <= innerRadius and math.abs(cy) <= innerRadius and grid[cy] and grid[cy][cx] and grid[cy][cx] == "." then
+        grid[cy][cx] = "|cffb0b0b0x|r"
+      end
+    end
+  end
+
   -- Build output: grid rows only, no header or footer
   local lines = {}
   local navRotationAngle = facing
@@ -8419,6 +10049,11 @@ local function BuildDFModeDisplay()
   end
   local displaySinA = math.sin(displayRotationAngle)
   local displayCosA = math.cos(displayRotationAngle)
+  local forwardX = -math.sin(facing)
+  local forwardY = math.cos(facing)
+  local centerTerrainHeight = TA.dfModeTerrainContext and TA.dfModeTerrainContext.avgHeight or nil
+  local centerTerrainSlope = TA.dfModeTerrainContext and TA.dfModeTerrainContext.avgSlope or nil
+  local terrainLookupMode = TA.dfModeTerrainContext and TA.dfModeTerrainContext.lookupMode or nil
 
   local function RoundNearest(n)
     if n >= 0 then
@@ -8469,6 +10104,280 @@ local function BuildDFModeDisplay()
     TA.dfModeNavHint = nil
   end
 
+  local terrainStats = {
+    samples = 0,
+    lookups = 0,
+    resolved = 0,
+    unresolved = 0,
+    painted = 0,
+    blocked = 0,
+    noGlyph = 0,
+    heatMin = nil,
+    heatMax = nil,
+    compared = 0,
+    ignoredOutlier = 0,
+    deltaMin = nil,
+    deltaMax = nil,
+    cliffDrops = 0,
+  }
+  local terrainCache = {}
+  local gridDistanceCache = {}
+
+  local function TA_GetGridDistance(x, y)
+    local row = gridDistanceCache[y]
+    if not row then
+      row = {}
+      gridDistanceCache[y] = row
+    end
+    local d = row[x]
+    if not d then
+      d = math.sqrt((x * x) + (y * y))
+      row[x] = d
+    end
+    return d
+  end
+
+  local function TA_GetTerrainCellAtOffset(wx, wy)
+    if not playerWorldX or not playerWorldY then
+      return nil
+    end
+    local key = tostring(wx) .. ":" .. tostring(wy)
+    if terrainCache[key] ~= nil then
+      return terrainCache[key] ~= false and terrainCache[key] or nil
+    end
+
+    terrainStats.lookups = terrainStats.lookups + 1
+    local sampleX = playerWorldX + (wx * yardsPerCell)
+    local sampleY = playerWorldY + (wy * yardsPerCell)
+    local terrainCell = TA_GetTerrainContextAtWorldPos(sampleX, sampleY, terrainLookupMode)
+    terrainCache[key] = terrainCell or false
+    return terrainCell
+  end
+
+  local function TA_IsSameTerrainChunk(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then
+      return false
+    end
+    return (a.tileX == b.tileX) and (a.tileY == b.tileY) and (a.chunkX == b.chunkX) and (a.chunkY == b.chunkY)
+  end
+
+  local function TA_GetLocalTerrainBaselines(wx, wy, anchorTerrainCell)
+    local slopeSum = 0
+    local heightSum = 0
+    local count = 0
+    local slopeMin, slopeMax = nil, nil
+    local heightMin, heightMax = nil, nil
+    for oy = -1, 1 do
+      for ox = -1, 1 do
+        if not (ox == 0 and oy == 0) then
+          local n = TA_GetTerrainCellAtOffset(wx + ox, wy + oy)
+          if n and n.resolved then
+            if anchorTerrainCell and not TA_IsSameTerrainChunk(anchorTerrainCell, n) then
+              -- Keep the baseline local to the same ADT chunk so nearby chunk
+              -- transitions do not flatten or overstate local slope cues.
+              n = nil
+            end
+          end
+          if n and n.resolved then
+            local nSlope = tonumber(n.avgSlope)
+            local nHeight = tonumber(n.avgHeight)
+            if nSlope ~= nil and nHeight ~= nil then
+              count = count + 1
+              slopeSum = slopeSum + nSlope
+              heightSum = heightSum + nHeight
+              if slopeMin == nil or nSlope < slopeMin then slopeMin = nSlope end
+              if slopeMax == nil or nSlope > slopeMax then slopeMax = nSlope end
+              if heightMin == nil or nHeight < heightMin then heightMin = nHeight end
+              if heightMax == nil or nHeight > heightMax then heightMax = nHeight end
+            end
+          end
+        end
+      end
+    end
+
+    if count >= 3 then
+      local slopeRelief = (slopeMax and slopeMin) and (slopeMax - slopeMin) or 0
+      local heightRelief = (heightMax and heightMin) and (heightMax - heightMin) or 0
+      return (heightSum / count), (slopeSum / count), slopeRelief, heightRelief
+    end
+
+    if anchorTerrainCell and anchorTerrainCell.resolved then
+      -- Fallback: if there are too few same-chunk neighbors, use the anchor
+      -- cell sample itself instead of averaging across other chunks.
+      local aHeight = tonumber(anchorTerrainCell.avgHeight)
+      local aSlope = tonumber(anchorTerrainCell.avgSlope)
+      return aHeight, aSlope, 0, 0
+    end
+
+    return nil, nil, 0, 0
+  end
+
+  -- Keep terrain warnings closer to the player in threat mode.
+  local terrainRenderRadius = radius
+  if viewMode == "threat" then
+    terrainRenderRadius = math.max(6, math.floor(radius * 0.6))
+  end
+
+  local showTerrainView = (viewMode == "threat" or viewMode == "combined")
+  local terrainLayer = {}
+  local terrainHeatLayer = {}
+
+  -- Pass 1: sample terrain glyphs for each display cell so we can smooth noisy
+  -- one-off spikes without requerying terrain on the render pass.
+  for y = radius, -radius, -1 do
+    terrainLayer[y] = {}
+    terrainHeatLayer[y] = {}
+    for x = -radius, radius do
+      terrainStats.samples = terrainStats.samples + 1
+
+      local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
+      local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
+      local dist = TA_GetGridDistance(x, y)
+
+      local baseCell = "."
+      if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
+        baseCell = grid[wy][wx]
+      end
+
+      local glyph = "."
+      local heat = 0
+      if showTerrainView then
+        if baseCell ~= "." then
+          terrainStats.blocked = terrainStats.blocked + 1
+        elseif dist > terrainRenderRadius then
+          -- Intentionally skip far-edge terrain in threat mode to avoid
+          -- warnings appearing only at the outer border.
+        elseif playerWorldX and playerWorldY then
+          local terrainCell = TA_GetTerrainCellAtOffset(wx, wy)
+          if terrainCell and terrainCell.resolved then
+            terrainStats.resolved = terrainStats.resolved + 1
+          else
+            terrainStats.unresolved = terrainStats.unresolved + 1
+          end
+
+          local forwardBias = 0
+          if dist > 0 then
+            forwardBias = ((wx * forwardX) + (wy * forwardY)) / dist
+          end
+          local localHeightBaseline, localSlopeBaseline, localSlopeRelief, localHeightRelief = TA_GetLocalTerrainBaselines(wx, wy, terrainCell)
+          heat = TA_TerrainHeatFromContext(terrainCell, localSlopeRelief, localHeightRelief)
+          if terrainStats.heatMin == nil or heat < terrainStats.heatMin then terrainStats.heatMin = heat end
+          if terrainStats.heatMax == nil or heat > terrainStats.heatMax then terrainStats.heatMax = heat end
+          local sampleHeight = terrainCell and tonumber(terrainCell.avgHeight) or nil
+          local baselineHeight = tonumber(localHeightBaseline)
+          if baselineHeight == nil then baselineHeight = centerTerrainHeight end
+          if baselineHeight and sampleHeight then
+            local deltaHeight = sampleHeight - baselineHeight
+            if math.abs(deltaHeight) > 300 then
+              terrainStats.ignoredOutlier = terrainStats.ignoredOutlier + 1
+            else
+              terrainStats.compared = terrainStats.compared + 1
+              if terrainStats.deltaMin == nil or deltaHeight < terrainStats.deltaMin then terrainStats.deltaMin = deltaHeight end
+              if terrainStats.deltaMax == nil or deltaHeight > terrainStats.deltaMax then terrainStats.deltaMax = deltaHeight end
+              local gradeDist = dist
+              if gradeDist < 1 then gradeDist = 1 end
+              local gradePerCell = deltaHeight / gradeDist
+              local localRelief = tonumber(localHeightRelief) or 0
+              local localDeltaHeight = nil
+              if localHeightBaseline ~= nil then
+                local localBaseline = tonumber(localHeightBaseline)
+                if localBaseline ~= nil then
+                  localDeltaHeight = sampleHeight - localBaseline
+                end
+              end
+              local localDropPass = true
+              if localDeltaHeight ~= nil then
+                localDropPass = localDeltaHeight <= -4
+              end
+              if dist <= 5 and forwardBias >= 0 and deltaHeight <= -10 and gradePerCell <= -1.6 and localDropPass and localRelief >= 2.5 then
+                terrainStats.cliffDrops = terrainStats.cliffDrops + 1
+              end
+            end
+          end
+          glyph = TA_GetTerrainGlyph(
+            terrainCell,
+            centerTerrainHeight,
+            centerTerrainSlope,
+            forwardBias,
+            dist,
+            localHeightBaseline,
+            localSlopeBaseline,
+            localSlopeRelief,
+            localHeightRelief
+          )
+          if glyph ~= "." then
+            terrainStats.painted = terrainStats.painted + 1
+          else
+            terrainStats.noGlyph = terrainStats.noGlyph + 1
+          end
+        end
+      end
+
+      terrainLayer[y][x] = glyph
+      terrainHeatLayer[y][x] = heat
+    end
+  end
+
+  local centerLocalSlope = nil
+  if playerWorldX and playerWorldY then
+    local centerTerrainCell = TA_GetTerrainCellAtOffset(0, 0)
+    local _, localSlope = TA_GetLocalTerrainBaselines(0, 0, centerTerrainCell)
+    centerLocalSlope = localSlope
+  end
+  local standingLabel, standingShort = TA_ClassifyStandingTerrain(TA.dfModeTerrainContext, centerLocalSlope)
+  TA.dfModeTerrainStandingLabel = standingLabel
+  TA.dfModeTerrainStandingShort = standingShort
+
+  local function TA_GetSmoothedTerrainGlyph(x, y)
+    local raw = terrainLayer[y] and terrainLayer[y][x] or "."
+    if raw ~= "A" and raw ~= "V" and raw ~= "/" and raw ~= "^" then
+      return raw
+    end
+
+    local counts = { ["A"] = 0, ["V"] = 0, ["/"] = 0, ["^"] = 0 }
+    for oy = -1, 1 do
+      for ox = -1, 1 do
+        if not (ox == 0 and oy == 0) then
+          local ny = y + oy
+          local nx = x + ox
+          local g = terrainLayer[ny] and terrainLayer[ny][nx] or nil
+          if counts[g] ~= nil then
+            counts[g] = counts[g] + 1
+          end
+        end
+      end
+    end
+
+    -- Cliff-only mode: require stronger local consensus and never propagate
+    -- A/V into neighbors (prevents wave-like advancing vertical bands).
+    if raw == "V" then
+      if counts[raw] < 3 then
+        return "."
+      end
+      return raw
+    end
+    if raw == "^" and counts["^"] < 2 and counts["/"] >= 2 then
+      return "/"
+    end
+
+    local bestGlyph = raw
+    local bestCount = counts[raw] or 0
+    local candidates = { "^", "/" }
+    for i = 1, #candidates do
+      local g = candidates[i]
+      local c = counts[g] or 0
+      if c > bestCount then
+        bestCount = c
+        bestGlyph = g
+      end
+    end
+
+    if bestGlyph ~= raw and bestCount >= 3 then
+      return bestGlyph
+    end
+    return raw
+  end
+
   for y = radius, -radius, -1 do
     local row = {}
     for x = -radius, radius do
@@ -8480,11 +10389,27 @@ local function BuildDFModeDisplay()
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
         cell = grid[wy][wx]
       end
-      local dist = math.sqrt(x * x + y * y)
 
       local showThreat = (viewMode == "threat" or viewMode == "combined")
       local showExploration = (viewMode == "exploration" or viewMode == "combined")
       local showRange = (viewMode == "tactical" or viewMode == "combined")
+      local showTerrain = showTerrainView
+
+      if showTerrain and cell == "." then
+        local glyph = TA_GetSmoothedTerrainGlyph(x, y)
+        if glyph and glyph ~= "." then
+          if TA.dfModeHueEnabled then
+            if glyph == "V" or glyph == "A" then
+              cell = glyph
+            else
+              local heat = (terrainHeatLayer[y] and terrainHeatLayer[y][x]) or 0
+              cell = TA_ColorizeCellByHeat(glyph, heat)
+            end
+          else
+            cell = glyph
+          end
+        end
+      end
 
       local threatVal = 0
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and threatHeat[wy] and threatHeat[wy][wx] then
@@ -8501,7 +10426,11 @@ local function BuildDFModeDisplay()
       end
 
       if showRange then
-        if (math.abs(dist - 2) < 0.5 or math.abs(dist - 4) < 0.5 or math.abs(dist - 6) < 0.5) and cell == "." then
+        local distSq = (x * x) + (y * y)
+        local ring2 = (distSq >= 2.25 and distSq < 6.25)
+        local ring4 = (distSq >= 12.25 and distSq < 20.25)
+        local ring6 = (distSq >= 30.25 and distSq < 42.25)
+        if (ring2 or ring4 or ring6) and cell == "." then
           cell = "-"
         end
       end
@@ -8511,7 +10440,67 @@ local function BuildDFModeDisplay()
     table.insert(lines, table.concat(row, " "))
   end
 
-  return table.concat(lines, "\n")
+  TA.dfModeTerrainRenderStats = terrainStats
+  local display = table.concat(lines, "\n")
+
+  if viewMode == "threat" or viewMode == "combined" then
+    local legendEnabled = (TA.dfModeLegendEnabled ~= false)
+    local legend = {
+      "",
+      "Legend: P player  E enemy  T/t target  M mark  * contested",
+      "Threat: ! high  ~ medium  . empty  x corpse",
+      "Terrain: V drop hazard  X/# obstacles",
+    }
+    if TA.dfModeHueEnabled then
+      table.insert(legend, "Terrain hue: blue low  green medium  yellow high  red extreme")
+    end
+    if standingLabel then
+      table.insert(legend, standingLabel)
+    end
+    if calibrationEnabled then
+      local radiusYards = radius * yardsPerCell
+      local ring2 = 2 * yardsPerCell
+      local ring4 = 4 * yardsPerCell
+      local ring6 = 6 * yardsPerCell
+      table.insert(legend, string.format("Cal: grid=%dx%d radius=%d cells (~%d yd) cell=%d yd", gridSize, gridSize, radius, radiusYards, yardsPerCell))
+      table.insert(legend, string.format("Cal: rings 2/4/6 cells => ~%d/%d/%d yd", ring2, ring4, ring6))
+      if centerTerrainHeight and terrainStats.compared > 0 and terrainStats.deltaMin and terrainStats.deltaMax then
+        table.insert(legend, string.format("Cal terrain: centerH=%.1f dH[min/max]=%.1f/%.1f yd compared=%d ignored=%d", centerTerrainHeight, terrainStats.deltaMin, terrainStats.deltaMax, terrainStats.compared, terrainStats.ignoredOutlier))
+        table.insert(legend, string.format("Cal terrain: cliff cells V=%d (rule: dH<=-10 & grade<=-1.6 & localDrop<=-4 & relief>=2.5 & dist<=5 & forward>=0)", terrainStats.cliffDrops))
+      elseif centerTerrainHeight then
+        table.insert(legend, string.format("Cal terrain: centerH=%.1f (no comparable terrain samples, ignored=%d)", centerTerrainHeight, terrainStats.ignoredOutlier))
+      else
+        table.insert(legend, "Cal terrain: center terrain unresolved")
+      end
+      if targetUnit and targetRenderedCellDist then
+        local renderedYards = targetRenderedCellDist * yardsPerCell
+        if targetDistanceExact then
+          local expectedCells = targetDistanceExact / yardsPerCell
+          local cellError = targetRenderedCellDist - expectedCells
+          local yardError = renderedYards - targetDistanceExact
+          table.insert(legend, string.format("Cal target: exact=%.1f yd expected=%.2f cells rendered=%.2f cells (err %.2f cells / %.1f yd)", targetDistanceExact, expectedCells, targetRenderedCellDist, cellError, yardError))
+        elseif targetDistanceApprox then
+          local expectedCells = targetDistanceApprox / yardsPerCell
+          local cellError = targetRenderedCellDist - expectedCells
+          local yardError = renderedYards - targetDistanceApprox
+          table.insert(legend, string.format("Cal target: approx~%.1f yd expected~%.2f cells rendered=%.2f cells (err %.2f cells / %.1f yd)", targetDistanceApprox, expectedCells, targetRenderedCellDist, cellError, yardError))
+        elseif targetUsedFallback then
+          table.insert(legend, string.format("Cal target: fallback placement rendered=%.2f cells (~%.1f yd), no distance estimate", targetRenderedCellDist, renderedYards))
+        else
+          table.insert(legend, string.format("Cal target: rendered=%.2f cells (~%.1f yd), no distance source", targetRenderedCellDist, renderedYards))
+        end
+      elseif targetUnit then
+        table.insert(legend, "Cal target: target selected but not rendered (off-grid or unresolved position)")
+      else
+        table.insert(legend, "Cal target: no target selected")
+      end
+    end
+    if legendEnabled then
+      display = display .. "\n" .. table.concat(legend, "\n")
+    end
+  end
+
+  return display
 end
 
 function TA_SetDFModeSize(width, height, silent)
@@ -8556,7 +10545,7 @@ function TA_SetDFModeMarkRadius(radius, silent)
   local maxR = math.floor((TA.dfModeGridSize or 35) / 2)
 
   if radius == nil then
-    local current = tonumber(TA.dfModeMarkRadius) or 1
+    local current = tonumber(TA.dfModeMarkRadius) or 0
     AddLine("system", "DF mark radius: " .. math.floor(current) .. " cell(s)")
     AddLine("system", "Usage: /ta df markradius <0-" .. maxR .. ">")
     return
@@ -8600,9 +10589,9 @@ function TA_DFModeStatus()
   elseif facingDegrees >= 225 and facingDegrees < 315 then dirStr = "E"
   end
 
-  local mapID, cellX, cellY = GetPlayerMapCell()
+  local mapID, cellX, cellY, px, py = GetPlayerMapCell()
   local zoneName = GetZoneText() or "Unknown"
-  local units = GetNearbyUnitsWithPositions()
+  local units = GetNearbyUnitsWithPositions() or { hostile = {}, neutral = {}, friendly = {} }
 
   local totalHostile = #(units.hostile or {})
   local totalNeutral = #(units.neutral or {})
@@ -8610,14 +10599,69 @@ function TA_DFModeStatus()
 
   AddLine("system", "=== DF MODE STATUS ===")
   AddLine("system", "View: " .. viewMode:upper() .. "  |  Profile: " .. profile:upper())
-  AddLine("system", "Zone: " .. zoneName .. (mapID and ("  |  Cell: [" .. cellX .. "," .. cellY .. "]") or ""))
+  local cellText = ""
+  if mapID and cellX ~= nil and cellY ~= nil then
+    cellText = string.format("  |  Cell: [%s,%s]", tostring(cellX), tostring(cellY))
+  elseif mapID then
+    cellText = "  |  Cell: [unknown]"
+  end
+  AddLine("system", "Zone: " .. zoneName .. cellText)
   AddLine("system", "Facing: " .. dirStr .. " (" .. facingDegrees .. " deg)")
-  AddLine("system", "Legend: P=You  @=You in marked cell  E=Enemy  M=Mark center  o=mark edge/radius")
-  AddLine("system", "        T=near target  t=mid target  ?=non-hostile blob")
-  AddLine("system", "        +=Trail  -=Range ring  *=Contested")
-  AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 1) .. " cell(s)")
+  AddLine("system", "Legend overlay: " .. ((TA.dfModeLegendEnabled ~= false) and "ON" or "OFF") .. " (use /ta df legend on|off)")
+  if TA.dfModeLegendEnabled ~= false then
+    AddLine("system", "Legend: P=Player  E=Enemy  T/t=Target  M=Mark  *=Contested")
+    AddLine("system", "Threat: !=high  ~=medium  .=empty  x=corpse")
+    AddLine("system", "Terrain: ^=steep  /=incline  A/V=up/down  X/#=obstacles")
+  end
+  AddLine("system", "Terrain hue: " .. (TA.dfModeHueEnabled and "ON" or "OFF") .. " (use /ta df hue on|off)")
+  AddLine("system", "DF calibration: " .. (TA.dfModeCalibrationEnabled and "ON" or "OFF") .. " (use /ta df calibrate on|off)")
+  AddLine("system", "Mark radius: " .. (tonumber(TA.dfModeMarkRadius) or 0) .. " cell(s)")
   AddLine("system", "Orientation: " .. ((TA.dfModeOrientation or "fixed"):upper()))
   AddLine("system", "Rotation mode: " .. ((TA.dfModeRotationMode or "smooth"):upper()))
+  local terrain = nil
+  local terrainOk, terrainOrErr = pcall(TA_GetTerrainContextAtMapPos)
+  if terrainOk then
+    terrain = terrainOrErr
+  else
+    AddLine("system", "Terrain: lookup error: " .. tostring(terrainOrErr))
+  end
+
+  if not terrain then
+    AddLine("system", "Terrain: no compiled terrain data loaded")
+  elseif not terrain.resolved then
+    AddLine("system", string.format("Terrain: loaded but no chunk match near tile/chunk %d:%d / %d:%d (mode %s)", terrain.tileX or -1, terrain.tileY or -1, terrain.chunkX or -1, terrain.chunkY or -1, tostring(terrain.lookupMode or "?")))
+    if terrain.inCompiledTileBounds == false then
+      local b = terrain.mapBounds
+      if b and b.tileMin and b.tileMax then
+        AddLine("system", string.format("Terrain coverage: outside compiled tile bounds (%d:%d to %d:%d). Export and compile this zone.", tonumber(b.tileMin[1]) or -1, tonumber(b.tileMin[2]) or -1, tonumber(b.tileMax[1]) or -1, tonumber(b.tileMax[2]) or -1))
+      else
+        AddLine("system", "Terrain coverage: outside compiled tile bounds. Export and compile this zone.")
+      end
+    else
+      AddLine("system", "Terrain coverage: tile is inside compiled bounds, but this chunk is missing from the dataset.")
+    end
+  else
+    local water = terrain.hasWater and "yes" or "no"
+    local texture = tostring(terrain.texture or "unknown")
+    local height = terrain.avgHeight and string.format("%.1f", terrain.avgHeight) or "?"
+    local slope = terrain.avgSlope and string.format("%.2f", terrain.avgSlope) or "?"
+    local maxSlope = terrain.maxSlope and string.format("%.2f", terrain.maxSlope) or "?"
+    AddLine("system", string.format("Terrain: tile/chunk %d:%d / %d:%d  water=%s  texture=%s  height~%s  slope~%s (max %s, mode %s)", terrain.tileX or -1, terrain.tileY or -1, terrain.chunkX or -1, terrain.chunkY or -1, water, texture, height, slope, maxSlope, tostring(terrain.lookupMode or "?")))
+  end
+  local standingLabel = TA.dfModeTerrainStandingLabel
+  if not standingLabel and terrain and terrain.resolved then
+    standingLabel = select(1, TA_ClassifyStandingTerrain(terrain, nil))
+  end
+  if standingLabel then
+    AddLine("system", standingLabel)
+  end
+  local tr = TA.dfModeTerrainRenderStats
+  if type(tr) == "table" then
+    AddLine("system", string.format("Terrain render: samples=%d lookups=%d resolved=%d painted=%d blocked=%d no-glyph=%d unresolved=%d", tr.samples or 0, tr.lookups or 0, tr.resolved or 0, tr.painted or 0, tr.blocked or 0, tr.noGlyph or 0, tr.unresolved or 0))
+    if tr.heatMin ~= nil and tr.heatMax ~= nil then
+      AddLine("system", string.format("Terrain hue range: min=%.2f max=%.2f", tonumber(tr.heatMin) or 0, tonumber(tr.heatMax) or 0))
+    end
+  end
   if TA.dfModeNavHint and TA.dfModeNavHint ~= "" then
     AddLine("system", "Navigation hint: " .. TA.dfModeNavHint)
   end
@@ -8689,10 +10733,18 @@ function TA_UpdateDFMode()
   end
   
   local now = GetTime()
-  if now - TA.dfModeLastUpdate < 0.01 then
-    return  -- Update at most every 0.01 seconds
+  local dfInterval = tonumber(TA.tickerIntervals and TA.tickerIntervals.df) or 0.1
+  if now - TA.dfModeLastUpdate < dfInterval then
+    return  -- Update at most every configured DF ticker interval.
   end
   TA.dfModeLastUpdate = now
+
+  -- DFDanger integration: evaluate passive warnings on a slower internal cadence.
+  if DFDanger and DFDanger.Tick then
+    pcall(function()
+      DFDanger:Tick()
+    end)
+  end
   
   local display = BuildDFModeDisplay()
   local mapLines = dfModeFrame.mapLines
@@ -8700,25 +10752,38 @@ function TA_UpdateDFMode()
   if display then
     for line in display:gmatch("[^\n]+") do
       if mapLines[i] then
-        mapLines[i]:SetText(line)
+        if mapLines[i]:GetText() ~= line then
+          mapLines[i]:SetText(line)
+        end
         i = i + 1
       end
     end
   else
-    if mapLines[1] then mapLines[1]:SetText("Error generating tactical map.") end
+    if mapLines[1] and mapLines[1]:GetText() ~= "Error generating tactical map." then
+      mapLines[1]:SetText("Error generating tactical map.")
+    end
     i = 2
   end
   -- Blank out any rows below the current map
   for j = i, #mapLines do
-    mapLines[j]:SetText("")
+    if mapLines[j]:GetText() ~= "" then
+      mapLines[j]:SetText("")
+    end
   end
   local viewMode = TA.dfModeViewMode or "threat"
-  dfTitle:SetText(viewMode)
+  local terrain = TA.dfModeTerrainContext
+  if terrain and terrain.resolved then
+    local waterFlag = terrain.hasWater and "W" or "D"
+    dfTitle:SetText(string.format("%s | %s", viewMode, waterFlag))
+  else
+    dfTitle:SetText(viewMode)
+  end
 end
 
 function TA_ToggleDFMode()
   TA.dfModeEnabled = not TA.dfModeEnabled
   if TA.dfModeEnabled then
+    TA.dfModeViewMode = "threat"
     dfModeFrame:Show()
     TA.dfModeLastUpdate = 0  -- Reset timer to force immediate update
     TA_UpdateDFMode()
@@ -8913,6 +10978,70 @@ function TA_GetEffectiveDFYardsPerCell()
   return yards
 end
 
+function TA_GetProjectedDFPlayerWorldPosition(playerWorldX, playerWorldY)
+  if not playerWorldX or not playerWorldY then
+    playerWorldX, playerWorldY = UnitPosition("player")
+  end
+  if not playerWorldX or not playerWorldY then
+    return nil, nil
+  end
+
+  local speed = tonumber(GetUnitSpeed("player")) or 0
+  if speed <= 0 then
+    return playerWorldX, playerWorldY
+  end
+
+  local facing = GetPlayerFacing()
+  if not facing then
+    return playerWorldX, playerWorldY
+  end
+
+  local lookaheadSeconds = tonumber(TA.dfModeLookaheadSeconds) or 0
+  local projectedWorldX = playerWorldX
+  local projectedWorldY = playerWorldY
+  if lookaheadSeconds > 0 then
+    local lookaheadYards = math.min(speed * lookaheadSeconds, 1.25)
+    local forwardX = -math.sin(facing)
+    local forwardY = math.cos(facing)
+    projectedWorldX = projectedWorldX + (forwardX * lookaheadYards)
+    projectedWorldY = projectedWorldY + (forwardY * lookaheadYards)
+  end
+
+  local yardsPerCell = TA_GetEffectiveDFYardsPerCell()
+  if not yardsPerCell or yardsPerCell <= 0 then
+    return projectedWorldX, projectedWorldY
+  end
+
+  local threshold = tonumber(TA.dfModeHysteresisEnterPct) or 0.38
+  if threshold < 0.05 then threshold = 0.05 end
+  if threshold > 0.49 then threshold = 0.49 end
+
+  local function RoundNearest(n)
+    if n >= 0 then
+      return math.floor(n + 0.5)
+    end
+    return math.ceil(n - 0.5)
+  end
+
+  local function SnapAxis(rawCell, stateKey)
+    local snappedCell = tonumber(TA[stateKey])
+    if not snappedCell or math.abs(rawCell - snappedCell) > 2 then
+      snappedCell = RoundNearest(rawCell)
+    else
+      while (rawCell - snappedCell) >= threshold do
+        snappedCell = snappedCell + 1
+      end
+      while (rawCell - snappedCell) <= -threshold do
+        snappedCell = snappedCell - 1
+      end
+    end
+    TA[stateKey] = snappedCell
+    return snappedCell * yardsPerCell
+  end
+
+  return SnapAxis(projectedWorldX / yardsPerCell, "dfModeAnchorCellX"), SnapAxis(projectedWorldY / yardsPerCell, "dfModeAnchorCellY")
+end
+
 
 local function BuildNearbyLine(kind, units)
   if #units == 0 then return nil end
@@ -9001,6 +11130,18 @@ local function CheckAwareness()
     end
     TA.lastNearbySignature = signature
   end
+end
+
+function TA_RequestAwarenessRefresh(force)
+  TA.awarenessDirty = true
+  local now = GetTime()
+  local minInterval = tonumber(TA.awarenessEventMinInterval) or 0.20
+  if not force and (now - (TA.awarenessLastRunAt or 0)) < minInterval then
+    return
+  end
+  CheckAwareness()
+  TA.awarenessLastRunAt = now
+  TA.awarenessDirty = false
 end
 
 local CHAT_EVENT_INFO = {
@@ -9586,56 +11727,190 @@ local function RespondToPopup(index, action)
   end
 end
 
-local hiddenFrames = { "MinimapCluster", "MiniMapTracking", "MinimapZoneTextButton", "GameTimeFrame", "PlayerFrame", "TargetFrame", "BuffFrame", "DurabilityFrame" }
+TA.hiddenFrames = { "MinimapCluster", "MiniMapTracking", "MinimapZoneTextButton", "GameTimeFrame", "PlayerFrame", "TargetFrame", "BuffFrame", "DurabilityFrame" }
 
-local function ForceHideFrameByName(name)
+function TA_ForceHideFrameByName(name)
   local frame = _G[name]
   if frame then frame:Hide() end
 end
 
-local function ApplyTextModeFrames()
-  for _, name in ipairs(hiddenFrames) do ForceHideFrameByName(name) end
+function TA_ApplyTextModeFrames()
+  for _, name in ipairs(TA.hiddenFrames or {}) do TA_ForceHideFrameByName(name) end
 end
 
-local function EnableTextMode()
+SyncTextModeOverlay = function()
+  if TA.textMode then
+    overlay:Show()
+  else
+    overlay:Hide()
+  end
+  TA_SyncProtectedCommandEditBoxes(TA.textMode and true or false)
+  TA_UpdateCommandPreviewBox()
+end
+
+function TA_EnableTextModeInternal()
   TA.textMode = true
-  overlay:Show()
-  overlay.tex:Show()
   panel:Show()
   panel:SetFrameStrata("TOOLTIP")
   panel:SetFrameLevel(11000)
   panel.inputBox:Show()
-  ApplyTextModeFrames()
+  SyncTextModeOverlay()
+  TA_ApplyTextModeFrames()
   AddLine("system", "Text mode enabled.")
 end
 
-local function DisableTextMode()
+function TA_DisableTextModeInternal()
   TA.textMode = false
-  overlay:Hide()
+  SyncTextModeOverlay()
   panel.inputBox:Hide()
   AddLine("system", "Text mode disabled. Hidden frames may need /reload to return.")
 end
 
 local function TogglePanel()
-  if panel:IsShown() then 
+  if panel:IsShown() then
     panel:Hide()
+    SyncTextModeOverlay()
     if ChatFrame1 then ChatFrame1:Show() end
-  else 
+  else
     panel:Show()
+    SyncTextModeOverlay()
   end
 end
 
-function TA_FocusTerminalInput()
+function TA_ClearTerminalLog()
+  wipe(TA.lines)
+  panel.text:Clear()
+  AddLine("system", "Log cleared.")
+end
+
+function TA_ShowPanelCommand()
+  panel:Show()
+  SyncTextModeOverlay()
+  AddLine("system", "Text Adventurer opened.")
+end
+
+function TA_HidePanelCommand()
+  panel:Hide()
+  SyncTextModeOverlay()
+  if ChatFrame1 then ChatFrame1:Show() end
+end
+
+function TA_TogglePanelCommand()
+  TogglePanel()
+end
+
+function TA_EnableTextModeCommand()
+  TA_EnableTextModeInternal()
+end
+
+function TA_DisableTextModeCommand()
+  TA_DisableTextModeInternal()
+end
+
+function TA_FocusTerminalInput(deferFocus)
   panel:Show()
   panel.inputBox:Show()
-  panel.inputBox:SetFocus()
+
+  local function FocusNow()
+    if panel and panel.inputBox then
+      panel.inputBox:SetFocus()
+    end
+  end
+
+  if deferFocus and C_Timer and C_Timer.After then
+    C_Timer.After(0, FocusNow)
+  else
+    FocusNow()
+  end
+
   AddLine("system", "Terminal input ready.")
+end
+
+local function TA_ExecuteTerminalInputLines(lines, opts)
+  opts = opts or {}
+  if type(lines) ~= "table" or #lines == 0 then
+    return false
+  end
+
+  if opts.recordLastBlock ~= false then
+    TA.lastInputBlock = {}
+    for i = 1, #lines do
+      TA.lastInputBlock[i] = lines[i]
+    end
+  end
+
+  for i = 1, #lines do
+    local line = lines[i]
+    AddLine("system", "> " .. line)
+    table.insert(TA.inputHistory, line)
+    if #TA.inputHistory > TA.inputHistoryMax then table.remove(TA.inputHistory, 1) end
+  end
+  TA.inputHistoryPos = 0
+  TA.inputDraft = ""
+
+  TA.deferTerminalRefocus = false
+  for i = 1, #lines do
+    TA_ProcessInputCommand(lines[i])
+    if TA.deferTerminalRefocus then
+      return true
+    end
+  end
+
+  return false
+end
+
+function TA_RunLastInputBlock()
+  if TA.isReplayingLastBlock then
+    AddLine("system", "runlast is already replaying.")
+    return
+  end
+  if type(TA.lastInputBlock) ~= "table" or #TA.lastInputBlock == 0 then
+    AddLine("system", "No previous multiline block to replay.")
+    return
+  end
+
+  local lines = {}
+  for i = 1, #TA.lastInputBlock do
+    lines[i] = TA.lastInputBlock[i]
+  end
+
+  TA.isReplayingLastBlock = true
+  local ok, err = pcall(function()
+    TA_ExecuteTerminalInputLines(lines, { recordLastBlock = false })
+  end)
+  TA.isReplayingLastBlock = false
+
+  if not ok then
+    AddLine("system", "runlast failed: " .. tostring(err))
+  end
 end
 
 function TA_SendFromTerminal(msg)
   local cmd, rest = msg:match("^/(%S+)%s*(.*)$")
   if not cmd then return false end
   cmd = cmd:lower()
+  local protectedSlashCommands = {
+    logout = true,
+    camp = true,
+    quit = true,
+    exit = true,
+    cast = true,
+    stopcasting = true,
+    castsequence = true,
+    use = true,
+    equip = true,
+    equipslot = true,
+    petattack = true,
+    petfollow = true,
+    petpassive = true,
+    petdefensive = true,
+    petaggressive = true,
+    startattack = true,
+    stopattack = true,
+    cancelaura = true,
+    cancelform = true,
+    click = true,
+  }
   if cmd == "s" or cmd == "say" then
     SendChatMessage(rest, "SAY")
   elseif cmd == "y" or cmd == "yell" then
@@ -9656,1057 +11931,315 @@ function TA_SendFromTerminal(msg)
       AddLine("system", "Whisper format: /w Name message")
     end
   else
-    AddLine("system", "Unknown chat prefix. Use /s, /p, /g, /w, /raid, or /rw.")
+    -- Pass unknown slash commands (e.g., /logout) to Blizzard's chat parser.
+    if ChatFrame_OpenChat then
+      TA.deferTerminalRefocus = true
+      local openText = msg
+      if protectedSlashCommands[cmd] then
+        -- Do not inject protected commands via addon code; require manual typing
+        -- in the chat edit box to avoid tainting secure slash handlers.
+        openText = ""
+        TA.deferTerminalRefocus = false
+      end
+      ChatFrame_OpenChat(openText)
+      if TA.textMode then
+        TA_SyncProtectedCommandEditBoxes(true)
+      end
+      if ChatFrame1EditBox then
+        ChatFrame1EditBox:Show()
+        ChatFrame1EditBox:SetFocus()
+        if ChatEdit_ActivateChat then
+          ChatEdit_ActivateChat(ChatFrame1EditBox)
+        end
+      end
+      TA_UpdateCommandPreviewBox()
+      if protectedSlashCommands[cmd] then
+        AddLine("system", "Protected command requires manual typing. Type /" .. cmd .. " in chat input, then press Enter.")
+      else
+        AddLine("system", "Slash command opened in chat input.")
+      end
+    else
+      AddLine("system", "Unknown chat prefix. Use /s, /p, /g, /w, /raid, or /rw.")
+    end
   end
   return true
 end
 
 function TA_ShowHelpOverview()
-  AddLine("system", "Text Adventurer help topics:")
-  AddLine("system", "  combat - damage, stats, range, spacing")
-  AddLine("system", "  navigation - cells, marks, map overlay")
-  AddLine("system", "  quests - quest, gossip, trainer flows")
-  AddLine("system", "  automation - auto behaviors and text mode")
-  AddLine("system", "  economy - bags, gear, vendor, buying/selling")
-  AddLine("system", "  social - chat and targeting shortcuts")
-  AddLine("system", "  advanced - macros, bindings, diagnostics")
-  AddLine("system", "All commands support both: <command> (terminal) and /ta <command> (chat).")
-  AddLine("system", "Type: help <topic>. Example: help navigation")
+  if TA_Help_ShowOverview then
+    TA_Help_ShowOverview()
+    return
+  end
+  AddLine("system", "Help module is not loaded yet.")
 end
 
 function TA_ShowHelpTopic(topicArg)
-  local raw = (topicArg or ""):match("^%s*(.-)%s*$"):lower()
-  if raw == "" or raw == "all" or raw == "commands" or raw == "topics" then
-    TA_ShowHelpOverview()
+  if TA_Help_ShowTopic then
+    TA_Help_ShowTopic(topicArg)
     return
   end
-
-  local key = raw
-  if raw == "dps" or raw == "battle" then key = "combat" end
-  if raw == "nav" or raw == "cells" or raw == "map" then key = "navigation" end
-  if raw == "quest" or raw == "npc" then key = "quests" end
-  if raw == "auto" then key = "automation" end
-  if raw == "inventory" or raw == "vendor" then key = "economy" end
-  if raw == "chat" then key = "social" end
-  if raw == "macros" then key = "advanced" end
-
-  if key == "combat" then
-    AddLine("system", "Help: Combat & Stats")
-    AddLine("system", "  status - health and current resource summary.")
-    AddLine("system", "  stats - full character stat breakdown.")
-    AddLine("system", "  skills - current skill line levels (weapon/profession/defense).")
-    AddLine("system", "  skills weapons|professions|secondary|defense - filtered skill views.")
-    AddLine("system", "  dps - fight DPS, session DPS, and weapon DPS.")
-    AddLine("system", "  dps reset - clear recorded DPS history.")
-    AddLine("system", "  weapondps - main-hand and off-hand auto-attack DPS.")
-    AddLine("system", "  sealdps - compare spreadsheet model DPS for SoR vs SoC.")
-    AddLine("system", "  sealdps <level> - evaluate model at a specific level.")
-    AddLine("system", "  sealdps set <lvl> <sor> <soc> - save one spreadsheet row.")
-    AddLine("system", "  sealdps import <lvl:sor:soc,...> - bulk import spreadsheet rows.")
-    AddLine("system", "  sealdps list / sealdps clear - inspect or wipe model rows.")
-    AddLine("system", "  sealdps live - compute live SoR vs SoC from current character stats.")
-    AddLine("system", "  sealdps live hybrid [seconds] - test JoC opener then SoR loop vs pure SoR.")
-    AddLine("system", "  sealdps assumptions - view/tune live model assumptions.")
-    AddLine("system", "  warlockdps - spreadsheet-backed Warlock live DPS estimate.")
-    AddLine("system", "  warlockdps mode <shadow|fire> - switch Warlock model lane.")
-    AddLine("system", "  warlockdps set <key> <value> - tune direct/DoT/pet/mana knobs.")
-    AddLine("system", "  warlockdps assumptions|mapping|reset - inspect sheet linkage or restore defaults.")
-    AddLine("system", "  warlockprompt - single next-action prompt for current target.")
-    AddLine("system", "  warlockprompt on/off/status - auto-prompt control while in combat.")
-    AddLine("system", "  warlockprompt set <manapct|taphpfloor> <value> - prompt tuning.")
-    AddLine("system", "  ml recommend[/explain] - tree model strategy recommendation.")
-    AddLine("system", "  ml xp[/explain] - XP/hour recommendation blending grinding and questing source models.")
-    AddLine("system", "  ml xp mode [balanced|grind-first|quest-first] - switch leveling strategy mode.")
-    AddLine("system", "  ml xp set <key> <value> - tune XP optimizer.")
-    AddLine("system", "  ml xp defaults - reset XP optimizer tuning.")
-    AddLine("system", "  ml xp rates - show learned grind/quest XP/hour rates and confidence.")
-    AddLine("system", "  ml xp rates reset - clear learned grind/quest source rates.")
-    AddLine("system", "  ml xp warrior preset <arms|fury> - load common Warrior tuning.")
-    AddLine("system", "  ml xp warrior weapon <auto|slow-2h|fast-2h|one-hand|dual-wield> - tune Warrior weapon profile.")
-    AddLine("system", "  ml model sample/clear - load or clear built-in ML model.")
-    AddLine("system", "  ml log on/off/status/clear/max <n> - manage feature logs.")
-    AddLine("system", "  ml export [n] - print recent fight logs as CSV rows.")
-    AddLine("system", "  range - approximate distance to your target.")
-    AddLine("system", "  fps/framerate - show current FPS in chat output.")
-    AddLine("system", "  behind/backstab - positional check for rear attacks.")
-    AddLine("system", "  marka, markb, spacing - geometric pull spacing estimate.")
-    return
-  end
-
-  if key == "navigation" then
-    AddLine("system", "Help: Navigation & Cells")
-    AddLine("system", "  where - current zone/subzone and facing.")
-    AddLine("system", "  markcell [name] - mark your current location cell.")
-    AddLine("system", "  markedcells/listmarks - list saved cell marks.")
-    AddLine("system", "  renamemark/renamecell <id> <name> - rename a marked cell.")
-    AddLine("system", "  showmark <id> - highlight one mark on world map overlay.")
-    AddLine("system", "  deletemark <id> - delete a specific marked cell.")
-    AddLine("system", "  clearmarks - delete all saved marks.")
-    AddLine("system", "  cell - current cell bounds and position-in-cell.")
-    AddLine("system", "  cellsize <n|standard|inn> - grid-based cell sizing.")
-    AddLine("system", "  cellyards <yards|off> - fixed-distance sizing across maps.")
-    AddLine("system", "  cellcal [yards list] - test and recommend yard sizes for this map.")
-    AddLine("system", "  cellanchor - recenter current grid on where you stand.")
-    AddLine("system", "  cellmap on/off - world map cell overlay toggle.")
-    AddLine("system", "  map - print an ASCII local map.")
-    AddLine("system", "  map on/off - auto-print ASCII map on cell changes.")
-    AddLine("system", "  dfmode/df [on/off] - toggle Dwarf Fortress tactical map window.")
-    AddLine("system", "  df tactical/threat/exploration/combined - switch DF mode view.")
-    AddLine("system", "  df hybrid or df all - alias for combined view.")
-    AddLine("system", "  df profile balanced|full - balanced is fuzzier, full is precise.")
-    AddLine("system", "  df orientation fixed|rotating - fixed keeps map north-up (default), rotating follows heading.")
-    AddLine("system", "  df rotation smooth|octant - smooth turns freely; octant keeps geometry squarer.")
-    AddLine("system", "  df square on/off - alias for octant/smooth rotation.")
-    AddLine("system", "  df size <width> <height> - set DF window size by command.")
-    AddLine("system", "  df grid <n> - set DF grid cell count (odd number 5-99).")
-    AddLine("system", "  df markradius <0-max> - set how far mark edges extend from M.")
-    AddLine("system", "  df status - print zone, facing, legend, and threat summary to chat.")
-    AddLine("system", "  df sonar - show sonar settings and active contact count.")
-    AddLine("system", "  df sonar ping [seconds] - temporarily amplify exact-contact sonar echoes (1-20s).")
-    AddLine("system", "  df sonar ttl <seconds> - keep sonar echoes longer after contact (1-60s).")
-    AddLine("system", "  df sonar clear - clear remembered sonar echoes immediately.")
-    AddLine("system", "  route start <name>, route stop - record your movement path.")
-    AddLine("system", "  route list/show/clear <name> - manage saved routes.")
-    AddLine("system", "  route follow <name>, route follow off - text navigation prompts.")
-    AddLine("system", "  explore - exploration memory and recent path output.")
-    return
-  end
-
-  if key == "quests" then
-    AddLine("system", "Help: Quests & NPC")
-    AddLine("system", "  quests - quest log summary.")
-    AddLine("system", "  questinfo <index or name> - detailed quest info.")
-    AddLine("system", "  questroute - ranked recommendation for your next quest objective.")
-    AddLine("system", "  questroute top <n> - show more ranked route suggestions.")
-    AddLine("system", "  questroute explain - include score factors for each suggestion.")
-    AddLine("system", "  questroute weights - print current route scoring weights.")
-    AddLine("system", "  questroute weight <key> <value> - tune one route scoring weight.")
-    AddLine("system", "  questroute on/off - enable or disable route recommendation output.")
-    AddLine("system", "  questroute mark - place waypoint marker on top recommendation.")
-    AddLine("system", "  questroute debug - dump candidate source/debug data for troubleshooting.")
-    AddLine("system", "  gossip, choose <n> - navigate gossip without mouse.")
-    AddLine("system", "  complete/turnin - complete active quest interaction.")
-    AddLine("system", "  rewards, select <n>, reward <n> - choose turn-in rewards.")
-    AddLine("system", "  rewardinfo <n> - inspect stats/details for one reward.")
-    AddLine("system", "  prompts, accept <n>, decline <n> - handle popup dialogs.")
-    AddLine("system", "  trainer, train <n>, train all - trainer service commands.")
-    AddLine("system", "  recipes, recipeinfo <n> - list profession recipes and inspect reagents.")
-    return
-  end
-
-  if key == "automation" then
-    AddLine("system", "Help: Automation")
-    AddLine("system", "  autoquests on/off - automatic quest handling.")
-    AddLine("system", "  chat on/off - narration of chat traffic.")
-    AddLine("system", "  autostart on/off - auto-enable on login.")
-    AddLine("system", "  settings - view common game settings.")
-    AddLine("system", "  set <name> <value> - shortcuts + direct CVar set.")
-    AddLine("system", "  cvar <name> - read any CVar value.")
-    AddLine("system", "  cvar <name> <value> - set any CVar value.")
-    AddLine("system", "  cvarlist [filter] - print console CVar list to terminal.")
-    AddLine("system", "  performance on/off/status - reduce UI rendering cost and tune ticker rates.")
-    AddLine("system", "  textmode on/off - immersive black-screen text mode.")
-    return
-  end
-
-  if key == "economy" then
-    AddLine("system", "Help: Inventory & Economy")
-    AddLine("system", "  inventory/bags - bag contents and free space.")
-    AddLine("system", "  lootpreview - inspect corpse loot slots before taking items.")
-    AddLine("system", "  gear/equipment - equipped items summary.")
-    AddLine("system", "  equip <item name> - equip an item by name.")
-    AddLine("system", "  equip <bag> <slot> - equip a specific bag item.")
-    AddLine("system", "  money/gold/coins - show your current currency.")
-    AddLine("system", "  readitem - read an open readable item, or readitem <bag> <slot>.")
-    AddLine("system", "  vendor/shop - vendor inventory overview.")
-    AddLine("system", "  vendorinfo <n> - inspect vendor item details before buying.")
-    AddLine("system", "  buycheck <n> [qty] - check affordability before buying.")
-    AddLine("system", "  buy <n> [qty] - purchase vendor items.")
-    AddLine("system", "  buyback - list sold items available for buyback.")
-    AddLine("system", "  buyback <index> - buy back a sold item by index.")
-    AddLine("system", "  sell <bag> <slot> - sell an item from bag slot.")
-    AddLine("system", "  destroy <bag> <slot> - destroy an item from bag slot.")
-    AddLine("system", "  selljunk - sell all gray-quality bag items to vendor.")
-    AddLine("system", "  restock <item name> <count> - buy items from vendor up to target count.")
-    AddLine("system", "  repair - repair equipped gear at current vendor.")
-    AddLine("system", "  repair guild - repair using guild funds if available.")
-    AddLine("system", "  repairstatus - show repair cost and affordability.")
-    return
-  end
-
-  if key == "social" then
-    AddLine("system", "Help: Chat & Social")
-    AddLine("system", "  Use slash chat in text input: /s, /p, /g, /w, /raid, /rw.")
-    AddLine("system", "  who <query> - run /who and print results in the text log.")
-    AddLine("system", "  who - show the current /who result list.")
-    AddLine("system", "  target nearest/next/corpse/<name> - targeting shortcuts.")
-    AddLine("system", "  input (or just /ta) - focus terminal input quickly.")
-    AddLine("system", "  clear - clear the addon text log.")
-    return
-  end
-
-  if key == "advanced" then
-    AddLine("system", "Help: Advanced & Diagnostics")
-    AddLine("system", "  actions/bars - action bar slot report.")
-    AddLine("system", "  spells/spellbook - spellbook summary.")
-    AddLine("system", "  macros - list all macros.")
-    AddLine("system", "  macro <index|name> - run a macro by index or name.")
-    AddLine("system", "  macroinfo <index> - inspect macro body and details.")
-    AddLine("system", "  macroset <index> <body> - update macro body.")
-    AddLine("system", "  macrorename <index> <name> - rename a macro.")
-    AddLine("system", "  macrocreate <name> <body> - create new macro.")
-    AddLine("system", "  macrodelete <index> - delete a macro.")
-    AddLine("system", "  bind <slot> <spellbook idx> - put spellbook spell on action bar.")
-    AddLine("system", "  bindmacro <slot> <macro idx> - put macro on action bar.")
-    AddLine("system", "  binditem <slot> <bag> <slot> - put bag item on action bar.")
-    AddLine("system", "  debug/debugpopups - show popup dialog diagnostics.")
-    AddLine("system", "  settings - view current game cvars/settings.")
-    AddLine("system", "  set <name> <value> - quick-set game settings by name.")
-    AddLine("system", "  cvar <name> - read a specific cvar value.")
-    AddLine("system", "  cvar <name> <value> - set a specific cvar value.")
-    AddLine("system", "  cvarlist [filter] - print full console cvar list to terminal.")
-    AddLine("system", "  textmode on/off - toggle immersive black-screen text mode.")
-    AddLine("system", "  autostart on/off - auto-load addon on login.")
-    AddLine("system", "  input - focus text input quickly (same as /ta input).")
-    AddLine("system", "  hide/show/toggle - hide/show the text panel.")
-    AddLine("system", "  clear - clear the addon text log.")
-    return
-  end
-
-  AddLine("system", string.format("Unknown help topic '%s'.", topicArg or ""))
+  AddLine("system", "Help module is not loaded yet.")
   TA_ShowHelpOverview()
 end
 
-TA.EXACT_INPUT_HANDLERS = {
-  ["health"] = function() ReportStatus(true) end,
-  ["hp"] = function() ReportStatus(true) end,
-  ["rage"] = function() ReportStatus(true) end,
-  ["status"] = function() ReportStatus(true) end,
-  ["stats"] = function() ReportCharacterStats() end,
-  ["skills"] = function() TA_ReportSkillLevels(true) end,
-  ["skill"] = function() TA_ReportSkillLevels(true) end,
-  ["lootpreview"] = function() ReportLootWindowPreview() end,
-  ["loot preview"] = function() ReportLootWindowPreview() end,
-  ["money"] = function() ReportMoney() end,
-  ["gold"] = function() ReportMoney() end,
-  ["coins"] = function() ReportMoney() end,
-  ["dps"] = function() ReportDPS() end,
-  ["dps reset"] = function() ResetDPSStats() end,
-  ["sealdps"] = function() TA_ReportSealDpsComparison(nil) end,
-  ["seal dps"] = function() TA_ReportSealDpsComparison(nil) end,
-  ["sealdps live"] = function() TA_ReportLiveSealDpsComparison() end,
-  ["sealdps live hybrid"] = function() TA_ReportLiveSealHybridComparison(nil) end,
-  ["sealdps assumptions"] = function() TA_ReportSealLiveAssumptions() end,
-  ["warlockdps"] = function() TA_ReportLiveWarlockDps() end,
-  ["warlock dps"] = function() TA_ReportLiveWarlockDps() end,
-  ["warlockdps live"] = function() TA_ReportLiveWarlockDps() end,
-  ["warlockdps assumptions"] = function() TA_ReportWarlockLiveAssumptions() end,
-  ["warlockdps mapping"] = function() TA_ReportWarlockSheetMapping() end,
-  ["warlockdps reset"] = function() TA_ResetWarlockDpsConfigDefaults() end,
-  ["warlockdps mode"] = function() AddLine("system", "Usage: warlockdps mode <shadow|fire>") end,
-  ["warlockdps set"] = function() AddLine("system", "Usage: warlockdps set <key> <value> (try: warlockdps assumptions)") end,
-  ["warlockprompt"] = function() TA_ReportWarlockActionPrompt(true) end,
-  ["warlock prompt"] = function() TA_ReportWarlockActionPrompt(true) end,
-  ["warlockprompt on"] = function() TA_SetWarlockPromptEnabled(true) end,
-  ["warlock prompt on"] = function() TA_SetWarlockPromptEnabled(true) end,
-  ["warlockprompt off"] = function() TA_SetWarlockPromptEnabled(false) end,
-  ["warlock prompt off"] = function() TA_SetWarlockPromptEnabled(false) end,
-  ["warlockprompt status"] = function() TA_ReportWarlockPromptStatus() end,
-  ["warlock prompt status"] = function() TA_ReportWarlockPromptStatus() end,
-  ["warlockprompt set"] = function() AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>") end,
-  ["warlock prompt set"] = function() AddLine("system", "Usage: warlockprompt set <manapct|taphpfloor> <value>") end,
-  ["ml status"] = function() TA_ReportMLStatus() end,
-  ["ml recommend"] = function() TA_RecommendWithML(false) end,
-  ["ml recommend explain"] = function() TA_RecommendWithML(true) end,
-  ["ml xp"] = function() TA_RecommendXPWithML(false) end,
-  ["ml xp explain"] = function() TA_RecommendXPWithML(true) end,
-  ["ml xp mode"] = function() TA_ReportMLXPMode() end,
-  ["ml xp defaults"] = function() TA_ResetMLXPConfigDefaults() end,
-  ["ml xp rates"] = function() TA_ReportMLXPRateStatus() end,
-  ["ml xp rates reset"] = function() TA_ResetMLXPRateModel() end,
-  ["ml xp set"] = function() AddLine("system", "Usage: ml xp set <key> <value> (use 'ml xp explain' for key list)") end,
-  ["ml xp warrior preset"] = function() AddLine("system", "Usage: ml xp warrior preset <arms|fury>") end,
-  ["ml xp warrior weapon"] = function() AddLine("system", "Usage: ml xp warrior weapon <auto|slow-2h|fast-2h|one-hand|dual-wield>") end,
-  ["ml model sample"] = function() TA_LoadSampleMLModel() end,
-  ["ml model clear"] = function() TA_ClearMLModel() end,
-  ["ml log on"] = function() TA_SetMLLogging(true) end,
-  ["ml log off"] = function() TA_SetMLLogging(false) end,
-  ["ml log clear"] = function() TA_ClearMLLogs() end,
-  ["ml export"] = function() TA_ExportMLLogs(20) end,
-  ["sealdps list"] = function() TA_ReportSealDpsModelRows() end,
-  ["sealdps clear"] = function() TA_ClearSealDpsModel() end,
-  ["sealdps set"] = function() AddLine("system", "Usage: sealdps set <level> <sorDps> <socDps>") end,
-  ["sealdps import"] = function() AddLine("system", "Usage: sealdps import <level:sor:soc,level:sor:soc,...>") end,
-  ["weapondps"] = function() ReportWeaponDPS() end,
-  ["weapon dps"] = function() ReportWeaponDPS() end,
-  ["where"] = function() ReportLocation(true) end,
-  ["location"] = function() ReportLocation(true) end,
-  ["xp"] = function() ReportXP() end,
-  ["level"] = function() ReportXP() end,
-  ["buffs"] = function() ReportBuffs() end,
-  ["quests"] = function() ReportQuestLog() end,
-  ["questlog"] = function() ReportQuestLog() end,
-  ["quest log"] = function() ReportQuestLog() end,
-  ["questinfo"] = function() ReportQuestInfo(nil) end,
-  ["questroute"] = function() TA_ReportQuestRouteSuggestions(false, nil) end,
-  ["quest route"] = function() TA_ReportQuestRouteSuggestions(false, nil) end,
-  ["questroute explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
-  ["quest route explain"] = function() TA_ReportQuestRouteSuggestions(true, nil) end,
-  ["questroute weights"] = function() TA_ReportQuestRouteWeights() end,
-  ["quest route weights"] = function() TA_ReportQuestRouteWeights() end,
-  ["questroute debug"] = function() TA_ReportQuestRouteDebug() end,
-  ["quest route debug"] = function() TA_ReportQuestRouteDebug() end,
-  ["questroute mark"] = function() TA_QuestRouteTomTomWaypoint() end,
-  ["quest route mark"] = function() TA_QuestRouteTomTomWaypoint() end,
-  ["questroute on"] = function() TA_SetQuestRouteToggle(true) end,
-  ["quest route on"] = function() TA_SetQuestRouteToggle(true) end,
-  ["questroute off"] = function() TA_SetQuestRouteToggle(false) end,
-  ["quest route off"] = function() TA_SetQuestRouteToggle(false) end,
-  ["tracking"] = function() ReportTracking() end,
-  ["inventory"] = function() ReportInventory() end,
-  ["bags"] = function() ReportInventory() end,
-  ["gear"] = function() ReportEquipment() end,
-  ["equipment"] = function() ReportEquipment() end,
-  ["actions"] = function() ReportActionBars() end,
-  ["bars"] = function() ReportActionBars() end,
-  ["spells"] = function() ReportSpellbook() end,
-  ["spellbook"] = function() ReportSpellbook() end,
-  ["macros"] = function() ReportMacros() end,
-  ["trainer"] = function() ReportTrainerServices() end,
-  ["train list"] = function() ReportTrainerServices() end,
-  ["recipes"] = function() TA_ReportProfessionRecipes() end,
-  ["recipe"] = function() TA_ReportProfessionRecipes() end,
-  ["recipeinfo"] = function() AddLine("system", "Usage: recipeinfo <index>") end,
-  ["marka"] = function() MarkFacingA() end,
-  ["markb"] = function() MarkFacingB() end,
-  ["spacing"] = function() ReportSpacingEstimate() end,
-  ["behind"] = function() ReportTargetPositioning() end,
-  ["backstab"] = function() ReportTargetPositioning() end,
-  ["markcell"] = function() MarkCurrentCell() end,
-  ["mark cell"] = function() MarkCurrentCell() end,
-  ["cell"] = function() ReportCurrentCell(true) end,
-  ["cellinfo"] = function() ReportCurrentCell(true) end,
-  ["cellanchor"] = function() RecenterCurrentCellAnchor(false) end,
-  ["cellsize standard"] = function() SetGridSize(GRID_SIZE_STANDARD, "standard building size") end,
-  ["cellsize inn"] = function() SetGridSize(GRID_SIZE_STANDARD, "inn-sized preset") end,
-  ["cellcal"] = function() TA_ReportCellYardsCalibration(nil) end,
-  ["cellyards off"] = function() DisableCellSizeYardsMode() end,
-  ["cellmap on"] = function()
-    TA.mapOverlayEnabled = true
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.mapOverlayEnabled = true
-    AddLine("system", "World Map cell overlay enabled.")
-    UpdateMapCellOverlay()
-  end,
-  ["cellmap off"] = function()
-    TA.mapOverlayEnabled = false
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.mapOverlayEnabled = false
-    UpdateMapCellOverlay()
-    AddLine("system", "World Map cell overlay disabled.")
-  end,
-  ["markedcells"] = function() ListMarkedCells() end,
-  ["listmarks"] = function() ListMarkedCells() end,
-  ["renamemark"] = function() AddLine("system", "Usage: renamemark <id> <name>") end,
-  ["deletemark"] = function() AddLine("system", "Usage: deletemark <id>") end,
-  ["clearmarks"] = function() ClearMarkedCells() end,
-  ["ta input"] = function() TA_FocusTerminalInput() end,
-  ["input"] = function() TA_FocusTerminalInput() end,
-  ["explore"] = function()
-    ReportExplorationMemory(true)
-    ReportPathMemory(true)
-  end,
-  ["autoquests on"] = function()
-    TA.autoQuests = true
-    AddLine("quest", "Auto quest handling enabled.")
-  end,
-  ["autoquests off"] = function()
-    TA.autoQuests = false
-    AddLine("quest", "Auto quest handling disabled.")
-  end,
-  ["chat on"] = function()
-    TA.captureChat = true
-    AddLine("chat", "Chat capture enabled.")
-  end,
-  ["chat off"] = function()
-    TA.captureChat = false
-    AddLine("chat", "Chat capture disabled.")
-  end,
-  ["autostart on"] = function()
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.autoEnable = true
-    TextAdventurerDB.firstRunSafetyAcknowledged = true
-    AddLine("system", "Autostart enabled.")
-  end,
-  ["autostart off"] = function()
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.autoEnable = false
-    AddLine("system", "Autostart disabled.")
-  end,
-  ["gossip"] = function() ReportGossipOptions() end,
-  ["complete"] = function() CompleteQuestFromTerminal() end,
-  ["turnin"] = function() CompleteQuestFromTerminal() end,
-  ["rewards"] = function() ListQuestRewards() end,
-  ["rewardinfo"] = function() AddLine("system", "Usage: rewardinfo <index>") end,
-  ["prompts"] = function() ReportStaticPopups() end,
-  ["debug"] = function() DebugVisiblePopups() end,
-  ["debugpopups"] = function() DebugVisiblePopups() end,
-  ["vendor"] = function() ReportVendorItems() end,
-  ["shop"] = function() ReportVendorItems() end,
-  ["vendorinfo"] = function() AddLine("system", "Usage: vendorinfo <index>") end,
-  ["shopinfo"] = function() AddLine("system", "Usage: shopinfo <index>") end,
-  ["iteminfo"] = function() AddLine("system", "Usage: iteminfo <index> (while vendor is open)") end,
-  ["buycheck"] = function() AddLine("system", "Usage: buycheck <index> [qty]") end,
-  ["readitem"] = function()
-    if ItemTextFrame and ItemTextFrame:IsShown() then
-      TA_ReportOpenItemText(true)
-    else
-      AddLine("system", "Usage: readitem <bag> <slot> (or open a readable item first, then use readitem).")
-    end
-  end,
-  ["range"] = function() ReportRange() end,
-  ["fps"] = function() TA_ReportFPS() end,
-  ["framerate"] = function() TA_ReportFPS() end,
-  ["clear"] = function()
-    wipe(TA.lines)
-    panel.text:Clear()
-    AddLine("system", "Log cleared.")
-  end,
-  ["show"] = function()
-    panel:Show()
-    AddLine("system", "Text Adventurer opened.")
-  end,
-  ["hide"] = function()
-    panel:Hide()
-    if ChatFrame1 then ChatFrame1:Show() end
-  end,
-  ["toggle"] = function() TogglePanel() end,
-  ["textmode on"] = function() EnableTextMode() end,
-  ["textmode off"] = function() DisableTextMode() end,
-  ["help"] = function() TA_ShowHelpOverview() end,
-  ["performance"] = function() TA_ReportPerformanceStatus() end,
-  ["performance status"] = function() TA_ReportPerformanceStatus() end,
-  ["performance on"] = function() TA_EnablePerformanceMode() end,
-  ["performance off"] = function() TA_DisablePerformanceMode() end,
-}
-
-TA.PATTERN_INPUT_HANDLERS = {
-  { "^help%s+(.+)$", function(topic) TA_ShowHelpTopic(topic) end },
-  { "^skills%s+(%a+)$", function(which) TA_ReportSkillLevels(true, which) end },
-  { "^skill%s+(%a+)$", function(which) TA_ReportSkillLevels(true, which) end },
-  { "^sealdps%s+live%s+target%s+(%d+)$", function(level) TA_SetSealLiveNumber("targetLevel", level, 1, 63, "targetLevel") end },
-  { "^sealdps%s+live%s+cd%s+([%d%.]+)$", function(seconds) TA_SetSealLiveNumber("judgementCD", seconds, 6, 10, "judgementCD") end },
-  { "^sealdps%s+live%s+socppm%s+([%d%.]+)$", function(ppm) TA_SetSealLiveNumber("socPPM", ppm, 4, 12, "socPPM") end },
-  { "^sealdps%s+live%s+window%s+([%d%.]+)$", function(seconds) TA_SetSealLiveHybridWindow(seconds) end },
-  { "^sealdps%s+live%s+resealgcd%s+([%d%.]+)$", function(seconds) TA_SetSealLiveResealGCD(seconds) end },
-  { "^sealdps%s+live%s+hybrid%s+([%d%.]+)$", function(seconds) TA_ReportLiveSealHybridComparison(seconds) end },
-  { "^sealdps%s+live%s+behind%s+(%a+)$", function(flag) TA_SetSealLiveBehind(flag) end },
-  { "^warlockdps%s+mode%s+([%a%-]+)$", function(mode) TA_SetWarlockMode(mode) end },
-  { "^warlockdps%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockDpsConfigValue(k, v) end },
-  { "^warlockdps%s+reset$", function() TA_ResetWarlockDpsConfigDefaults() end },
-  { "^warlockdps%s+mapping$", function() TA_ReportWarlockSheetMapping() end },
-  { "^warlockprompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end },
-  { "^warlock%s+prompt%s+set%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetWarlockPromptValue(k, v) end },
-  { "^questroute%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
-  { "^quest%s+route%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end },
-  { "^questroute%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
-  { "^quest%s+route%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end },
-  { "^ml%s+export%s+(%d+)$", function(n) TA_ExportMLLogs(n) end },
-  { "^ml%s+log%s+max%s+(%d+)$", function(n) TA_SetMLMaxLogs(n) end },
-  { "^ml%s+xp%s+set%s+(%a+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetMLXPConfigValue(k, v) end },
-  { "^ml%s+xp%s+mode%s+([%a%-]+)$", function(mode) TA_SetMLXPMode(mode) end },
-  { "^ml%s+xp%s+warrior%s+preset%s+([%a%-]+)$", function(name) TA_ApplyWarriorPreset(name) end },
-  { "^ml%s+xp%s+warrior%s+weapon%s+([%a%-]+)$", function(name) TA_ApplyWarriorWeaponProfile(name) end },
-  { "^sealdps%s+(%d+)$", function(level) TA_ReportSealDpsComparison(tonumber(level)) end },
-  { "^sealdps%s+set%s+(%d+)%s+([%-]?[%d%.]+)%s+([%-]?[%d%.]+)$", function(level, sor, soc) TA_SetSealDpsModelRow(level, sor, soc) end },
-  { "^sealdps%s+import%s+(.+)$", function(payload) TA_ImportSealDpsModel(payload) end },
-  { "^questinfo%s+(.+)$", function(arg) ReportQuestInfo(arg) end },
-  { "^macroinfo%s+(%d+)$", function(idx) ShowMacroInfo(tonumber(idx)) end },
-  { "^macro%s+(%d+)$", function(idx) CastMacroByIndex(tonumber(idx)) end },
-  { "^macroset%s+(%d+)%s+(.+)$", function(idx, body) SetMacroBody(tonumber(idx), body) end },
-  { "^macrorename%s+(.+)$", function(rest)
-      local idx, newName = ParseRenameArgs(rest)
-      RenameMacro(idx, newName)
-    end },
-  { "^macrocreate%s+(.+)$", function(rest)
-      local name, body = ParseNameAndBodyArgs(rest)
-      CreateNewMacro(name, body)
-    end },
-  { "^macrodelete%s+(%d+)$", function(idx) DeleteMacroByIndex(tonumber(idx)) end },
-  { "^macro%s+(.+)$", function(name) CastMacroByName(name) end },
-  { "^train%s+all$", function() TrainAllAvailableServices() end },
-  { "^train%s+(%d+)$", function(idx) TrainServiceByIndex(tonumber(idx)) end },
-  { "^recipeinfo%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
-  { "^recipe%s+(%d+)$", function(idx) TA_ReportRecipeDetails(tonumber(idx)) end },
-}
-
-local function TA_AddPatternInputHandler(pattern, handler)
-  table.insert(TA.PATTERN_INPUT_HANDLERS, { pattern, handler })
-end
-
-TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)
-TA_AddPatternInputHandler("^bindmacro%s+(%d+)%s+(%d+)$", function(slot, macroIndex) BindMacroToActionSlot(tonumber(slot), tonumber(macroIndex)) end)
-TA_AddPatternInputHandler("^target%s+(.+)$", function(arg) DoTargetCommand(arg) end)
-TA_AddPatternInputHandler("^markcell%s+(.+)$", function(name) MarkCurrentCell(name) end)
-TA_AddPatternInputHandler("^mark cell%s+(.+)$", function(name) MarkCurrentCell(name) end)
-TA_AddPatternInputHandler("^cellsize%s+(%d+)$", function(size) SetGridSize(tonumber(size)) end)
-TA_AddPatternInputHandler("^cellcal%s+(.+)$", function(args) TA_ReportCellYardsCalibration(args) end)
-TA_AddPatternInputHandler("^cellyards%s+([%d%.]+)$", function(yards) SetCellSizeYards(tonumber(yards)) end)
-TA_AddPatternInputHandler("^showmark%s+(%d+)$", function(markID) ShowMarkedCellOnMap(tonumber(markID)) end)
-TA_AddPatternInputHandler("^renamemark%s+(%d+)%s+(.+)$", function(markID, newName) TA_RenameMarkedCell(tonumber(markID), newName) end)
-TA_AddPatternInputHandler("^deletemark%s+(%d+)$", function(markID) DeleteMarkedCell(tonumber(markID)) end)
-TA_AddPatternInputHandler("^choose%s+(%d+)$", function(idx) ChooseGossipOption(tonumber(idx)) end)
-TA_AddPatternInputHandler("^select%s+(%d+)$", function(idx) SelectQuestReward(tonumber(idx)) end)
-TA_AddPatternInputHandler("^rewardinfo%s+(%d+)$", function(idx) ReportQuestRewardInfo(tonumber(idx)) end)
-TA_AddPatternInputHandler("^reward%s+(%d+)$", function(idx)
-  idx = tonumber(idx)
-  SelectQuestReward(idx)
-  GetQuestRewardChoice(idx)
-end)
-TA_AddPatternInputHandler("^accept%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "accept") end)
-TA_AddPatternInputHandler("^decline%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "decline") end)
-TA_AddPatternInputHandler("^buy%s+(%d+)$", function(idx) BuyVendorItem(tonumber(idx), 1) end)
-TA_AddPatternInputHandler("^buy%s+(%d+)%s+(%d+)$", function(idx, qty) BuyVendorItem(tonumber(idx), tonumber(qty)) end)
-TA_AddPatternInputHandler("^buycheck%s+(%d+)$", function(idx) TA_CheckVendorPurchase(tonumber(idx), 1) end)
-TA_AddPatternInputHandler("^buycheck%s+(%d+)%s+(%d+)$", function(idx, qty) TA_CheckVendorPurchase(tonumber(idx), tonumber(qty)) end)
-TA_AddPatternInputHandler("^sell%s+(%d+)%s+(%d+)$", function(bag, slot) SellBagItem(tonumber(bag), tonumber(slot)) end)
-TA_AddPatternInputHandler("^destroy%s+(%d+)%s+(%d+)$", function(bag, slot) DestroyBagItem(tonumber(bag), tonumber(slot)) end)
-TA_AddPatternInputHandler("^vendorinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
-TA_AddPatternInputHandler("^shopinfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
-TA_AddPatternInputHandler("^iteminfo%s+(%d+)$", function(idx) TA_ReportVendorItemDetails(tonumber(idx)) end)
-TA_AddPatternInputHandler("^readitem%s+(-?%d+)%s+(%d+)$", function(bag, slot) TA_ReadBagItemText(tonumber(bag), tonumber(slot)) end)
-
-function TA_RunCVarList(filter)
-  if not ConsoleExec then
-    AddLine("system", "Console command API unavailable.")
+function TA_RunCommandSelfTest(modeArg)
+  if not TA or not TA.EXACT_INPUT_HANDLERS then
+    AddLine("system", "Self-test unavailable: command table is not ready.")
     return
   end
 
-  local suffix = ""
-  local f = (filter or ""):match("^%s*(.-)%s*$")
-  if f ~= "" then
-    suffix = " " .. f
+  local mode = tostring(modeArg or "safe"):lower()
+  local denyContains = {
+    "reload",
+    "destroy",
+    "sell",
+    "delete",
+    "equip",
+    "train",
+    "buy",
+    "accept",
+    "decline",
+    "turnin",
+    "complete",
+    "macrocreate",
+    "macroset",
+    "macrorename",
+    "autostart",
+    "textmode",
+  }
+
+  local safeAllow = {
+    ["help"] = true,
+    ["status"] = true,
+    ["stats"] = true,
+    ["skills"] = true,
+    ["xp"] = true,
+    ["buffs"] = true,
+    ["tracking"] = true,
+    ["actions"] = true,
+    ["spells"] = true,
+    ["macros"] = true,
+    ["inventory"] = true,
+    ["equipment"] = true,
+    ["money"] = true,
+    ["where"] = true,
+    ["cell"] = true,
+    ["markedcells"] = true,
+    ["map"] = true,
+    ["df status"] = true,
+    ["performance status"] = true,
+    ["settings"] = true,
+  }
+
+  local function isDenied(cmd)
+    for i = 1, #denyContains do
+      if string.find(cmd, denyContains[i], 1, true) then
+        return true
+      end
+    end
+    return false
   end
 
-  TA.pendingCVarList = true
-  AddLine("system", string.format("Running cvarlist%s...", suffix))
-  ConsoleExec("cvarlist" .. suffix)
-  if C_Timer and C_Timer.After then
-    C_Timer.After(3.0, function()
-      TA.pendingCVarList = false
+  local cmds = {}
+  for cmd, _ in pairs(TA.EXACT_INPUT_HANDLERS) do
+    if cmd ~= "selftest" and cmd ~= "selftest full" and not isDenied(cmd) then
+      if mode == "full" or safeAllow[cmd] then
+        table.insert(cmds, cmd)
+      end
+    end
+  end
+  table.sort(cmds)
+
+  if #cmds == 0 then
+    AddLine("system", "Self-test found no runnable commands for mode: " .. mode)
+    return
+  end
+
+  AddLine("system", string.format("Self-test starting (%s): %d command(s)", mode, #cmds))
+
+  local okCount = 0
+  local failCount = 0
+  for i = 1, #cmds do
+    local cmd = cmds[i]
+    local ok, err = pcall(function()
+      TA_ProcessInputCommand(cmd)
     end)
+    if ok then
+      okCount = okCount + 1
+    else
+      failCount = failCount + 1
+      AddLine("system", string.format("[FAIL] %s -> %s", cmd, tostring(err)))
+    end
+  end
+
+  AddLine("system", string.format("Self-test complete: ok=%d fail=%d", okCount, failCount))
+  if mode ~= "full" then
+    AddLine("system", "Tip: run 'selftest full' for broader non-destructive exact-handler coverage.")
   end
 end
 
-function TA_ProcessInputCommand(msg)
-  msg = (msg or ""):match("^%s*(.-)%s*$")
-  if msg == "" then return end
-  if msg:sub(1, 1) == "/" then
-    TA_SendFromTerminal(msg)
+function TA_RunPatternSelfTest(modeArg)
+  if not TA_ProcessInputCommand then
+    AddLine("system", "Pattern self-test unavailable: command parser is not ready.")
     return
   end
 
-  local lower = msg:lower()
-  if lower == "autostart on" then
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.autoEnable = true
-    TextAdventurerDB.firstRunSafetyAcknowledged = true
-    AddLine("system", "Autostart enabled.")
-    return
-  elseif lower == "autostart off" then
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.autoEnable = false
-    AddLine("system", "Autostart disabled.")
-    return
-  elseif lower == "reload" or lower == "reloadui" then
-    ReloadUI()
-    return
-  end
-  if lower == "renamecell" then
-    lower = "renamemark"
-  elseif lower:find("^renamecell%s+") then
-    lower = "renamemark " .. (lower:match("^renamecell%s+(.+)$") or "")
-  end
-  if lower == "equip" then
-    AddLine("system", "Usage: equip <item name> or equip <bag> <slot>")
-    return
-  end
+  local mode = tostring(modeArg or "safe"):lower()
+  local cmdsSafe = {
+    "help navigation",
+    "skills weapons",
+    "skill professions",
+    "who tester",
+    "markcell alpha",
+    "cellsize 40",
+    "cellcal 20 30",
+    "cellyards 30",
+    "showmark 1",
+    "renamemark 1 alpha",
+    "df size 300 600",
+    "df grid 35",
+    "df markradius 2",
+    "df sonar",
+    "df sonar ping 2",
+    "df sonar ttl 8",
+    "route show test",
+    "route list",
+    "questinfo 1",
+    "questroute top 3",
+    "questroute weight xp 1.0",
+    "choose 1",
+    "rewardinfo 1",
+    "set maxfps 60",
+    "cvar maxfps",
+    "cvarlist maxfps",
+    "sealdps 30",
+    "sealdps live target 30",
+    "warlockdps mode shadow",
+    "warlockprompt set manapct 40",
+    "ml xp mode balanced",
+    "ml xp set priorweight 8",
+    "ml export 10",
+    "ml log max 50",
+    "ml xp warrior preset arms",
+    "ml xp warrior weapon auto",
+    "macroinfo 1",
+    "macro 1",
+    "train 1",
+    "recipeinfo 1",
+    "recipe 1",
+  }
 
-  if lower == "repair" then
-    TA_RepairVendorGear(false)
-    return
-  elseif lower == "repair guild" then
-    TA_RepairVendorGear(true)
-    return
-  elseif lower == "repairstatus" then
-    TA_ReportRepairStatus()
-    return
-  elseif lower == "selljunk" then
-    TA_SellJunk()
-    return
-  elseif lower == "restock" then
-    AddLine("system", "Usage: restock <item name> <count>")
-    return
-  end
+  local cmdsFull = {
+    "help combat",
+    "help automation",
+    "target nearest",
+    "bind 1 1",
+    "bindmacro 1 1",
+    "binditem 1 0 1",
+    "buycheck 1",
+    "buycheck 1 2",
+    "vendorinfo 1",
+    "shopinfo 1",
+    "iteminfo 1",
+    "readitem 0 1",
+    "restock food 5",
+    "buyback 1",
+    "map on",
+    "map off",
+    "df profile balanced",
+    "df orientation rotating",
+    "df rotation octant",
+    "df cell 4",
+    "df cell auto",
+    "df level 2",
+    "df level off",
+    "df adaptive on",
+    "df adaptive mode combat",
+    "df adaptive thresholds 10 20 40",
+    "df sonar clear",
+    "route start test",
+    "route follow test",
+    "route follow off",
+    "route clear test",
+    "quest route top 2",
+    "quest route weight proximity 1.2",
+    "reward 1",
+    "accept 1",
+    "decline 1",
+    "cvar maxfps 60",
+    "warlockdps set targetlevel 30",
+    "warlock prompt set taphpfloor 45",
+    "ml xp set grindscale 1.0",
+    "ml xp warrior preset fury",
+    "ml xp warrior weapon dual-wield",
+    "sealdps set 30 100 90",
+    "sealdps import 30:100:90",
+    "macroset 1 /say test",
+    "macrorename 1 test",
+    "macrocreate test /say hi",
+    "macrodelete 1",
+    "train all",
+  }
 
-  local restockItemName, restockCount = lower:match("^restock%s+(.+)%s+(%d+)$")
-  if restockItemName and restockCount then
-    TA_RestockVendorItem(restockItemName, tonumber(restockCount))
-    return
+  local cmds = {}
+  for i = 1, #cmdsSafe do
+    table.insert(cmds, cmdsSafe[i])
   end
-
-  if lower == "buyback" then
-    TA_ReportVendorBuybackItems()
-    return
-  end
-  local buybackIndex = lower:match("^buyback%s+(%d+)$")
-  if buybackIndex then
-    TA_BuybackVendorItem(tonumber(buybackIndex))
-    return
-  end
-
-  if lower == "who" then
-    TA_ReportWhoList()
-    return
-  end
-  local whoQuery = msg:match("^%s*[Ww][Hh][Oo]%s+(.+)$")
-  if whoQuery then
-    TA_RunWhoQuery(whoQuery)
-    return
-  end
-
-  local bindItemActionSlot, bindItemBag, bindItemSlot = lower:match("^binditem%s+(%d+)%s+(-?%d+)%s+(%d+)$")
-  if bindItemActionSlot and bindItemBag and bindItemSlot then
-    TA_BindBagItemToActionSlot(tonumber(bindItemActionSlot), tonumber(bindItemBag), tonumber(bindItemSlot))
-    return
-  elseif lower == "binditem" then
-    AddLine("system", "Usage: binditem <actionSlot> <bag> <slot>")
-    return
-  end
-
-  if lower == "map" then
-    TA_ReportAsciiMap(true, true)
-    return
-  elseif lower == "map on" then
-    TA.asciiMapEnabled = true
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.asciiMapEnabled = true
-    AddLine("system", "ASCII map auto-output enabled.")
-    TA_ReportAsciiMap(true, true)
-    return
-  elseif lower == "map off" then
-    TA.asciiMapEnabled = false
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.asciiMapEnabled = false
-    AddLine("system", "ASCII map auto-output disabled.")
-    return
-  end
-
-  if lower == "dfmode" or lower == "df" then
-    TA_ToggleDFMode()
-    return
-  elseif lower == "dfmode on" or lower == "df on" then
-    if not TA.dfModeEnabled then
-      TA_ToggleDFMode()
+  if mode == "full" then
+    for i = 1, #cmdsFull do
+      table.insert(cmds, cmdsFull[i])
     end
-    return
-  elseif lower == "dfmode off" or lower == "df off" then
-    if TA.dfModeEnabled then
-      TA_ToggleDFMode()
-    end
-    return
   end
 
-  local dfSizeW, dfSizeH = lower:match("^df%s+size%s+(%d+)%s+(%d+)$")
-  if not dfSizeW then
-    dfSizeW, dfSizeH = lower:match("^dfmode%s+size%s+(%d+)%s+(%d+)$")
-  end
-  if dfSizeW and dfSizeH then
-    TA_SetDFModeSize(dfSizeW, dfSizeH)
-    return
-  end
-  if lower == "df size" or lower == "dfmode size" then
-    TA_SetDFModeSize(nil, nil)
-    return
-  end
+  AddLine("system", string.format("Pattern self-test starting (%s): %d sample command(s)", mode, #cmds))
 
-  local dfMarkRadius = lower:match("^df%s+markradius%s+(%d+)$")
-  if not dfMarkRadius then
-    dfMarkRadius = lower:match("^dfmode%s+markradius%s+(%d+)$")
-  end
-  if dfMarkRadius then
-    TA_SetDFModeMarkRadius(dfMarkRadius)
-    return
-  end
-  if lower == "df markradius" or lower == "dfmode markradius" then
-    TA_SetDFModeMarkRadius(nil)
-    return
-  end
-
-  local dfGridN = lower:match("^df%s+grid%s+(%d+)$")
-  if not dfGridN then
-    dfGridN = lower:match("^dfmode%s+grid%s+(%d+)$")
-  end
-  if dfGridN then
-    local n = math.floor(tonumber(dfGridN) or 0)
-    if n < 5 then n = 5 end
-    if n > 99 then n = 99 end
-    -- Force odd so there is always a true center cell.
-    if n % 2 == 0 then n = n + 1 end
-    TA.dfModeGridSize = n
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeGridSize = n
-    AddLine("system", "DF grid size set to " .. n .. "x" .. n)
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-  if lower == "df grid" or lower == "dfmode grid" then
-    AddLine("system", "DF grid size: " .. (TA.dfModeGridSize or 35) .. "x" .. (TA.dfModeGridSize or 35))
-    AddLine("system", "Usage: /ta df grid <size> (odd number 5-99, even values rounded up)")
-    return
-  end
-
-  local dfCellN = lower:match("^df%s+cell%s+(%d+)$")
-  if not dfCellN then
-    dfCellN = lower:match("^dfmode%s+cell%s+(%d+)$")
-  end
-  if dfCellN then
-    local n = math.floor(tonumber(dfCellN) or 0)
-    if n < 3 then n = 3 end
-    if n > 100 then n = 100 end
-    TA.dfModeYardsPerCell = n
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeYardsPerCell = n
-    AddLine("system", "DF cell size set to " .. n .. " yards per cell")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-  if lower == "df cell auto" or lower == "dfmode cell auto" then
-    TA.dfModeYardsPerCell = nil
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeYardsPerCell = nil
-    AddLine("system", "DF cell size set to auto (using " .. TA_GetEffectiveDFYardsPerCell() .. " yards per cell)")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-  if lower == "df cell" or lower == "dfmode cell" then
-    if TA.dfModeYardsPerCell then
-      AddLine("system", "DF cell size: fixed at " .. TA.dfModeYardsPerCell .. " yards per cell")
+  local okCount = 0
+  local failCount = 0
+  for i = 1, #cmds do
+    local cmd = cmds[i]
+    local ok, err = pcall(function()
+      TA_ProcessInputCommand(cmd)
+    end)
+    if ok then
+      okCount = okCount + 1
     else
-      AddLine("system", "DF cell size: auto (using " .. TA_GetEffectiveDFYardsPerCell() .. " yards per cell)")
-    end
-    AddLine("system", "Usage: /ta df cell <yards>|auto")
-    return
-  end
-
-  local dfRotationMode = lower:match("^df%s+rotation%s+(%w+)$") or lower:match("^dfmode%s+rotation%s+(%w+)$")
-  if dfRotationMode then
-    if dfRotationMode == "smooth" or dfRotationMode == "octant" then
-      TA.dfModeRotationMode = dfRotationMode
-      TextAdventurerDB = TextAdventurerDB or {}
-      TextAdventurerDB.dfModeRotationMode = dfRotationMode
-      AddLine("system", "DF rotation mode set to: " .. dfRotationMode)
-      if TA.dfModeEnabled then
-        TA.dfModeLastUpdate = 0
-        TA_UpdateDFMode()
-      end
-    else
-      AddLine("system", "Unknown DF rotation mode. Use: smooth or octant")
-    end
-    return
-  end
-  if lower == "df rotation" or lower == "dfmode rotation" then
-    AddLine("system", "DF rotation mode: " .. (TA.dfModeRotationMode or "smooth"))
-    AddLine("system", "Usage: /ta df rotation <smooth|octant>")
-    return
-  end
-
-  local dfOrientation = lower:match("^df%s+orientation%s+(%w+)$") or lower:match("^dfmode%s+orientation%s+(%w+)$")
-  if dfOrientation then
-    if dfOrientation == "fixed" or dfOrientation == "rotating" then
-      TA.dfModeOrientation = dfOrientation
-      TextAdventurerDB = TextAdventurerDB or {}
-      TextAdventurerDB.dfModeOrientation = dfOrientation
-      AddLine("system", "DF orientation set to: " .. dfOrientation)
-      if TA.dfModeEnabled then
-        TA.dfModeLastUpdate = 0
-        TA_UpdateDFMode()
-      end
-    else
-      AddLine("system", "Unknown DF orientation. Use: fixed or rotating")
-    end
-    return
-  end
-  if lower == "df orientation" or lower == "dfmode orientation" then
-    AddLine("system", "DF orientation: " .. (TA.dfModeOrientation or "fixed"))
-    AddLine("system", "Usage: /ta df orientation <fixed|rotating>")
-    return
-  end
-
-  if lower == "df fixed" or lower == "dfmode fixed" then
-    TA.dfModeOrientation = "fixed"
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeOrientation = "fixed"
-    AddLine("system", "DF orientation set to: fixed")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  elseif lower == "df rotating" or lower == "dfmode rotating" then
-    TA.dfModeOrientation = "rotating"
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeOrientation = "rotating"
-    AddLine("system", "DF orientation set to: rotating")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-
-  if lower == "df square on" or lower == "dfmode square on" then
-    TA.dfModeRotationMode = "octant"
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeRotationMode = "octant"
-    AddLine("system", "DF square mode enabled (rotation snap: octant).")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  elseif lower == "df square off" or lower == "dfmode square off" then
-    TA.dfModeRotationMode = "smooth"
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeRotationMode = "smooth"
-    AddLine("system", "DF square mode disabled (rotation: smooth).")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-
-  -- DF Mode view switching
-  local dfModeView = lower:match("^dfmode%s+(%w+)$") or lower:match("^df%s+(%w+)$")
-  if dfModeView then
-    if dfModeView == "hybrid" or dfModeView == "all" then
-      dfModeView = "combined"
-    end
-    if dfModeView == "threat" or dfModeView == "tactical" or dfModeView == "exploration" or dfModeView == "combined" then
-      TA.dfModeViewMode = dfModeView
-      if TA.dfModeEnabled then
-        AddLine("system", "DF Mode view changed to: " .. dfModeView)
-        TA.dfModeLastUpdate = 0
-        TA_UpdateDFMode()
-      end
-    else
-      AddLine("system", "Unknown DF Mode view. Use: tactical, threat, exploration, or combined (aliases: hybrid, all)")
-    end
-    return
-  end
-
-  local dfProfile = lower:match("^df%s+profile%s+(%w+)$") or lower:match("^dfmode%s+profile%s+(%w+)$")
-  if dfProfile then
-    if dfProfile == "balanced" or dfProfile == "full" then
-      TA.dfModeProfile = dfProfile
-      TextAdventurerDB = TextAdventurerDB or {}
-      TextAdventurerDB.dfModeProfile = dfProfile
-      AddLine("system", "DF profile set to: " .. dfProfile)
-      if TA.dfModeEnabled then
-        TA.dfModeLastUpdate = 0
-        TA_UpdateDFMode()
-      end
-    else
-      AddLine("system", "Unknown DF profile. Use: balanced or full")
-    end
-    return
-  end
-
-  if lower == "df status" or lower == "dfmode status" then
-    TA_DFModeStatus()
-    return
-  end
-
-  if lower == "df sonar" or lower == "dfmode sonar" or lower == "df sonar status" or lower == "dfmode sonar status" then
-    local mapID = nil
-    if C_Map and C_Map.GetBestMapForUnit then
-      mapID = C_Map.GetBestMapForUnit("player")
-    end
-    local contacts = TA_PruneDFSonarContacts(mapID)
-    local ttl = math.floor(tonumber(TA.dfModeSonarTTL) or 8)
-    local pulseRemaining = math.max(0, (tonumber(TA.dfModeSonarPulseUntil) or 0) - GetTime())
-    AddLine("system", string.format("DF sonar: %d active contact(s), TTL %ds, pulse remaining %.1fs.", contacts, ttl, pulseRemaining))
-    AddLine("system", "Usage: /ta df sonar ping [seconds] | /ta df sonar ttl <seconds> | /ta df sonar clear")
-    return
-  end
-
-  local sonarPingSeconds = lower:match("^df%s+sonar%s+ping%s*(%d*)$")
-  if sonarPingSeconds == nil then
-    sonarPingSeconds = lower:match("^dfmode%s+sonar%s+ping%s*(%d*)$")
-  end
-  if sonarPingSeconds ~= nil then
-    local duration = TA_TriggerDFSonarPing(tonumber(sonarPingSeconds))
-    AddLine("system", string.format("DF sonar ping active for %d second(s).", duration))
-    return
-  end
-
-  local sonarTTLSeconds = lower:match("^df%s+sonar%s+ttl%s+(%d+)$")
-  if not sonarTTLSeconds then
-    sonarTTLSeconds = lower:match("^dfmode%s+sonar%s+ttl%s+(%d+)$")
-  end
-  if sonarTTLSeconds then
-    local ttl = math.floor(tonumber(sonarTTLSeconds) or 8)
-    if ttl < 1 then ttl = 1 end
-    if ttl > 60 then ttl = 60 end
-    TA.dfModeSonarTTL = ttl
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeSonarTTL = ttl
-    AddLine("system", string.format("DF sonar TTL set to %d second(s).", ttl))
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-
-  if lower == "df sonar clear" or lower == "dfmode sonar clear" then
-    TA_ClearDFSonar()
-    AddLine("system", "DF sonar contacts cleared.")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return
-  end
-
-  if lower == "route" then
-    AddLine("system", "Usage: route start <name> | route stop | route list | route show <name> | route clear <name> | route follow <name> | route follow off")
-    return
-  elseif lower == "route stop" then
-    TA_RouteStop()
-    return
-  elseif lower == "route list" then
-    TA_RouteList()
-    return
-  elseif lower == "route follow off" then
-    TA_RouteFollowOff()
-    return
-  end
-
-  local routeName = lower:match("^route%s+start%s+(.+)$")
-  if routeName then
-    TA_RouteStart(routeName)
-    return
-  end
-  routeName = lower:match("^route%s+show%s+(.+)$")
-  if routeName then
-    TA_RouteShow(routeName)
-    return
-  end
-  routeName = lower:match("^route%s+clear%s+(.+)$")
-  if routeName then
-    TA_RouteClear(routeName)
-    return
-  end
-  routeName = lower:match("^route%s+follow%s+(.+)$")
-  if routeName then
-    TA_RouteFollow(routeName)
-    return
-  end
-
-  if lower == "settings" then
-    TA_ReportGameSettings()
-    return
-  elseif lower == "set" then
-    AddLine("system", "Usage: set <name> <value>")
-    AddLine("system", "Shortcuts: autoloot, sound, sfx, music, ambience, master, graphics, spellqueue, maxfps, maxfpsbk")
-    AddLine("system", "Any other name is treated as a direct CVar name.")
-    return
-  elseif lower == "cvar" then
-    AddLine("system", "Usage: cvar <name> [value]")
-    return
-  elseif lower == "cvarlist" then
-    TA_RunCVarList(nil)
-    return
-  end
-
-  local cvarFilter = msg:match("^%s*[Cc][Vv][Aa][Rr][Ll][Ii][Ss][Tt]%s+(.+)$")
-  if cvarFilter then
-    TA_RunCVarList(cvarFilter)
-    return
-  end
-
-  local setName, setValue = msg:match("^%s*[Ss][Ee][Tt]%s+(%S+)%s+(.+)$")
-  if setName and setValue then
-    TA_HandleSettingCommand(setName, setValue)
-    return
-  end
-
-  local cvarName, cvarValue = msg:match("^%s*[Cc][Vv][Aa][Rr]%s+(%S+)%s+(.+)$")
-  if cvarName and cvarValue then
-    TA_SetNamedCVar(cvarName, cvarValue)
-    return
-  end
-  cvarName = msg:match("^%s*[Cc][Vv][Aa][Rr]%s+(%S+)%s*$")
-  if cvarName then
-    TA_ReportNamedCVar(cvarName)
-    return
-  end
-
-  local equipArg = lower:match("^equip%s+(.+)$")
-  if equipArg then
-    local bag, slot = equipArg:match("^%s*(-?%d+)%s+(%d+)%s*$")
-    if bag and slot then
-      TA_EquipBagItem(tonumber(bag), tonumber(slot))
-    else
-      TA_EquipItemByQuery(equipArg)
-    end
-    return
-  end
-  local exactHandler = TA.EXACT_INPUT_HANDLERS[lower]
-  if exactHandler then
-    exactHandler()
-    return
-  end
-
-  for i = 1, #TA.PATTERN_INPUT_HANDLERS do
-    local entry = TA.PATTERN_INPUT_HANDLERS[i]
-    local captures = { lower:match(entry[1]) }
-    if #captures > 0 then
-      entry[2](unpack(captures))
-      return
+      failCount = failCount + 1
+      AddLine("system", string.format("[FAIL] %s -> %s", cmd, tostring(err)))
     end
   end
 
-  AddLine("system", "Unknown input. Type 'help' for a list of commands.")
+  AddLine("system", string.format("Pattern self-test complete: ok=%d fail=%d", okCount, failCount))
+  if mode ~= "full" then
+    AddLine("system", "Tip: run 'selftest patterns full' for broader curated pattern coverage.")
+  end
 end
 
+-- Command handlers moved to Modules/Commands.lua
 function TA_EnsureRuntimeTickers()
   if not TA.moveTicker then
     TA.moveTicker = C_Timer.NewTicker(TA.tickerIntervals.move or 0.01, function()
+      TA:ProfileStart("moveTicker")
       CheckMovement()
       CheckFallState()
       CheckWallHeuristic()
       CheckSwingTimer()
+      TA:ProfileEnd("moveTicker")
     end)
   end
   if not TA.awarenessNearbyTicker then
     TA.awarenessNearbyTicker = C_Timer.NewTicker(TA.tickerIntervals.nearby or 0.01, function()
-      CheckAwareness()
+      TA:ProfileStart("awarenessNearbyTicker")
+      local now = GetTime()
+      local fallbackInterval = tonumber(TA.awarenessFallbackInterval) or 0.75
+      if TA.awarenessDirty or (now - (TA.awarenessLastRunAt or 0)) >= fallbackInterval then
+        TA_RequestAwarenessRefresh(false)
+      end
+      TA:ProfileEnd("awarenessNearbyTicker")
     end)
   end
   if not TA.awarenessMemoryTicker then
     TA.awarenessMemoryTicker = C_Timer.NewTicker(TA.tickerIntervals.memory or 0.01, function()
+      TA:ProfileStart("awarenessMemoryTicker")
       UpdateExplorationMemory()
       UpdateRecentPath()
       ReportExplorationMemory(false)
@@ -10725,17 +12258,40 @@ function TA_EnsureRuntimeTickers()
           end
         end
       end
+
+      -- Keep quest-route candidate refresh out of DF render loop.
+      if TA_GetQuestRouterStore and TA_BuildQuestRouteCandidates then
+        local qstore = TA_GetQuestRouterStore()
+        if qstore and qstore.enabled ~= false then
+          local qnow = GetTime()
+          if not TA.questRouteOverlay or (qnow - (TA.questRouteLastAt or 0)) > 3 then
+            TA_BuildQuestRouteCandidates(1)
+          end
+        else
+          TA.questRouteOverlay = nil
+        end
+      end
+      TA:ProfileEnd("awarenessMemoryTicker")
     end)
   end
   if not TA.dfModeTicker then
-    TA.dfModeTicker = C_Timer.NewTicker(TA.tickerIntervals.df or 0.01, function()
+    TA.dfModeTicker = C_Timer.NewTicker(TA.tickerIntervals.df or 0.1, function()
+      TA:ProfileStart("dfModeTicker")
       TA_UpdateDFMode()
+      TA:ProfileEnd("dfModeTicker")
     end)
   end
   if not TA.warlockPromptTicker then
     TA.warlockPromptTicker = C_Timer.NewTicker(TA.tickerIntervals.warlockPrompt or 0.75, function()
       if TA_MaybeAutoWarlockPrompt then
         TA_MaybeAutoWarlockPrompt()
+      end
+    end)
+  end
+  if not TA.warriorPromptTicker then
+    TA.warriorPromptTicker = C_Timer.NewTicker(TA.tickerIntervals.warriorPrompt or 0.75, function()
+      if TA_MaybeAutoWarriorPrompt then
+        TA_MaybeAutoWarriorPrompt()
       end
     end)
   end
@@ -10747,6 +12303,7 @@ function TA_StopRuntimeTickers()
   if TA.awarenessMemoryTicker then TA.awarenessMemoryTicker:Cancel(); TA.awarenessMemoryTicker = nil end
   if TA.dfModeTicker then TA.dfModeTicker:Cancel(); TA.dfModeTicker = nil end
   if TA.warlockPromptTicker then TA.warlockPromptTicker:Cancel(); TA.warlockPromptTicker = nil end
+  if TA.warriorPromptTicker then TA.warriorPromptTicker:Cancel(); TA.warriorPromptTicker = nil end
 end
 
 function TA_RestartRuntimeTickers()
@@ -10755,17 +12312,75 @@ function TA_RestartRuntimeTickers()
 end
 
 panel.inputBox:EnableKeyboard(true)
-panel.inputBox:SetScript("OnEnterPressed", function(self)
-  local msg = self:GetText()
-  if msg and msg ~= "" then
-    AddLine("system", "> " .. msg)
-    table.insert(TA.inputHistory, msg)
-    if #TA.inputHistory > TA.inputHistoryMax then table.remove(TA.inputHistory, 1) end
-    TA.inputHistoryPos = 0
-    TA.inputDraft = ""
+panel.inputBox:SetScript("OnEditFocusGained", function(self)
+  self:SetCursorPosition((self:GetText() and #self:GetText()) or 0)
+  if self.customCaret then
+    self.customCaret:Show()
+    if self.customCaretFlash and not self.customCaretFlash:IsPlaying() then
+      self.customCaretFlash:Play()
+    end
   end
+end)
+panel.inputBox:SetScript("OnEditFocusLost", function(self)
+  if self.customCaretFlash and self.customCaretFlash:IsPlaying() then
+    self.customCaretFlash:Stop()
+  end
+  if self.customCaret then
+    self.customCaret:Hide()
+  end
+end)
+panel.inputBox:SetScript("OnCursorChanged", function(self, x, y, w, h)
+  if not self.customCaret then
+    return
+  end
+  self.customCaret:ClearAllPoints()
+  self.customCaret:SetPoint("TOPLEFT", self, "TOPLEFT", (x or 0) + (TA.INPUTBOX_LAYOUT.insetLeft or 8), (y or 0) - (TA.INPUTBOX_LAYOUT.insetTop or 6))
+  if h and h > 0 then
+    self.customCaret:SetHeight(h)
+  end
+end)
+panel.inputBox:SetScript("OnTextChanged", function(self)
+  TA_UpdateInputBoxLayout(self)
+end)
+panel.inputBox:SetScript("OnEnterPressed", function(self)
+  if IsShiftKeyDown and IsShiftKeyDown() then
+    local text = self:GetText() or ""
+    local cursor = self:GetCursorPosition() or #text
+    local before = text:sub(1, cursor)
+    local after = text:sub(cursor + 1)
+    local combined = before .. "\n" .. after
+    self:SetText(combined)
+    self:SetCursorPosition(cursor + 1)
+    return
+  end
+
+  local msg = self:GetText()
+  local lines = {}
+  if msg and msg ~= "" then
+    for line in msg:gmatch("[^\r\n]+") do
+      local trimmed = line:match("^%s*(.-)%s*$")
+      if trimmed ~= "" and not trimmed:match("^#") then
+        table.insert(lines, trimmed)
+      end
+    end
+    if #lines == 0 then
+      local trimmed = msg:match("^%s*(.-)%s*$")
+      if trimmed ~= "" and not trimmed:match("^#") then
+        table.insert(lines, trimmed)
+      end
+    end
+  end
+
   self:SetText("")
-  TA_ProcessInputCommand(msg)
+  local shouldBlur = TA_ExecuteTerminalInputLines(lines, { recordLastBlock = true })
+  if TA.deferTerminalRefocus then
+    self:ClearFocus()
+    return
+  end
+  if shouldBlur then
+    self:ClearFocus()
+    return
+  end
   self:SetFocus()
 end)
 panel.inputBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -10790,6 +12405,80 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
       end
       self:SetCursorPosition(#self:GetText())
     end
+  elseif key == "TAB" then
+    local partial = (self:GetText() or ""):match("^%s*(.-)%s*$")
+    if partial == "" then return end
+    local partialLower = partial:lower()
+
+    -- Collect candidates from exact handlers + a static prefix list
+    local candidates = {}
+    local seen = {}
+    if TA.EXACT_INPUT_HANDLERS then
+      for cmd in pairs(TA.EXACT_INPUT_HANDLERS) do
+        if not seen[cmd] and cmd:sub(1, #partialLower) == partialLower then
+          seen[cmd] = true
+          table.insert(candidates, cmd)
+        end
+      end
+    end
+    -- Also include known prefix commands not fully in EXACT_INPUT_HANDLERS
+    local prefixCmds = {
+      "equip ", "binditem ", "bind ", "bindmacro ",
+      "actions ", "bars ", "sell ", "destroy ", "use ",
+      "mark ", "unmark ", "renamemark ", "goto ", "route ",
+      "ml xp ", "ml xp warrior ", "ml xp set ", "ml xp mode ",
+      "recipes ", "recipes search", "recipes makeable",
+      "bug show ", "bug copy ",
+      "df ", "df rotation ", "df profile ", "df view ",
+      "memory ", "focus ", "castfocus ", "macro ", "macroinfo ",
+      "skills weapons", "skills professions", "skills defense",
+      "help ", "help advanced", "help combat", "help economy",
+      "help navigation", "help social", "help quests",
+    }
+    for _, cmd in ipairs(prefixCmds) do
+      local cmdLower = cmd:lower()
+      if not seen[cmdLower] and cmdLower:sub(1, #partialLower) == partialLower then
+        seen[cmdLower] = true
+        table.insert(candidates, cmd)
+      end
+    end
+
+    if #candidates == 0 then return end
+
+    table.sort(candidates)
+
+    if #candidates == 1 then
+      -- Unique match: complete it
+      self:SetText(candidates[1])
+      self:SetCursorPosition(#candidates[1])
+    else
+      -- Multiple matches: find longest common prefix then show list
+      local common = candidates[1]
+      for i = 2, #candidates do
+        local c = candidates[i]
+        local newCommon = ""
+        for j = 1, math.min(#common, #c) do
+          if common:sub(j, j):lower() == c:sub(j, j):lower() then
+            newCommon = newCommon .. common:sub(j, j)
+          else
+            break
+          end
+        end
+        common = newCommon
+      end
+      if #common > #partial then
+        self:SetText(common)
+        self:SetCursorPosition(#common)
+      end
+      -- Print candidates to terminal
+      local MAX_SHOW = 12
+      local display = {}
+      for i = 1, math.min(#candidates, MAX_SHOW) do
+        table.insert(display, candidates[i])
+      end
+      local suffix = #candidates > MAX_SHOW and string.format(" (+%d more)", #candidates - MAX_SHOW) or ""
+      AddLine("system", "  " .. table.concat(display, "  |  ") .. suffix)
+    end
   end
 end)
 
@@ -10798,9 +12487,9 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
   local original = (msg or ""):match("^%s*(.-)%s*$")
   local lower = original:lower()
   if lower == "" then
-    TA_FocusTerminalInput()
+    TA_FocusTerminalInput(true)
   elseif lower == "input" or lower == "i" or lower == "t" then
-    TA_FocusTerminalInput()
+    TA_FocusTerminalInput(true)
   else
     TA_ProcessInputCommand(original)
   end
@@ -10882,6 +12571,18 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeRotationMode = "smooth"
     end
     TA.dfModeRotationMode = TextAdventurerDB.dfModeRotationMode
+    if TextAdventurerDB.dfModeHueEnabled == nil then
+      TextAdventurerDB.dfModeHueEnabled = false
+    end
+    TA.dfModeHueEnabled = TextAdventurerDB.dfModeHueEnabled and true or false
+    if TextAdventurerDB.dfModeCalibrationEnabled == nil then
+      TextAdventurerDB.dfModeCalibrationEnabled = false
+    end
+    TA.dfModeCalibrationEnabled = TextAdventurerDB.dfModeCalibrationEnabled and true or false
+    if TextAdventurerDB.dfModeLegendEnabled == nil then
+      TextAdventurerDB.dfModeLegendEnabled = true
+    end
+    TA.dfModeLegendEnabled = (TextAdventurerDB.dfModeLegendEnabled ~= false)
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
       local savedGrid = math.floor(TextAdventurerDB.dfModeGridSize)
       if savedGrid < 5 then savedGrid = 5 end
@@ -10906,9 +12607,14 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.dfModeHeight = DF_MODE_DEFAULT_HEIGHT
     end
     local maxMarkRadius = math.floor((TA.dfModeGridSize or 35) / 2)
-    if type(TextAdventurerDB.dfModeMarkRadius) ~= "number" or TextAdventurerDB.dfModeMarkRadius > 5 then
-      -- Reset oversized values (e.g. old default of 17) to default perimeter of 3.
-      TextAdventurerDB.dfModeMarkRadius = 3
+    if type(TextAdventurerDB.dfModeMarkRadius) ~= "number" or TextAdventurerDB.dfModeMarkRadius < 0 or TextAdventurerDB.dfModeMarkRadius > maxMarkRadius then
+      TextAdventurerDB.dfModeMarkRadius = 0
+    end
+    -- One-time migration: old default radius 3 drew extra edge glyphs around marks.
+    -- New default is single-cell marks (radius 0) for exact cell visualization.
+    if TextAdventurerDB.dfModeMarkRadiusMigratedToZero ~= true and TextAdventurerDB.dfModeMarkRadius == 3 then
+      TextAdventurerDB.dfModeMarkRadius = 0
+      TextAdventurerDB.dfModeMarkRadiusMigratedToZero = true
     end
     TA_SetDFModeMarkRadius(TextAdventurerDB.dfModeMarkRadius, true)
     if type(TextAdventurerDB.dfModeWidth) ~= "number" or type(TextAdventurerDB.dfModeHeight) ~= "number" then
@@ -10937,6 +12643,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
     elseif TextAdventurerDB.autoEnable == nil then
       TextAdventurerDB.autoEnable = false
     end
+    if type(TextAdventurerDB.lineLimit) ~= "number" then
+      TextAdventurerDB.lineLimit = TA.lineLimit or 400
+    end
+    TA_SetLineLimit(TextAdventurerDB.lineLimit, true)
     if ChatFrame1 then
       ChatFrame1:Show()
       ChatFrame1:SetFrameLevel(5000)
@@ -10982,6 +12692,9 @@ TA:SetScript("OnEvent", function(self, event, ...)
     AddLine("system", "Type /ta questinfo <index or name> to read full quest details.")
     AddLine("quest", "Route planner: /ta questroute, /ta questroute explain, /ta questroute top 5, /ta questroute mark.")
     AddLine("playerCombat", "Warlock prompt: /ta warlockprompt for next action, /ta warlockprompt on for auto prompts in combat.")
+    if (select(2, UnitClass("player")) or "") == "WARRIOR" then
+      AddLine("playerCombat", "Warrior prompt: /ta warriorprompt for next action, /ta warriorprompt on for auto prompts in combat.")
+    end
     AddLine("system", "Type /ta buffs to list your current buffs and timers.")
     AddLine("system", "Type /ta where for your current place.")
     AddLine("system", "Type /ta tracking for active tracking modes.")
@@ -11012,6 +12725,15 @@ TA:SetScript("OnEvent", function(self, event, ...)
     AddLine("quest", "Auto quests are enabled by default. Use /ta autoquests off to disable.")
     AddLine("chat", "Chat capture is enabled by default. Use /ta chat off to disable.")
     AddLine("system", "Enemy awareness is always on when nameplates exist.")
+    local terrainData = TA_GetLoadedTerrainData()
+    if terrainData then
+      local chunkCount = (type(terrainData.chunks) == "table") and #terrainData.chunks or 0
+      local markerCount = (type(terrainData.markers) == "table") and #terrainData.markers or 0
+      local tileCount = (type(terrainData.tilesPresent) == "table") and #terrainData.tilesPresent or 0
+      AddLine("system", string.format("Terrain dataset loaded: zone=%s map=%s chunks=%d markers=%d tiles=%d", tostring(terrainData.zoneKey or "?"), tostring(terrainData.mapName or "?"), chunkCount, markerCount, tileCount))
+    else
+      AddLine("system", "Terrain dataset not loaded. Expected: TerrainData_Azeroth.lua")
+    end
     AddLine("system", "Type /ta help for commands.")
     TA_BroadcastDangerWarningToChat()
     ReportLocation(true)
@@ -11026,15 +12748,30 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA_PublishPublicAPI()
     TA_EmitExternal("READY", TA_GetIntegrationStateSnapshot())
     if TextAdventurerDB.autoEnable then
-      EnableTextMode()
+      TA_EnableTextModeInternal()
       panel.inputBox:SetFocus()
     end
+    TA_InitCommandPreviewBox()
   elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
-    HandleCombatLog()
+    TA:ProfileStart("COMBAT_LOG_EVENT_UNFILTERED")
+    local subevent = HandleCombatLog()
+    if subevent and (
+      string.find(subevent, "DAMAGE", 1, true)
+      or string.find(subevent, "HEAL", 1, true)
+      or string.find(subevent, "THREAT", 1, true)
+      or subevent == "UNIT_DIED") then
+      TA_RequestAwarenessRefresh(false)
+    end
+    TA:ProfileEnd("COMBAT_LOG_EVENT_UNFILTERED")
   elseif CHAT_EVENT_INFO[event] then
+    TA:ProfileStart("HandleChatEvent")
     HandleChatEvent(event, ...)
+    TA:ProfileEnd("HandleChatEvent")
   elseif event == "PLAYER_TARGET_CHANGED" then
     CheckTarget()
+    TA_RequestAwarenessRefresh(true)
+  elseif event == "PLAYER_MONEY" then
+    TA:ReportMoneyStatusEvent()
   elseif event == "PLAYER_REGEN_DISABLED" then
     TA.dpsCombatStart = GetTime()
     TA.dpsCombatDamage = 0
@@ -11056,6 +12793,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.mlFightSnapshot = nil
     AddLine("playerCombat", "You leave combat.")
     ReportStatus(true)
+    TA_ProcessSellJunkQueue("combat_end")
     if TA.performanceModeEnabled and TA.performancePendingApply then
       TA_ApplyPerformanceFrameSuppression()
     end
@@ -11070,6 +12808,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     if TA_RecordGuideXPSample then
       TA_RecordGuideXPSample()
     end
+    TA:ReportXPStatusEvent()
   elseif event == "UNIT_SPELLCAST_START" then
     local unit, _, spellID = ...
     if unit == "player" or unit == "target" then ReportCastStart(unit, spellID, false) end
@@ -11091,12 +12830,12 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "PLAYER_ENTERING_WORLD" then
     TA.bagState = SnapshotBags()
     if TA.textMode then
-      ApplyTextModeFrames()
-      overlay:Show()
+      TA_ApplyTextModeFrames()
       panel:Show()
       panel.inputBox:Show()
       panel.inputBox:SetFocus()
     end
+    SyncTextModeOverlay()
     ReportLocation(true)
     UpdateExplorationMemory()
     UpdateRecentPath()
@@ -11117,6 +12856,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
       end
     end
     TA.bagState = newState
+    TA_ProcessSellJunkQueue("bagupdate")
   elseif event == "MERCHANT_SHOW" then
     TA.vendorOpen = true
     AddLine("loot", "A merchant opens their wares. Type 'vendor' to browse, 'buy <n>', 'buyback [n]', 'sell <bag> <slot>', 'selljunk', or 'repair'/'repairstatus'.")
@@ -11124,6 +12864,10 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "WHO_LIST_UPDATE" then
     TA_ReportWhoList()
   elseif event == "MERCHANT_CLOSED" then
+    if TA.sellJunkState and TA.sellJunkState.active then
+      AddLine("system", "Stopped selljunk: merchant window closed.")
+      TA.sellJunkState = nil
+    end
     TA.vendorOpen = false
     AddLine("loot", "The merchant closes their wares.")
   elseif event == "GOSSIP_SHOW" then
@@ -11174,12 +12918,19 @@ TA:SetScript("OnEvent", function(self, event, ...)
       ReportStatus(false)
     elseif unit == "target" then
       ReportTargetCondition(false)
+      TA_RequestAwarenessRefresh(false)
+    elseif unit == "focus" then
+      TA_RequestAwarenessRefresh(false)
     end
   elseif event == "UNIT_AURA" then
     local unit = ...
     if unit == "player" then
       ReportBuffChanges()
+    elseif unit == "target" or unit == "focus" then
+      TA_RequestAwarenessRefresh(false)
     end
+  elseif event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" then
+    TA_RequestAwarenessRefresh(true)
   elseif event == "PLAYER_EQUIPMENT_CHANGED" then
     local slotId = ...
     ReportEquipmentChange(slotId)
@@ -11203,6 +12954,8 @@ TA:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 TA:RegisterEvent("PLAYER_TARGET_CHANGED")
 TA:RegisterEvent("PLAYER_REGEN_DISABLED")
 TA:RegisterEvent("PLAYER_REGEN_ENABLED")
+TA:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+TA:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
 TA:RegisterEvent("PLAYER_XP_UPDATE")
 TA:RegisterEvent("PLAYER_LEVEL_UP")
 TA:RegisterEvent("QUEST_TURNED_IN")
@@ -11270,5 +13023,104 @@ TA.chatKeepAlive = C_Timer.NewTicker(2, function()
     end
   end
 end)
+
+-- Module bridge exports: command modules run in separate chunks and cannot access
+-- this file's local functions directly.
+_G.AddLine = AddLine
+
+_G.ReportLocation = ReportLocation
+_G.ReportStatus = ReportStatus
+_G.ReportXP = ReportXP
+_G.ReportTracking = ReportTracking
+_G.ReportQuestLog = ReportQuestLog
+_G.ReportQuestInfo = ReportQuestInfo
+_G.ReportBuffs = ReportBuffs
+_G.ReportBuffChanges = ReportBuffChanges
+_G.ReportMoney = ReportMoney
+_G.ResetDPSStats = ResetDPSStats
+_G.ReportWeaponDPS = ReportWeaponDPS
+_G.ReportDPS = ReportDPS
+_G.ReportCharacterStats = ReportCharacterStats
+_G.ReportEquipmentChange = ReportEquipmentChange
+_G.ReportEquipment = ReportEquipment
+_G.ReportInventory = ReportInventory
+_G.ReportActionBars = ReportActionBars
+_G.ReportMacros = ReportMacros
+_G.ReportSpellbook = ReportSpellbook
+_G.ReportVendorItems = ReportVendorItems
+_G.ReportTrainerServices = ReportTrainerServices
+_G.ReportRange = ReportRange
+_G.ReportPathMemory = ReportPathMemory
+_G.ReportExplorationMemory = ReportExplorationMemory
+_G.ReportStaticPopups = ReportStaticPopups
+_G.DebugVisiblePopups = DebugVisiblePopups
+_G.ReportGossipOptions = ReportGossipOptions
+_G.ReportQuestRewardInfo = ReportQuestRewardInfo
+_G.ReportLootWindowPreview = ReportLootWindowPreview
+_G.ReportSpacingEstimate = ReportSpacingEstimate
+_G.ReportTargetPositioning = ReportTargetPositioning
+
+_G.MarkFacingA = MarkFacingA
+_G.MarkFacingB = MarkFacingB
+_G.MarkCurrentCell = MarkCurrentCell
+_G.ListMarkedCells = ListMarkedCells
+_G.ClearMarkedCells = ClearMarkedCells
+_G.ShowMarkedCellOnMap = ShowMarkedCellOnMap
+_G.DeleteMarkedCell = DeleteMarkedCell
+_G.ReportCurrentCell = ReportCurrentCell
+_G.RecenterCurrentCellAnchor = RecenterCurrentCellAnchor
+_G.SetGridSize = SetGridSize
+_G.SetCellSizeYards = SetCellSizeYards
+_G.DisableCellSizeYardsMode = DisableCellSizeYardsMode
+_G.UpdateMapCellOverlay = UpdateMapCellOverlay
+
+_G.BuyVendorItem = BuyVendorItem
+_G.SellBagItem = SellBagItem
+_G.DestroyBagItem = DestroyBagItem
+_G.TrainServiceByIndex = TrainServiceByIndex
+_G.TrainAllAvailableServices = TrainAllAvailableServices
+_G.ShowMacroInfo = ShowMacroInfo
+_G.CastMacroByIndex = CastMacroByIndex
+_G.CastMacroByName = CastMacroByName
+_G.SetMacroBody = SetMacroBody
+_G.ParseRenameArgs = ParseRenameArgs
+_G.ParseNameAndBodyArgs = ParseNameAndBodyArgs
+_G.RenameMacro = RenameMacro
+_G.CreateNewMacro = CreateNewMacro
+_G.DeleteMacroByIndex = DeleteMacroByIndex
+_G.BindSpellbookSpellToActionSlot = BindSpellbookSpellToActionSlot
+_G.BindMacroToActionSlot = BindMacroToActionSlot
+_G.DoTargetCommand = DoTargetCommand
+
+_G.ChooseGossipOption = ChooseGossipOption
+_G.CompleteQuestFromTerminal = CompleteQuestFromTerminal
+_G.ListQuestRewards = ListQuestRewards
+_G.SelectQuestReward = SelectQuestReward
+_G.GetQuestRewardChoice = GetQuestRewardChoice
+_G.RespondToPopup = RespondToPopup
+
+_G.TA_ReportRecipeDetails = TA_ReportRecipeDetails
+_G.TA_ReportProfessionRecipes = TA_ReportProfessionRecipes
+_G.TA_ReportSkillLevels = TA_ReportSkillLevels
+_G.TA_ReportQuestRouteSuggestions = TA_ReportQuestRouteSuggestions
+_G.TA_ReportQuestRouteWeights = TA_ReportQuestRouteWeights
+_G.TA_ReportQuestRouteDebug = TA_ReportQuestRouteDebug
+_G.TA_SetQuestRouteWeight = TA_SetQuestRouteWeight
+_G.TA_SetQuestRouteToggle = TA_SetQuestRouteToggle
+_G.TA_QuestRouteTomTomWaypoint = TA_QuestRouteTomTomWaypoint
+_G.TA_ReportFPS = TA_ReportFPS
+_G.TA_ReportPerformanceStatus = TA_ReportPerformanceStatus
+_G.TA_EnablePerformanceMode = TA_EnablePerformanceMode
+_G.TA_DisablePerformanceMode = TA_DisablePerformanceMode
+_G.TA_ReportOpenItemText = TA_ReportOpenItemText
+_G.TA_ReportGameSettings = TA_ReportGameSettings
+_G.TA_HandleSettingCommand = TA_HandleSettingCommand
+_G.TA_SetNamedCVar = TA_SetNamedCVar
+_G.TA_ReportNamedCVar = TA_ReportNamedCVar
+_G.TA_PruneDFSonarContacts = TA_PruneDFSonarContacts
+_G.TA_TriggerDFSonarPing = TA_TriggerDFSonarPing
+_G.TA_ClearDFSonar = TA_ClearDFSonar
+
+_G.GRID_SIZE_STANDARD = GRID_SIZE_STANDARD
 
 
