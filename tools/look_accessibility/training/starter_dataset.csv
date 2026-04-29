@@ -1,0 +1,4 @@
+sample_id,image_path,zone,map_id,pos_x,pos_y,facing_radians,camera_pitch,camera_zoom,label_tags,description
+example_0001,samples/example_0001.png,Elwynn Forest,1429,0.4215,0.6782,1.5708,0.15,2.6,terrain_road;obstacle_tree;building_inn;enemy_wolf,You are facing a road. Trees block the right side. A building is left-front. A hostile wolf appears center-right.
+example_0002,samples/example_0001.png,Elwynn Forest,1429,0.425,0.671,1.85,0.12,2.8,terrain_road;obstacle_tree;building_inn;enemy_none,Road ahead with trees right and inn-like structure left-front.
+example_0003,samples/example_0001.png,Elwynn Forest,1429,0.418,0.684,1.3,0.18,2.5,terrain_road;obstacle_tree;building_none;enemy_wolf,Road and tree obstacles are visible; possible enemy ahead-right.

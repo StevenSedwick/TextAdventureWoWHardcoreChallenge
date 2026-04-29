@@ -6,6 +6,7 @@ function TA_Help_ShowOverview()
   AddLine("system", "  automation - auto behaviors and text mode")
   AddLine("system", "  economy - bags, gear, vendor, buying/selling")
   AddLine("system", "  social - chat and targeting shortcuts")
+  AddLine("system", "  accessibility - visual scene description bridge")
   AddLine("system", "  advanced - macros, bindings, diagnostics")
   AddLine("system", "  testing - self-test command coverage")
   AddLine("system", "All commands support both: <command> (terminal) and /ta <command> (chat).")
@@ -26,6 +27,7 @@ function TA_Help_ShowTopic(topicArg)
   if raw == "auto" then key = "automation" end
   if raw == "inventory" or raw == "vendor" then key = "economy" end
   if raw == "chat" then key = "social" end
+  if raw == "a11y" or raw == "look" or raw == "vision" then key = "accessibility" end
   if raw == "macros" then key = "advanced" end
   if raw == "test" or raw == "tests" then key = "testing" end
 
@@ -187,6 +189,26 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  target nearest/next/corpse/<name> - targeting shortcuts.")
     AddLine("system", "  input (or just /ta) - focus terminal input quickly.")
     AddLine("system", "  clear - clear the addon text log.")
+    return
+  end
+
+  if key == "accessibility" then
+    AddLine("system", "Help: Accessibility /look Bridge")
+    AddLine("system", "  look - show latest local scene description and reminder text.")
+    AddLine("system", "  look last - print the cached scene description only.")
+    AddLine("system", "  look set <text> - store a new scene description manually.")
+    AddLine("system", "  look clear - clear cached scene description.")
+    AddLine("system", "  look status - show cache age and bridge state.")
+    AddLine("system", "  look telemetry (or look export) - print machine-readable world telemetry for dataset collection.")
+    AddLine("system", "  look labels - show currently preselected label tags.")
+    AddLine("system", "  look labels add/remove <tag> - manage selected tags in game.")
+    AddLine("system", "  look labels preset <town|road|forest|cliff|combat|safe> - quick tag presets.")
+    AddLine("system", "  look labels clear - clear selected tags.")
+    AddLine("system", "  /look - slash alias for the same commands.")
+    AddLine("system", "  py / py status - probe Python bridge capabilities from in-game terminal.")
+    AddLine("system", "  py howto - show the external-capture to /look workflow.")
+    AddLine("system", "  py limits - explain what WoW addon Lua cannot do directly.")
+    AddLine("system", "Safety: this feature only describes visuals. It does not move, target, or cast.")
     return
   end
 

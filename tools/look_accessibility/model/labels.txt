@@ -1,0 +1,6 @@
+building_inn
+building_none
+enemy_none
+enemy_wolf
+obstacle_tree
+terrain_road

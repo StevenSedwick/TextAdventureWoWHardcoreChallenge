@@ -1,0 +1,28 @@
+{
+  "captured_at": "2026-04-28T13:24:19.833827",
+  "image_path": "tools\\look_accessibility\\temp\\wow_frame_20260428_132414.png",
+  "capture_mode": "window-print",
+  "width": 1600,
+  "height": 900,
+  "description": "Terrain appears road ahead. possible hostile presence: wolf. structure visible: none. obstacles nearby: tree.",
+  "look_set_command": "/look set Terrain appears road ahead. possible hostile presence: wolf. structure visible: none. obstacles nearby: tree.",
+  "model_mode": "joblib",
+  "predictions": [
+    {
+      "label": "building_none",
+      "score": 1.0
+    },
+    {
+      "label": "enemy_wolf",
+      "score": 1.0
+    },
+    {
+      "label": "obstacle_tree",
+      "score": 1.0
+    },
+    {
+      "label": "terrain_road",
+      "score": 1.0
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ## Interface: 11508
 ## Title: Text Adventurer
-## Notes: EXTREMELY DANGEROUS HARDCORE ADDON. WILL eventually get your character killed. First-run autostart is OFF for safety.
+## Notes: Text-first command console for Classic Era telemetry, tactical overlays, and DPS helpers. Hardcore warning: WILL eventually get your character killed. First-run autostart is OFF.
 ## Author: You
 ## Version: 0.3-alpha10
 ## SavedVariablesPerCharacter: TextAdventurerDB
@@ -18,6 +18,8 @@ Modules\QuestCommands.lua
 Modules\EconomyCommands.lua
 Modules\SocialCommands.lua
 Modules\NavigationCommands.lua
+Modules\AccessibilityCommands.lua
+Modules\DFDanger.lua
 Modules\SettingsCommands.lua
 Modules\WarlockMLCommands.lua
 Modules\MacroRecipeCommands.lua

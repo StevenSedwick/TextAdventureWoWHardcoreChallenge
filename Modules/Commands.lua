@@ -132,6 +132,14 @@ if TA_RegisterNavigationCommandHandlers then
   TA_RegisterNavigationCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
+if TA_RegisterAccessibilityCommandHandlers then
+  TA_RegisterAccessibilityCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
+if TA_RegisterDFDangerCommandHandlers then
+  TA_RegisterDFDangerCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
 if TA_RegisterWarlockMLCommandHandlers then
   TA_RegisterWarlockMLCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end

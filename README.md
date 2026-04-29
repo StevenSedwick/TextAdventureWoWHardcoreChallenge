@@ -1,6 +1,6 @@
 # Text Adventurer (WoW Classic Era Addon)
 
-Text Adventurer is a World of Warcraft Classic Era addon focused on text-first gameplay feedback, command-driven utilities, and tactical overlays.
+Text Adventurer is a text-first command console for WoW Classic Era that combines real-time character telemetry, command-driven utilities, tactical navigation overlays, and theorycraft helpers in one addon.
 
 ## Danger Warning
 
@@ -10,13 +10,28 @@ This addon is intentionally extreme for Hardcore challenge play.
 - First-run safety mode keeps autostart OFF by default.
 - Enable autostart only if you accept the risk: `/ta autostart on`
 
-## Features
+## Core Features
 
-- Text event and status output.
-- Slash-command interface (`/ta ...`).
-- Tactical DF mode window with multiple views.
-- Spreadsheet-backed combat helpers, including the Warlock live DPS model.
-- Per-character saved variables (`TextAdventurerDB`).
+- Text-first command console with timestamped output and low-friction slash commands (`/ta ...`).
+- Multiline command input (Shift+Enter), comment lines (`# ...`), and block replay (`runlast`, `rerun`).
+- Command autocomplete with Tab cycling.
+- Character telemetry for health, resources, stats, gear, actions, bars, cooldowns, and economic signals.
+- Tactical DF mode panel with threat, exploration, and combined views.
+- Per-character persistence using `TextAdventurerDB`.
+
+## Combat and Theorycraft Features
+
+- Warlock DPS model backed by extracted spreadsheet data.
+- Warrior prompt tools for combat decision support.
+- Paladin seal DPS commands for quick comparison and assumptions checks.
+- Live command set for assumptions, configuration, and model inspection.
+
+## Command Utility Features
+
+- Navigation and exploration helpers.
+- Quest and social command groups.
+- Macro and recipe command helpers.
+- Help system with topic-based command discovery (`/ta help <topic>`).
 
 ## Install
 
@@ -31,6 +46,11 @@ This addon is intentionally extreme for Hardcore challenge play.
 
 - Open help:
   - `/ta help`
+- Terminal input mode:
+  - `/ta input`
+- Multiline and replay:
+  - Type multiple lines with Shift+Enter
+  - Use `runlast` or `rerun` to replay last block
 - DF mode shortcuts:
   - `/ta dfmode`
   - `/ta df on`
@@ -42,6 +62,11 @@ This addon is intentionally extreme for Hardcore challenge play.
   - `/ta warlockdps mapping`
   - `/ta warlockdps reset`
   - `/ta warlockdps set <key> <value>`
+- Warrior and Paladin helpers:
+  - `/ta warriorprompt`
+  - `/ta warriorprompt status`
+  - `/ta sealdps`
+  - `/ta sealdps list`
 
 ## Project Notes
 
@@ -80,6 +105,23 @@ Use the following warning at the top of both your GitHub release body and your C
 ### CurseForge Upload Warning
 
 `WARNING: This addon is extremely dangerous for Hardcore play and WILL eventually get your character killed. First-run autostart is OFF for safety.`
+
+## CurseForge Project Description (Copy/Paste)
+
+Text Adventurer is a command-first utility addon for WoW Classic Era. It gives you a terminal-style interface for gameplay telemetry, tactical overlays, and theorycraft commands without depending on heavy UI workflows.
+
+Highlights:
+
+- Text-first command console with timestamped output
+- Multiline command input, comments, and replay (`runlast` / `rerun`)
+- Tab autocomplete for faster command discovery
+- Character, gear, action bar, and economy reporting commands
+- Tactical DF mode overlays (threat, exploration, combined)
+- Warlock spreadsheet-backed DPS model
+- Warrior prompt and Paladin seal DPS helper commands
+- Per-character saved settings and data
+
+WARNING: This addon is extremely dangerous for Hardcore play and WILL eventually get your character killed. First-run autostart is OFF for safety.
 
 ## License
 

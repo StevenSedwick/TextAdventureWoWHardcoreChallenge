@@ -133,7 +133,11 @@ TA.pendingWhoQuery = nil
 TA.pendingCVarList = false
 TA.dfModeEnabled = false
 TA.lastNearbyUnits = {}
+TA.nearbyUnitsCacheAt = 0
+TA.nearbyUnitsCacheInterval = 0.15
 TA.dfModeGridSize = 35
+TA.dfModeInnerRadius = nil
+TA.dfModeInnerRadiusGridSize = nil
 TA.dfModeLastUpdate = 0
 TA.dfModeViewMode = "threat"  -- tactical, threat, exploration, combined
 TA.dfModeProfile = "full"  -- balanced, full
@@ -166,7 +170,7 @@ TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
 TA.performanceFrameHooks = {}
-TA.tickerIntervals = { move = 0.01, nearby = 0.01, memory = 0.01, df = 0.01 }
+TA.tickerIntervals = { move = 0.01, nearby = 0.01, memory = 0.01, df = 0.1 }
 TA.tickerIntervals.warlockPrompt = 0.75
 TA.tickerIntervals.warriorPrompt = 0.75
 
@@ -8627,7 +8631,7 @@ local function TA_SetTickerProfile(profile)
     TA.tickerIntervals.move = 0.01
     TA.tickerIntervals.nearby = 0.01
     TA.tickerIntervals.memory = 0.01
-    TA.tickerIntervals.df = 0.01
+    TA.tickerIntervals.df = 0.1
     TA.tickerIntervals.warlockPrompt = 0.75
     TA.tickerIntervals.warriorPrompt = 0.75
   end
@@ -8886,7 +8890,7 @@ local function TA_TryInteractDistance(unit, checkType)
   return ok and result or false
 end
 
-local function GetNearbyUnitsWithPositions()
+local function CollectNearbyUnitsWithPositions()
   local units = { hostile = {}, neutral = {}, friendly = {} }
   local nameplates = C_NamePlate.GetNamePlates()
   if not nameplates then return units end
@@ -8950,6 +8954,27 @@ local function GetNearbyUnitsWithPositions()
   
   return units
 end
+
+  local function GetNearbyUnitsWithPositions(forceRefresh)
+    if not GetTime then
+      return CollectNearbyUnitsWithPositions()
+    end
+
+    local now = GetTime()
+    local refreshInterval = tonumber(TA.nearbyUnitsCacheInterval) or 0.15
+    if refreshInterval < 0.1 then refreshInterval = 0.1 end
+    if refreshInterval > 0.2 then refreshInterval = 0.2 end
+
+    local hasCached = (type(TA.lastNearbyUnits) == "table") and (type(TA.nearbyUnitsCacheAt) == "number")
+    if hasCached and not forceRefresh and (now - TA.nearbyUnitsCacheAt) < refreshInterval then
+      return TA.lastNearbyUnits
+    end
+
+    local units = CollectNearbyUnitsWithPositions()
+    TA.lastNearbyUnits = units
+    TA.nearbyUnitsCacheAt = now
+    return units
+  end
 
 local function TA_ClearDFSonar()
   TA.dfModeSonarContacts = {}
@@ -9622,7 +9647,11 @@ local function BuildDFModeDisplay()
   local radius = math.floor(gridSize / 2)
   -- innerRadius is large enough that after any rotation, all display cells map to valid world cells.
   -- A rotated square needs sqrt(2) * radius coverage; we use 1.45 for a small safety margin.
-  local innerRadius = math.ceil(radius * 1.45)
+  if TA.dfModeInnerRadiusGridSize ~= gridSize then
+    TA.dfModeInnerRadius = math.ceil(radius * 1.45)
+    TA.dfModeInnerRadiusGridSize = gridSize
+  end
+  local innerRadius = TA.dfModeInnerRadius or math.ceil(radius * 1.45)
   -- Each DF grid cell represents this many in-game yards. Must be a whole number
   -- so mark and unit positions map cleanly: N yards = exactly N/yardsPerCell cells.
   local yardsPerCell = TA_GetEffectiveDFYardsPerCell()
@@ -9635,7 +9664,8 @@ local function BuildDFModeDisplay()
 
   -- Get facing direction
   local facing = GetPlayerFacing() or 0
-  local playerWorldX, playerWorldY = TA_GetProjectedDFPlayerWorldPosition()
+  local basePlayerWorldX, basePlayerWorldY = UnitPosition("player")
+  local playerWorldX, playerWorldY = TA_GetProjectedDFPlayerWorldPosition(basePlayerWorldX, basePlayerWorldY)
   local now = GetTime()
   local facingDegrees = math.floor(math.deg(facing))
   TA.dfModeNavHint = nil
@@ -9924,9 +9954,6 @@ local function BuildDFModeDisplay()
   if TA_GetQuestRouterStore and TA_BuildQuestRouteCandidates then
     local qstore = TA_GetQuestRouterStore()
     if qstore and qstore.enabled ~= false then
-      if not TA.questRouteOverlay or (now - (TA.questRouteLastAt or 0)) > 3 then
-        TA_BuildQuestRouteCandidates(1)
-      end
       local overlay = TA.questRouteOverlay
       if overlay and overlay.mapID == mapID and overlay.dxCells and overlay.dyCells then
         local qx = overlay.dxCells >= 0 and math.floor(overlay.dxCells + 0.5) or math.ceil(overlay.dxCells - 0.5)
@@ -9941,6 +9968,25 @@ local function BuildDFModeDisplay()
           grid[qy][qx] = "*"
         end
       end
+    end
+  end
+
+  -- DFDanger integration: lightweight hazard overlay layer for known cliff/elevator anchors.
+  if DFDanger and DFDanger.enabled and DFDanger.AddHazardOverlayToMap then
+    local overlayContext = {
+      zone = GetZoneText and (GetZoneText() or "") or "",
+      mapID = mapID,
+      playerX = x,
+      playerY = y,
+      innerRadius = innerRadius,
+      yardsPerCell = yardsPerCell,
+      playerFacing = facing,
+    }
+    local okDangerOverlay = pcall(function()
+      DFDanger:AddHazardOverlayToMap(grid, overlayContext)
+    end)
+    if not okDangerOverlay then
+      -- Keep DF rendering resilient if danger overlay has transient errors.
     end
   end
 
@@ -10075,6 +10121,21 @@ local function BuildDFModeDisplay()
     cliffDrops = 0,
   }
   local terrainCache = {}
+  local gridDistanceCache = {}
+
+  local function TA_GetGridDistance(x, y)
+    local row = gridDistanceCache[y]
+    if not row then
+      row = {}
+      gridDistanceCache[y] = row
+    end
+    local d = row[x]
+    if not d then
+      d = math.sqrt((x * x) + (y * y))
+      row[x] = d
+    end
+    return d
+  end
 
   local function TA_GetTerrainCellAtOffset(wx, wy)
     if not playerWorldX or not playerWorldY then
@@ -10171,7 +10232,7 @@ local function BuildDFModeDisplay()
 
       local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
       local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
-      local dist = math.sqrt(x * x + y * y)
+      local dist = TA_GetGridDistance(x, y)
 
       local baseCell = "."
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
@@ -10328,7 +10389,6 @@ local function BuildDFModeDisplay()
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
         cell = grid[wy][wx]
       end
-      local dist = math.sqrt(x * x + y * y)
 
       local showThreat = (viewMode == "threat" or viewMode == "combined")
       local showExploration = (viewMode == "exploration" or viewMode == "combined")
@@ -10366,7 +10426,11 @@ local function BuildDFModeDisplay()
       end
 
       if showRange then
-        if (math.abs(dist - 2) < 0.5 or math.abs(dist - 4) < 0.5 or math.abs(dist - 6) < 0.5) and cell == "." then
+        local distSq = (x * x) + (y * y)
+        local ring2 = (distSq >= 2.25 and distSq < 6.25)
+        local ring4 = (distSq >= 12.25 and distSq < 20.25)
+        local ring6 = (distSq >= 30.25 and distSq < 42.25)
+        if (ring2 or ring4 or ring6) and cell == "." then
           cell = "-"
         end
       end
@@ -10669,10 +10733,18 @@ function TA_UpdateDFMode()
   end
   
   local now = GetTime()
-  if now - TA.dfModeLastUpdate < 0.01 then
-    return  -- Update at most every 0.01 seconds
+  local dfInterval = tonumber(TA.tickerIntervals and TA.tickerIntervals.df) or 0.1
+  if now - TA.dfModeLastUpdate < dfInterval then
+    return  -- Update at most every configured DF ticker interval.
   end
   TA.dfModeLastUpdate = now
+
+  -- DFDanger integration: evaluate passive warnings on a slower internal cadence.
+  if DFDanger and DFDanger.Tick then
+    pcall(function()
+      DFDanger:Tick()
+    end)
+  end
   
   local display = BuildDFModeDisplay()
   local mapLines = dfModeFrame.mapLines
@@ -10680,17 +10752,23 @@ function TA_UpdateDFMode()
   if display then
     for line in display:gmatch("[^\n]+") do
       if mapLines[i] then
-        mapLines[i]:SetText(line)
+        if mapLines[i]:GetText() ~= line then
+          mapLines[i]:SetText(line)
+        end
         i = i + 1
       end
     end
   else
-    if mapLines[1] then mapLines[1]:SetText("Error generating tactical map.") end
+    if mapLines[1] and mapLines[1]:GetText() ~= "Error generating tactical map." then
+      mapLines[1]:SetText("Error generating tactical map.")
+    end
     i = 2
   end
   -- Blank out any rows below the current map
   for j = i, #mapLines do
-    mapLines[j]:SetText("")
+    if mapLines[j]:GetText() ~= "" then
+      mapLines[j]:SetText("")
+    end
   end
   local viewMode = TA.dfModeViewMode or "threat"
   local terrain = TA.dfModeTerrainContext
@@ -10900,8 +10978,10 @@ function TA_GetEffectiveDFYardsPerCell()
   return yards
 end
 
-function TA_GetProjectedDFPlayerWorldPosition()
-  local playerWorldX, playerWorldY = UnitPosition("player")
+function TA_GetProjectedDFPlayerWorldPosition(playerWorldX, playerWorldY)
+  if not playerWorldX or not playerWorldY then
+    playerWorldX, playerWorldY = UnitPosition("player")
+  end
   if not playerWorldX or not playerWorldY then
     return nil, nil
   end
@@ -12178,11 +12258,24 @@ function TA_EnsureRuntimeTickers()
           end
         end
       end
+
+      -- Keep quest-route candidate refresh out of DF render loop.
+      if TA_GetQuestRouterStore and TA_BuildQuestRouteCandidates then
+        local qstore = TA_GetQuestRouterStore()
+        if qstore and qstore.enabled ~= false then
+          local qnow = GetTime()
+          if not TA.questRouteOverlay or (qnow - (TA.questRouteLastAt or 0)) > 3 then
+            TA_BuildQuestRouteCandidates(1)
+          end
+        else
+          TA.questRouteOverlay = nil
+        end
+      end
       TA:ProfileEnd("awarenessMemoryTicker")
     end)
   end
   if not TA.dfModeTicker then
-    TA.dfModeTicker = C_Timer.NewTicker(TA.tickerIntervals.df or 0.01, function()
+    TA.dfModeTicker = C_Timer.NewTicker(TA.tickerIntervals.df or 0.1, function()
       TA:ProfileStart("dfModeTicker")
       TA_UpdateDFMode()
       TA:ProfileEnd("dfModeTicker")

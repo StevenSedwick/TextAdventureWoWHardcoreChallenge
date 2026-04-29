@@ -1,0 +1,1 @@
+Terrain appears road ahead. possible hostile presence: wolf. structure visible: none. obstacles nearby: tree.

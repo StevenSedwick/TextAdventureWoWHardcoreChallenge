@@ -39,6 +39,196 @@
                 "${workspaceFolder}\\.vscode\\scripts\\package-curseforge-release.ps1"
             ],
             "problemMatcher": []
+        },
+        {
+            "label": "Run Interactive Test Console",
+            "type": "shell",
+            "command": "lua",
+            "args": [
+                "${workspaceFolder}\\test\\test-runner.lua",
+                "${workspaceFolder}",
+                "interactive"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Batch Tests",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\.vscode\\scripts\\run-batch-tests.ps1",
+                "-WorkspaceFolder",
+                "${workspaceFolder}"
+            ],
+            "isBackground": false,
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Preflight Validate Addon",
+            "dependsOn": [
+                "Run Batch Tests"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "group": "test"
+        },
+        {
+            "label": "Setup Test Environment",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\.vscode\\scripts\\setup-test-environment.ps1"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Look Accessibility Prototype",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\.vscode\\scripts\\run-look-prototype.ps1",
+                "-WorkspaceFolder",
+                "${workspaceFolder}",
+                "-Mode",
+                "placeholder"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Look Accessibility (Local Weights)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\.vscode\\scripts\\run-look-prototype.ps1",
+                "-WorkspaceFolder",
+                "${workspaceFolder}",
+                "-Mode",
+                "local"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Train Look Scene Model",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\train_scene_model.py",
+                "--dataset",
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\dataset_template.csv",
+                "--out-dir",
+                "${workspaceFolder}\\tools\\look_accessibility\\model"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Predict Look Scene From Frame",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\predict_scene_model.py",
+                "--model-dir",
+                "${workspaceFolder}\\tools\\look_accessibility\\model",
+                "--image",
+                "${workspaceFolder}\\tools\\look_accessibility\\temp\\wow_frame_sample.png",
+                "--zone",
+                "Elwynn Forest",
+                "--map-id",
+                "1429",
+                "--x",
+                "0.42",
+                "--y",
+                "0.68",
+                "--facing",
+                "1.57",
+                "--pitch",
+                "0.15",
+                "--zoom",
+                "2.6"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Collect Look Training Samples",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\collect_dataset.py",
+                "--workspace-root",
+                "${workspaceFolder}",
+                "--dataset-csv",
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\collected_dataset.csv",
+                "--samples-dir",
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\samples",
+                "--count",
+                "1"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "Collect Look Training Samples (Hotkey Loop)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\collect_dataset.py",
+                "--workspace-root",
+                "${workspaceFolder}",
+                "--dataset-csv",
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\collected_dataset.csv",
+                "--samples-dir",
+                "${workspaceFolder}\\tools\\look_accessibility\\training\\samples",
+                "--watch",
+                "--hotkey",
+                "ctrl+shift+k"
+            ],
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Look Accessibility (Trained Joblib)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\.vscode\\scripts\\run-look-prototype.ps1",
+                "-WorkspaceFolder",
+                "${workspaceFolder}",
+                "-Mode",
+                "joblib",
+                "-ModelDir",
+                "${workspaceFolder}\\tools\\look_accessibility\\model"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
         }
     ]
 }
