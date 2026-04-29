@@ -17,6 +17,12 @@ D.lastPrintedSeverity = 0
 D.lastPrintedHazardKey = nil
 D.lastEvaluation = nil
 D.history = D.history or {}
+D.ZoneIndex = D.ZoneIndex or {}
+D.ticker = D.ticker or nil
+D.eventFrame = D.eventFrame or nil
+D.suppressReason = nil
+D.lastSuppressed = false
+D.lastZoneSeen = nil
 
 local SEVERITY_RANK = {
   none = 0,
@@ -329,6 +335,11 @@ function D:IsMovingTowardHazard(hazard)
     return false, nil
   end
 
+  local dt = (tonumber(cur.t) or 0) - (tonumber(prev.t) or 0)
+  if dt <= 0 or dt > 2.0 then
+    return false, nil
+  end
+
   local prevDist = self:Distance2D(prev.x, prev.y, hazard.x, hazard.y)
   local curDist = self:Distance2D(cur.x, cur.y, hazard.x, hazard.y)
   local delta = prevDist - curDist
@@ -338,10 +349,19 @@ end
 function D:PushHistory(x, y)
   local now = GetTime and GetTime() or 0
   local history = self.history
-  history[#history + 1] = { x = x, y = y, t = now }
-  while #history > 6 do
-    table.remove(history, 1)
+  local n = #history
+  if n >= 6 then
+    for i = 1, n - 1 do
+      history[i] = history[i + 1]
+    end
+    history[n] = { x = x, y = y, t = now }
+  else
+    history[n + 1] = { x = x, y = y, t = now }
   end
+end
+
+function D:ResetHistory()
+  self.history = {}
 end
 
 function D:GetWarningText(severity, direction, hazard)
@@ -394,9 +414,14 @@ function D:EvaluateDanger()
   self:PushHistory(x, y)
 
   local best = nil
-  for i = 1, #self.DangerAnchors do
-    local h = self.DangerAnchors[i]
-    local sameZone = (SafeLower(h.zone) == SafeLower(zone))
+  local zoneKey = SafeLower(zone)
+  local list = self.ZoneIndex and self.ZoneIndex[zoneKey] or nil
+  if not list then
+    list = self.DangerAnchors
+  end
+  for i = 1, #list do
+    local h = list[i]
+    local sameZone = (list == self.DangerAnchors) and (SafeLower(h.zone) == zoneKey) or true
     if sameZone then
       local dist = self:Distance2D(x, y, h.x, h.y)
       local radius = tonumber(h.radius) or 0
@@ -486,13 +511,40 @@ function D:RenderHazardSymbol(symbol, color)
   return "|cffffffff" .. s .. "|r"
 end
 
-function D:WorldToDFCell(x, y)
-  -- TODO: Replace this stub with exact world-coordinate to DF grid conversion
-  -- if/when a stable shared transform is available in DF map renderer.
-  return nil, nil
+function D:WorldToDFCell(anchorX, anchorY, playerX, playerY, yardsPerCell)
+  return self:MapToDFCell(anchorX, anchorY, playerX, playerY, yardsPerCell or 5)
 end
 
+local YPP_CACHE = {}
 function D:GetYardsPerPercent()
+  local mapID = nil
+  if C_Map and C_Map.GetBestMapForUnit then
+    local okID, id = pcall(C_Map.GetBestMapForUnit, "player")
+    if okID then mapID = id end
+  end
+  if mapID and YPP_CACHE[mapID] then
+    return YPP_CACHE[mapID]
+  end
+  if mapID and C_Map and C_Map.GetWorldPosFromMapPos then
+    local makeVec = CreateVector2D or function(x, y) return { x = x, y = y } end
+    local ok1, p1 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.0, 0.5))
+    local ok2, p2 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(1.0, 0.5))
+    if ok1 and ok2 and p1 and p2 then
+      ---@diagnostic disable-next-line: undefined-field
+      local x1 = tonumber(p1.x) or tonumber(p1[1]) or 0
+      ---@diagnostic disable-next-line: undefined-field
+      local y1 = tonumber(p1.y) or tonumber(p1[2]) or 0
+      ---@diagnostic disable-next-line: undefined-field
+      local x2 = tonumber(p2.x) or tonumber(p2[1]) or 0
+      ---@diagnostic disable-next-line: undefined-field
+      local y2 = tonumber(p2.y) or tonumber(p2[2]) or 0
+      local width = math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1))
+      if width > 0 then
+        YPP_CACHE[mapID] = width
+        return width
+      end
+    end
+  end
   if TA_GetQuestRouterStore then
     local ok, store = pcall(TA_GetQuestRouterStore)
     if ok and type(store) == "table" then
@@ -666,10 +718,72 @@ function D:DebugPrint(eval)
   end
 end
 
+function D:IsSuppressed()
+  if UnitOnTaxi and UnitOnTaxi("player") then
+    self.suppressReason = "taxi"
+    return true
+  end
+  if IsInInstance then
+    local ok, inInstance = pcall(IsInInstance)
+    if ok and inInstance then
+      self.suppressReason = "instance"
+      return true
+    end
+  end
+  self.suppressReason = nil
+  return false
+end
+
+function D:ResetState(reason)
+  self.lastEvaluation = nil
+  self.lastEvalAt = 0
+  self.lastPrintAt = 0
+  self.lastPrintedSeverity = 0
+  self.lastPrintedHazardKey = nil
+  self:ResetHistory()
+  if self.debug and AddLine then
+    AddLine("system", "[DFDanger] state reset (" .. tostring(reason or "manual") .. ").")
+  end
+end
+
+function D:RebuildZoneIndex()
+  local idx = {}
+  for i = 1, #self.DangerAnchors do
+    local h = self.DangerAnchors[i]
+    local key = SafeLower(h.zone)
+    local bucket = idx[key]
+    if not bucket then
+      bucket = {}
+      idx[key] = bucket
+    end
+    bucket[#bucket + 1] = h
+  end
+  self.ZoneIndex = idx
+end
+
 function D:Tick()
   if not self.enabled then
     return
   end
+  local suppressed = self:IsSuppressed()
+  if suppressed then
+    if not self.lastSuppressed then
+      self:ResetState(self.suppressReason or "suppressed")
+      self.lastSuppressed = true
+    end
+    return
+  end
+  if self.lastSuppressed then
+    self.lastSuppressed = false
+    self:ResetState("resumed")
+  end
+
+  local zoneNow = (GetZoneText and GetZoneText()) or ""
+  if self.lastZoneSeen and self.lastZoneSeen ~= zoneNow then
+    self:ResetState("zone change tick")
+  end
+  self.lastZoneSeen = zoneNow
+
   local now = GetTime and GetTime() or 0
   if (now - (self.lastEvalAt or 0)) < (self.updateInterval or 0.35) then
     return
@@ -677,10 +791,53 @@ function D:Tick()
   self.lastEvalAt = now
 
   local _, severity, _, _, eval = self:EvaluateDanger()
-  if severity ~= "none" and eval then
+  if not eval then
+    self.lastPrintedHazardKey = nil
+    self.lastPrintedSeverity = 0
+  elseif severity ~= "none" then
     self:PrintWarning(eval)
   end
   self:DebugPrint(eval)
+end
+
+function D:EnsureTicker()
+  if self.ticker then return end
+  if C_Timer and C_Timer.NewTicker then
+    self.ticker = C_Timer.NewTicker(self.updateInterval or 0.35, function()
+      local ok, err = pcall(function() D:Tick() end)
+      if not ok and D.debug and AddLine then
+        AddLine("system", "[DFDanger] tick error: " .. tostring(err))
+      end
+    end)
+  end
+end
+
+function D:EnsureEventFrame()
+  if self.eventFrame then return end
+  if not CreateFrame then return end
+  local f = CreateFrame("Frame")
+  f:RegisterEvent("PLAYER_LOGIN")
+  f:RegisterEvent("PLAYER_ENTERING_WORLD")
+  f:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+  f:RegisterEvent("ZONE_CHANGED")
+  f:RegisterEvent("ZONE_CHANGED_INDOORS")
+  f:RegisterEvent("PLAYER_CONTROL_LOST")
+  f:RegisterEvent("PLAYER_CONTROL_GAINED")
+  f:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_LOGIN" then
+      D:RebuildZoneIndex()
+      D:EnsureTicker()
+    elseif event == "PLAYER_ENTERING_WORLD" then
+      D:ResetState(event)
+      D:RebuildZoneIndex()
+      D:EnsureTicker()
+    elseif event == "ZONE_CHANGED_NEW_AREA" or event == "ZONE_CHANGED" or event == "ZONE_CHANGED_INDOORS" then
+      D:ResetState(event)
+    elseif event == "PLAYER_CONTROL_LOST" or event == "PLAYER_CONTROL_GAINED" then
+      D:ResetState(event)
+    end
+  end)
+  self.eventFrame = f
 end
 
 local function PersistFlags()
@@ -818,6 +975,7 @@ function D:AddPointHere(name, hazardType, radius)
   }
 
   table.insert(self.DangerAnchors, point)
+  self:RebuildZoneIndex()
   self:PersistAnchors()
   AddLine(
     "system",
@@ -863,6 +1021,7 @@ function D:AddPointXY(name, hazardType, x, y, radius, dropDirection, zone)
   }
 
   table.insert(self.DangerAnchors, point)
+  self:RebuildZoneIndex()
   self:PersistAnchors()
   return true
 end
@@ -872,6 +1031,7 @@ function D:ClearAnchors()
   self.lastEvaluation = nil
   self.lastPrintedHazardKey = nil
   self.lastPrintedSeverity = 0
+  self:RebuildZoneIndex()
   self:PersistAnchors()
   AddLine("system", "DFDanger anchors cleared.")
 end
@@ -927,6 +1087,7 @@ function D:ImportAnchorBatch(payload, replaceExisting)
     end
   end
 
+  self:RebuildZoneIndex()
   self:PersistAnchors()
   AddLine("system", string.format("DFDanger import complete: %d imported, %d skipped.", imported, skipped))
 end
@@ -1145,3 +1306,6 @@ if TA and TA.EXACT_INPUT_HANDLERS and TA_AddPatternInputHandler and TA_RegisterD
 end
 
 LoadFlags()
+D:RebuildZoneIndex()
+D:EnsureEventFrame()
+D:EnsureTicker()
