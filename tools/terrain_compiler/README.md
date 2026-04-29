@@ -1,0 +1,76 @@
+# WoW Classic Terrain Compiler (External)
+
+This project compiles extracted WoW Classic map files (`.wdt`, `.adt`) into lightweight Lua terrain tables for TextAdventurer DFMode.
+
+It runs **outside the game client** and generates static Lua data files.
+
+## Features
+
+- Reads WDT tile-presence data (`MAIN` chunk)
+- Reads ADT terrain chunks (`MCNK` + `MCVT`) and samples height grid
+- Supports split ADT variants and merges tile parts (for example `_obj0`, `_tex0`) into one output tile
+- Computes per-sample slope estimates
+- Flags water chunks when water data is present (`MH2O`/`MCLQ`)
+- Adds optional terrain texture labels from `MTEX` + `MCLY`
+- Adds optional doodad/WMO markers from `MDDF`/`MODF`
+- Emits output as Lua table (example: `DFMode_TerrainData.lua`)
+
+## Install
+
+```powershell
+cd tools/terrain_compiler
+python -m pip install -e .
+```
+
+## Usage
+
+```powershell
+cd tools/terrain_compiler
+python -m terrain_compiler \
+  --input-root "D:/wow-extracted/maps" \
+  --map Azeroth \
+  --zone-key elwynn_forest \
+  --output "../../release/DFMode_TerrainData.lua" \
+  --sample-stride 4
+```
+
+## Input Expectations
+
+Your extracted map folder should look similar to:
+
+```text
+<root>/Azeroth/
+  Azeroth.wdt
+  Azeroth_31_24.adt
+  Azeroth_31_25.adt
+  ...
+```
+
+## Output Schema
+
+The generated Lua table includes:
+
+- `zoneKey`
+- `mapName`
+- `mapBounds`
+  - `tileMin`, `tileMax`
+  - `chunkMin`, `chunkMax`
+- `tilesPresent`
+- `chunks[]`
+  - `tile`
+  - `chunk`
+  - `world`
+  - `heights`
+  - `slope`
+  - `hasWater`, `waterLevel`
+  - `texture`
+- `markers[]`
+  - `kind` (`doodad`/`wmo`)
+  - `id`
+  - `pos`
+
+## Notes / Limitations
+
+- This is intentionally a lightweight compiler for DFMode runtime data.
+- Some ADT internals vary between client versions; chunk-position and water-level extraction is best-effort.
+- Split ADT variants are merged by tile/chunk key, preferring richer geometry and filling optional water/texture fields.
