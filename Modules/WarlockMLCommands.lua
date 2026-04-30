@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-function TA_RegisterWarlockMLCommandHandlers(exactHandlers, addPatternHandler)
+﻿function TA_RegisterWarlockMLCommandHandlers(exactHandlers, addPatternHandler)
   if TA.warlockMLCommandHandlersRegistered then
     return
   end

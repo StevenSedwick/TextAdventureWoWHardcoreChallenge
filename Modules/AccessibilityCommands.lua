@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-if not TA then
+﻿if not TA then
   return
 end
 

@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-if not TA then
+﻿if not TA then
   return
 end
 
@@ -146,6 +144,10 @@ end
 
 if TA_RegisterMacroRecipeCommandHandlers then
   TA_RegisterMacroRecipeCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
+if TA_RegisterTalentCommandHandlers then
+  TA_RegisterTalentCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
 TA_AddPatternInputHandler("^bind%s+(%d+)%s+(%d+)$", function(slot, spellIndex) BindSpellbookSpellToActionSlot(tonumber(slot), tonumber(spellIndex)) end)

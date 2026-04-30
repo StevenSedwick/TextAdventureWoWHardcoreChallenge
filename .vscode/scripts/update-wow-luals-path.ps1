@@ -33,7 +33,11 @@ if (-not (Test-Path -Path $annotationsCore)) {
     throw "Annotations\\Core not found in extension: $($latestWowApi.FullName)"
 }
 
-$portablePath = "`${env:USERPROFILE}/.vscode/extensions/$($latestWowApi.Name)/Annotations/Core"
+$annotationsFrameXML = Join-Path $latestWowApi.FullName "Annotations\FrameXML"
+$hasFrameXML = Test-Path -Path $annotationsFrameXML
+
+$portableCore = "`${env:USERPROFILE}/.vscode/extensions/$($latestWowApi.Name)/Annotations/Core"
+$portableFrameXML = "`${env:USERPROFILE}/.vscode/extensions/$($latestWowApi.Name)/Annotations/FrameXML"
 
 function Set-JsonArrayProperty {
     param(
@@ -44,7 +48,7 @@ function Set-JsonArrayProperty {
         [string]$PropertyName,
 
         [Parameter(Mandatory = $true)]
-        [string]$PropertyValue
+        [string[]]$PropertyValues
     )
 
     if (Test-Path -Path $JsonPath) {
@@ -54,24 +58,25 @@ function Set-JsonArrayProperty {
         $jsonObject = [pscustomobject]@{}
     }
 
+    $newArray = @($PropertyValues)
     $property = $jsonObject.PSObject.Properties[$PropertyName]
-    if (-not $property -or -not $property.Value) {
-        $jsonObject | Add-Member -MemberType NoteProperty -Name $PropertyName -Value @($PropertyValue) -Force
+    if (-not $property) {
+        $jsonObject | Add-Member -MemberType NoteProperty -Name $PropertyName -Value $newArray -Force
     } else {
-        $propertyValues = @($property.Value)
-        if ($propertyValues.Count -eq 0) {
-            $propertyValues = @($PropertyValue)
-        } else {
-            $propertyValues[0] = $PropertyValue
-        }
-        $property.Value = $propertyValues
+        $property.Value = $newArray
     }
 
     $updatedJson = $jsonObject | ConvertTo-Json -Depth 100
     Set-Content -Path $JsonPath -Value $updatedJson -Encoding UTF8
 }
 
-Set-JsonArrayProperty -JsonPath $settingsPath -PropertyName "Lua.workspace.library" -PropertyValue $portablePath
-Set-JsonArrayProperty -JsonPath $luarcPath -PropertyName "workspace.library" -PropertyValue $portablePath
+$libraryPaths = @($portableCore)
+if ($hasFrameXML) {
+    $libraryPaths += $portableFrameXML
+}
 
-Write-Output "Updated Lua.workspace.library and workspace.library to: $portablePath"
+Set-JsonArrayProperty -JsonPath $settingsPath -PropertyName "Lua.workspace.library" -PropertyValues $libraryPaths
+Set-JsonArrayProperty -JsonPath $luarcPath -PropertyName "workspace.library" -PropertyValues $libraryPaths
+
+Write-Output "Updated Lua.workspace.library and workspace.library to:"
+$libraryPaths | ForEach-Object { Write-Output "  $_" }

@@ -1,4 +1,4 @@
--- TextAdventurer.lua
+﻿-- TextAdventurer.lua
 ---@diagnostic disable: deprecated
 -- Put this file in:
 -- World of Warcraft/_classic_/Interface/AddOns/TextAdventurer/
@@ -131,7 +131,7 @@ TA.routeFollowIndex = nil
 TA.routeLastGuidedCell = nil
 TA.pendingWhoQuery = nil
 TA.pendingCVarList = false
-TA.dfModeEnabled = false
+TA.dfModeEnabled = true
 TA.lastNearbyUnits = {}
 TA.nearbyUnitsCacheAt = 0
 TA.nearbyUnitsCacheInterval = 0.15
@@ -147,7 +147,7 @@ TA.dfModeLookaheadSeconds = 0.12  -- short player-only projection to make DF cel
 TA.dfModeHysteresisEnterPct = 0.38  -- enter next DF cell early, then require backing out farther before snapping back
 TA.dfModeAnchorCellX = nil
 TA.dfModeAnchorCellY = nil
-TA.dfModeMarkRadius = 0  -- cells around mark center to draw edge ring (0 = center cell only)
+TA.dfModeMarkRadius = 5  -- cells around mark center to draw edge ring (0 = center cell only)
 TA.dfModeRecentCells = {}  -- Track recently visited cells for breadcrumb trail
 TA.dfModeLastFacing = nil
 TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
@@ -156,14 +156,14 @@ TA.dfModeLastNearestMarkID = nil
 TA.dfModeLastNearestMarkDist = nil
 TA.dfModeSonarContacts = {}
 TA.dfModeSonarPulseUntil = 0
-TA.dfModeSonarTTL = 8
+TA.dfModeSonarTTL = 60
 TA.dfModeLastKnownUnits = {}
 TA.dfModeCorpseContacts = {}
 TA.dfModeCorpseTTL = 45
 TA.dfModeTerrainContext = nil
 TA.dfModeTerrainStandingLabel = nil
 TA.dfModeTerrainStandingShort = nil
-TA.dfModeHueEnabled = false
+TA.dfModeHueEnabled = true
 TA.dfModeCalibrationEnabled = false
 TA.dfModeLegendEnabled = true
 TA.performanceModeEnabled = false
@@ -563,7 +563,8 @@ end
 TA_UpdateInputBoxLayout(inputBox)
 
 local DF_MODE_DEFAULT_WIDTH = 400
-local DF_MODE_DEFAULT_HEIGHT = 625
+local DF_MODE_DEFAULT_HEIGHT = 600
+local DF_MODE_MIN_USABLE_WIDTH = 300
 
 local dfModeFrame = CreateFrame("Frame", "TextAdventurerDFModeFrame", UIParent, "BackdropTemplate")
 dfModeFrame:SetSize(DF_MODE_DEFAULT_WIDTH, DF_MODE_DEFAULT_HEIGHT)
@@ -575,7 +576,7 @@ if dfModeFrame.SetResizable then
   dfModeFrame:SetResizable(true)
 end
 if dfModeFrame.SetMinResize then
-  dfModeFrame:SetMinResize(100, 200)
+  dfModeFrame:SetMinResize(300, 200)
 end
 if dfModeFrame.SetMaxResize then
   dfModeFrame:SetMaxResize(1200, 1000)
@@ -1525,14 +1526,54 @@ function IsAnchorCompatible(anchor, gridX, gridY)
   return true
 end
 
+function GetMapWorldDimensions(mapID)
+  -- Returns (widthYards, heightYards) for a zone map, measured via corner
+  -- samples through C_Map.GetWorldPosFromMapPos. This is a fallback for
+  -- Classic Era where C_Map.GetMapInfo does not populate width/height.
+  -- Cached per mapID since these never change at runtime.
+  if not mapID then return nil, nil end
+  TA._mapYardsCache = TA._mapYardsCache or {}
+  local cached = TA._mapYardsCache[mapID]
+  if cached then return cached.width, cached.height end
+
+  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
+  if mapInfo and tonumber(mapInfo.width) and tonumber(mapInfo.height) and mapInfo.width > 0 and mapInfo.height > 0 then
+    TA._mapYardsCache[mapID] = { width = mapInfo.width, height = mapInfo.height }
+    return mapInfo.width, mapInfo.height
+  end
+
+  if C_Map and C_Map.GetWorldPosFromMapPos then
+    local makeVec = CreateVector2D or function(vx, vy) return { x = vx, y = vy } end
+    -- C_Map.GetWorldPosFromMapPos returns (continentID, worldPos) -- the
+    -- vector is the SECOND return value.
+    local ok1, _c1, p1 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.0, 0.5))
+    local ok2, _c2, p2 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(1.0, 0.5))
+    local ok3, _c3, p3 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.5, 0.0))
+    local ok4, _c4, p4 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.5, 1.0))
+    if ok1 and ok2 and ok3 and ok4
+        and type(p1) == "table" and type(p2) == "table"
+        and type(p3) == "table" and type(p4) == "table" then
+      local function vx(p) return tonumber(p.x) or tonumber(p[1]) or 0 end
+      local function vy(p) return tonumber(p.y) or tonumber(p[2]) or 0 end
+      local widthYards = math.sqrt((vx(p2) - vx(p1))^2 + (vy(p2) - vy(p1))^2)
+      local heightYards = math.sqrt((vx(p4) - vx(p3))^2 + (vy(p4) - vy(p3))^2)
+      if widthYards > 0 and heightYards > 0 then
+        TA._mapYardsCache[mapID] = { width = widthYards, height = heightYards }
+        return widthYards, heightYards
+      end
+    end
+  end
+  return nil, nil
+end
+
 function GetCellGridForMap(mapID)
   local mode = TA.cellSizeMode == "yards" and "yards" or "grid"
   local targetYards = tonumber(TA.cellSizeYards)
-  if mode == "yards" then
-    local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
-    if targetYards and targetYards > 0 and mapInfo and mapInfo.width and mapInfo.height and mapInfo.width > 0 and mapInfo.height > 0 then
-      local gridX = ClampGridSize(math.floor((mapInfo.width / targetYards) + 0.5))
-      local gridY = ClampGridSize(math.floor((mapInfo.height / targetYards) + 0.5))
+  if mode == "yards" and targetYards and targetYards > 0 then
+    local mapWidthYards, mapHeightYards = GetMapWorldDimensions(mapID)
+    if mapWidthYards and mapHeightYards then
+      local gridX = ClampGridSize(math.floor((mapWidthYards / targetYards) + 0.5))
+      local gridY = ClampGridSize(math.floor((mapHeightYards / targetYards) + 0.5))
       return gridX, gridY, "yards", targetYards
     end
   end
@@ -6734,7 +6775,34 @@ local function DoTargetCommand(arg)
       AddLine("system", "Target cycling unavailable.")
     end
   elseif lower == "corpse" then
-    if TargetNearestEnemy then
+    -- TargetNearestEnemy() does not pick up corpses in Classic Era. Instead,
+    -- use our tracked dfModeCorpseContacts list and target the closest one
+    -- by name via TargetUnit. Falls back to TargetNearestEnemy(true) if we
+    -- have no recent corpse contacts (some private servers do honor it).
+    local now = (GetTime and GetTime()) or 0
+    local px, py
+    if UnitPosition then px, py = UnitPosition("player") end
+    local bestName, bestDist
+    for _, c in pairs(TA.dfModeCorpseContacts or {}) do
+      if type(c) == "table" and c.name and c.expiresAt and c.expiresAt > now then
+        local d
+        if px and py and c.worldX and c.worldY then
+          local dx = c.worldX - px
+          local dy = c.worldY - py
+          d = (dx * dx) + (dy * dy)
+        else
+          d = math.huge
+        end
+        if not bestDist or d < bestDist then
+          bestDist = d
+          bestName = c.name
+        end
+      end
+    end
+    if bestName and TargetUnit then
+      TargetUnit(bestName)
+      AddLine("target", "You attempt to target the corpse of " .. bestName .. ".")
+    elseif TargetNearestEnemy then
       TargetNearestEnemy(true)
       AddLine("target", "You attempt to target the nearest corpse.")
     else
@@ -8911,11 +8979,19 @@ local function CollectNearbyUnitsWithPositions()
           unitType = "friendly"
         end
         
-        -- Get distance estimate from UnitDistance or calculate from coordinates
-        local distance = 0
+        -- Get distance estimate -- prefer exact world-position math (works at
+        -- any range and is accurate to <1 yard). Fall back to interact-distance
+        -- buckets when positions are unavailable. Fall back to "far" only when
+        -- both methods fail. Previously CheckInteractDistance ran first and
+        -- locked very-close units to 5 yards even when exact pos would have
+        -- said 0.3, which propagated into clamped grid placement.
         local unitX, unitY = UnitPosition(unit)
-        if CheckInteractDistance then
-          -- Try to get approximate distance
+        local distance = 0
+        if unitX and unitY and playerX and playerY then
+          local dx = unitX - playerX
+          local dy = unitY - playerY
+          distance = math.sqrt(dx*dx + dy*dy)
+        elseif CheckInteractDistance then
           for i = 1, 4 do
             if TA_TryInteractDistance(unit, i) then
               distance = i * 5
@@ -8923,16 +8999,8 @@ local function CollectNearbyUnitsWithPositions()
             end
           end
         end
-        
-        -- Fallback to trying position calculation
-        if distance == 0 then
-          if unitX and unitY and playerX and playerY then
-            local dx = unitX - playerX
-            local dy = unitY - playerY
-            distance = math.sqrt(dx*dx + dy*dy)
-          else
-            distance = 50  -- assume far if we can't get position
-          end
+        if distance == 0 and not (unitX and unitY and playerX and playerY) then
+          distance = 50  -- assume far if we truly cannot measure
         end
         
         table.insert(units[unitType], {
@@ -9697,6 +9765,8 @@ local function BuildDFModeDisplay()
   -- Get target
   local targetName = UnitName("target")
   local targetUnit = targetName and "target" or nil
+  local targetGUID = targetUnit and UnitGUID("target") or nil
+  local targetPlaced = false
   local targetDistance = nil
   local targetDistanceExact = nil
   local targetDistanceApprox = nil
@@ -9727,6 +9797,31 @@ local function BuildDFModeDisplay()
   local function PlaceUnitByDistance(unit, symbol, unitType)
     if not unit or not unit.distance then return end
 
+    -- Reconciliation: if this unit IS the current target, render as target glyph
+    -- so a single entity does not appear as both E and T in different cells.
+    local isTarget = (targetGUID and unit.guid and unit.guid == targetGUID) and true or false
+    if isTarget then
+      symbol = targetGlyphNear
+      if balanced and unit.distance and unit.distance > 14 then
+        symbol = targetGlyphMid
+      end
+      -- Refresh the target's world position from the live API. The unit pool
+      -- is cached for ~150ms; right after Charge/Intercept/teleport this
+      -- caches stale coords and renders the target at the wrong cell. The
+      -- player's current target is the one cell users notice, so refresh it.
+      if UnitPosition then
+        local lx, ly = UnitPosition("target")
+        if lx and ly then
+          unit.worldX = lx
+          unit.worldY = ly
+          unit.hasExactPos = true
+          local dxLive = lx - (playerWorldX or 0)
+          local dyLive = ly - (playerWorldY or 0)
+          unit.distance = math.sqrt(dxLive * dxLive + dyLive * dyLive)
+        end
+      end
+    end
+
     local dist = math.floor(unit.distance / yardsPerCell)
     if dist <= 0 then dist = 1 end
     if dist <= 0 then dist = 1 end
@@ -9734,12 +9829,23 @@ local function BuildDFModeDisplay()
 
     local x, y
     if unit.hasExactPos and unit.worldX and unit.worldY and playerWorldX and playerWorldY then
-      local dx = unit.worldX - playerWorldX
-      local dy = unit.worldY - playerWorldY
-      local east = dx
-      local north = dy
-      x = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
+      -- WoW Classic UnitPosition returns (posY, posX) -- the first return is
+      -- NORTH and the second is EAST. CollectNearbyUnitsWithPositions stores
+      -- those into worldX/worldY without renaming, so the field "worldX" is
+      -- actually NORTH and "worldY" is actually EAST. Map them to the grid
+      -- correctly here.
+      local north = unit.worldX - playerWorldX
+      local east  = -(unit.worldY - playerWorldY)  -- WoW Classic east axis is negated relative to grid +x
+      x = east  >= 0 and math.floor((east  / yardsPerCell) + 0.5) or math.ceil((east  / yardsPerCell) - 0.5)
       y = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+      if isTarget and TA.dfModeDebugTarget then
+        local lpx, lpy = UnitPosition("player")
+        local ltx, lty = UnitPosition("target")
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+          "|cffff8800[TA-DBG]|r tgt=%s player(p)=(%.1f,%.1f) live(p)=(%.1f,%.1f) tgt(u)=(%.1f,%.1f) live(t)=(%.1f,%.1f) N=%.1f E=%.1f -> cell(%d,%d) ypc=%d",
+          tostring(unit.name), playerWorldX, playerWorldY, lpx or 0, lpy or 0,
+          unit.worldX, unit.worldY, ltx or 0, lty or 0, north, east, x, y, yardsPerCell))
+      end
       if x > innerRadius then x = innerRadius end
       if x < -innerRadius then x = -innerRadius end
       if y > innerRadius then y = innerRadius end
@@ -9750,6 +9856,14 @@ local function BuildDFModeDisplay()
         nameHash = nameHash + string.byte(unit.name, i)
       end
       local angle = math.rad(nameHash % 360)
+
+      -- For the player's current target specifically, the hash angle gives a
+      -- random direction that often disagrees with where the player is looking.
+      -- Override with the facing vector so the target glyph appears in front of
+      -- the player rather than scattered (e.g. NW when facing E).
+      if isTarget and facing then
+        angle = math.atan2(math.cos(facing), -math.sin(facing))
+      end
 
       if balanced then
         -- Coarsen to broad sectors and distance buckets to keep awareness, not precision.
@@ -9771,12 +9885,26 @@ local function BuildDFModeDisplay()
     end
 
     if math.abs(x) <= innerRadius and math.abs(y) <= innerRadius and grid[y] then
-      if grid[y][x] == "." then
+      if isTarget then
+        -- Target glyph always wins; record placement so standalone target
+        -- block can skip and we never render duplicate E/T cells.
+        if grid[y][x] ~= "P" then
+          grid[y][x] = symbol
+        end
+        targetPlaced = true
+        targetDistance = unit.distance
+        targetDistanceExact = unit.hasExactPos and unit.distance or nil
+        targetDistanceApprox = (not unit.hasExactPos) and unit.distance or nil
+        targetRenderedCellDist = math.sqrt((x * x) + (y * y))
+        if unitType == "hostile" then
+          threatHeat[y][x] = (threatHeat[y][x] or 0) + 1
+        end
+      elseif grid[y][x] == "." then
         grid[y][x] = symbol
       elseif grid[y][x] ~= "P" and grid[y][x] ~= symbol then
         grid[y][x] = "*"
       end
-      if unitType == "hostile" then
+      if (not isTarget) and unitType == "hostile" then
         threatHeat[y][x] = (threatHeat[y][x] or 0) + 1
       end
     end
@@ -9794,13 +9922,26 @@ local function BuildDFModeDisplay()
   end
 
   -- Place target with near-visual emphasis in balanced mode.
-  if targetUnit then
+  -- Skip when PlaceUnitByDistance already handled it (GUID-matched against nameplate pool).
+  if targetUnit and not targetPlaced then
+    if TA.dfModeDebugTarget then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[TA-DBG]|r entering standalone target block (no nameplate match)")
+    end
     local tx, ty
     local playerX, playerY = playerWorldX, playerWorldY
     local targetX, targetY = nil, nil
 
     local targetGUID = UnitGUID("target")
-    if targetGUID then
+
+    -- Always prefer LIVE UnitPosition("target") over the cached unit pool.
+    -- The pool is only refreshed every nearbyUnitsCacheInterval (~150ms), so
+    -- after a Charge/Intercept/Death-Grip the cached worldX/worldY still
+    -- reflect the pre-teleport position. Subtracting the new player position
+    -- produces a huge bogus delta that pins the target to the grid edge.
+    targetX, targetY = UnitPosition("target")
+
+    -- Cache fallback: only use stored position if live UnitPosition failed.
+    if (not targetX or not targetY) and targetGUID then
       local pools = { units.hostile or {}, units.neutral or {}, units.friendly or {} }
       for i = 1, #pools do
         local pool = pools[i]
@@ -9815,26 +9956,24 @@ local function BuildDFModeDisplay()
       end
     end
 
-    if not targetX or not targetY then
-      targetX, targetY = UnitPosition("target")
-    end
-
     if playerX and playerY and targetX and targetY then
-      local dx = targetX - playerX
-      local dy = targetY - playerY
-      targetDistance = math.sqrt(dx * dx + dy * dy)
+      -- Same UnitPosition axis swap as PlaceUnitByDistance: first return is
+      -- NORTH, second is EAST. The variables are mis-named upstream but the
+      -- math here treats the deltas as their true world axes.
+      local north = targetX - playerX
+      local east  = -(targetY - playerY)  -- WoW Classic east axis is negated relative to grid +x
+      targetDistance = math.sqrt(north * north + east * east)
       targetDistanceExact = targetDistance
-      local east = dx
-      local north = dy
-      tx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
+      tx = east  >= 0 and math.floor((east  / yardsPerCell) + 0.5) or math.ceil((east  / yardsPerCell) - 0.5)
       ty = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+      if TA.dfModeDebugTarget then
+        local lpx, lpy = UnitPosition("player")
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+          "|cffff8800[TA-DBG-S]|r player(p)=(%.1f,%.1f) live(p)=(%.1f,%.1f) tgt=(%.1f,%.1f) N=%.1f E=%.1f cell(%d,%d) ypc=%d",
+          playerX, playerY, lpx or 0, lpy or 0, targetX, targetY, north, east, tx, ty, yardsPerCell))
+      end
     else
       targetUsedFallback = true
-      local nameHash = 0
-      for i = 1, #(targetName or "") do
-        nameHash = nameHash + string.byte(targetName, i)
-      end
-      local angle = math.rad(nameHash % 360)
 
       -- Determine actual distance before placement
       if CheckInteractDistance then
@@ -9846,17 +9985,30 @@ local function BuildDFModeDisplay()
         targetDistanceApprox = targetDistance
       end
 
-      -- Place target at angle using actual distance (or default 2 cells if no distance)
+      -- Without exact world coords, best guess is the direction the player is
+      -- looking (you almost always face what you target). Place the glyph in
+      -- front of P along the facing vector at the measured distance.
+      -- Previously this used a hash of the target name to pick a random angle,
+      -- which scattered targets to incorrect quadrants like NW when facing E.
       local cellDist = targetDistance and math.floor(targetDistance / yardsPerCell + 0.5) or 2
-      tx = math.floor(math.cos(angle) * cellDist)
-      ty = math.floor(math.sin(angle) * cellDist)
+      if cellDist < 1 then cellDist = 1 end
+      local forwardX = -math.sin(facing or 0)  -- east component of facing
+      local forwardY = math.cos(facing or 0)   -- north component of facing
+      tx = math.floor((forwardX * cellDist) + 0.5)
+      ty = math.floor((forwardY * cellDist) + 0.5)
+      if tx == 0 and ty == 0 then ty = 1 end
     end
 
     if tx and ty then
-      if tx > innerRadius then tx = innerRadius end
-      if tx < -innerRadius then tx = -innerRadius end
-      if ty > innerRadius then ty = innerRadius end
-      if ty < -innerRadius then ty = -innerRadius end
+      -- Track whether we had to clamp the target into the visible grid. When
+      -- the target is far enough that its real position lands beyond the
+      -- innerRadius edge, we still want to show it -- but pin it to the edge
+      -- so the user understands "this thing is past the edge of my map".
+      local clampedToEdge = false
+      if tx > innerRadius then tx = innerRadius; clampedToEdge = true end
+      if tx < -innerRadius then tx = -innerRadius; clampedToEdge = true end
+      if ty > innerRadius then ty = innerRadius; clampedToEdge = true end
+      if ty < -innerRadius then ty = -innerRadius; clampedToEdge = true end
       targetRenderedCellDist = math.sqrt((tx * tx) + (ty * ty))
 
       if tx == 0 and ty == 0 then
@@ -9869,6 +10021,7 @@ local function BuildDFModeDisplay()
       if math.abs(tx) <= innerRadius and math.abs(ty) <= innerRadius and grid[ty] and grid[ty][tx] ~= "P" then
         local targetGlyph = targetGlyphNear
         if balanced and targetDistance and targetDistance > 14 then targetGlyph = targetGlyphMid end
+        if clampedToEdge then targetGlyph = targetGlyphMid end
         grid[ty][tx] = targetGlyph
       end
     end
@@ -9903,13 +10056,32 @@ local function BuildDFModeDisplay()
       local playerPosX = playerCellX + playerInCellX
       local playerPosY = playerCellY + playerInCellY
       local markCellYards = tonumber(mark.targetYards) or defaultCellYards
-      dx_yards = (markCenterX - playerPosX) * markCellYards
+      -- Per-axis cell size in yards = mapWorldYards / gridDimension. We use
+      -- GetMapWorldDimensions (corner-sampled, cached) so the perimeter
+      -- reflects the cell's true rectangular footprint instead of assuming a
+      -- square markCellYards x markCellYards box.
+      local markCellYardsX = markCellYards
+      local markCellYardsY = markCellYards
+      local markMapW, markMapH = GetMapWorldDimensions(mark.mapID)
+      if markMapW and markMapH and markGridX > 0 and markGridY > 0 then
+        markCellYardsX = markMapW / markGridX
+        markCellYardsY = markMapH / markGridY
+      end
+      dx_yards = (markCenterX - playerPosX) * markCellYardsX
       -- Map-space Y grows southward; DF-space Y grows northward.
-      dy_yards = (playerPosY - markCenterY) * markCellYards
+      dy_yards = (playerPosY - markCenterY) * markCellYardsY
 
+      -- Units are placed relative to the SNAPPED player world position (see
+      -- TA_GetProjectedDFPlayerWorldPosition), but dx_yards/dy_yards above are
+      -- relative to the player's TRUE map position. Shift by the snap delta so
+      -- marks share the same sub-cell frame as units; otherwise a mark sitting
+      -- on the same world cell as the player/target/friendly/enemy can render
+      -- one cell off and look like it "moved" that glyph.
+      local snapDeltaEast = (basePlayerWorldX or 0) - (playerWorldX or 0)
+      local snapDeltaNorth = (basePlayerWorldY or 0) - (playerWorldY or 0)
       local markDist = math.sqrt((dx_yards * dx_yards) + (dy_yards * dy_yards))
-      local east = dx_yards
-      local north = dy_yards
+      local east = dx_yards + snapDeltaEast
+      local north = dy_yards + snapDeltaNorth
       local mx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
       local my = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
 
@@ -9922,13 +10094,48 @@ local function BuildDFModeDisplay()
       end
 
       if math.abs(mx) <= innerRadius and math.abs(my) <= innerRadius then
-        -- Draw a perimeter so marked-cell influence is visible beyond center glyph.
-        if markRadius > 0 then
-          for oy = -markRadius, markRadius do
-            for ox = -markRadius, markRadius do
-              if math.max(math.abs(ox), math.abs(oy)) == markRadius then
-                local ex = mx + ox
-                local ey = my + oy
+        local exMin, exMax, eyMin, eyMax
+        if orientation == "fixed" then
+          -- Fixed orientation: marked cell is axis-aligned with the DF grid.
+          -- The DF renderer prints each column as 2 chars (glyph + space) but
+          -- each row as 1 char tall, so a visually-square rectangle needs
+          -- ~half as many columns as rows. We force ODD counts so the M is
+          -- perfectly centered with equal cells on each side.
+          local rowsPerSide = math.max(1, math.floor((markCellYards / yardsPerCell) + 0.5))
+          local extra = markRadius or 0
+          rowsPerSide = rowsPerSide + (extra * 2)
+          if rowsPerSide % 2 == 0 then rowsPerSide = rowsPerSide + 1 end
+          local colsPerSide = math.max(1, math.floor((rowsPerSide / 2) + 0.5))
+          if colsPerSide % 2 == 0 then colsPerSide = colsPerSide + 1 end
+          local halfRow = (rowsPerSide - 1) / 2
+          local halfCol = (colsPerSide - 1) / 2
+          exMin = mx - halfCol
+          exMax = mx + halfCol
+          eyMin = my - halfRow + 2  -- shift south edge up by 2 cells to match in-game yard scale
+          eyMax = my + halfRow - 2  -- shift north edge down by 2 cells to match in-game yard scale
+        elseif markCellYardsX > 0 and markCellYardsY > 0 then
+          -- Rotating orientation: the marked cell is no longer aligned with
+          -- the screen, so we have to project from yard-space and snap each
+          -- edge independently to the rotated DF grid.
+          local halfYardsX = (markCellYardsX * 0.5) + (markRadius * yardsPerCell)
+          local halfYardsY = (markCellYardsY * 0.5) + (markRadius * yardsPerCell)
+          local halfYardsLeft  = halfYardsX
+          local halfYardsRight = halfYardsX
+          local halfYardsSouth = halfYardsY
+          local halfYardsNorth = halfYardsY
+          local function SnapToCell(yards)
+            if yards >= 0 then return math.floor((yards / yardsPerCell) + 0.5) end
+            return math.ceil((yards / yardsPerCell) - 0.5)
+          end
+          exMin = SnapToCell(east  - halfYardsLeft)
+          exMax = SnapToCell(east  + halfYardsRight)
+          eyMin = SnapToCell(north - halfYardsSouth)
+          eyMax = SnapToCell(north + halfYardsNorth)
+        end
+        if exMin and exMax and eyMin and eyMax then
+          for ey = eyMin, eyMax do
+            for ex = exMin, exMax do
+              if ex == exMin or ex == exMax or ey == eyMin or ey == eyMax then
                 if math.abs(ex) <= innerRadius and math.abs(ey) <= innerRadius and grid[ey] and grid[ey][ex] then
                   -- Only draw edge on empty cells so entities are never overwritten.
                   if grid[ey][ex] == "." then
@@ -10411,17 +10618,25 @@ local function BuildDFModeDisplay()
         end
       end
 
+      -- Only adorn "background" cells. Mark glyphs (|c..|r), entities (P/@/T/t/Q/*),
+      -- and any multi-char/colored cell must NOT receive a prepend, otherwise that
+      -- cell becomes visually wider than its neighbors and breaks row alignment
+      -- (this is what made horizontal mark edges look like they had extra spacing).
+      local adornable = (cell == "." or (#cell == 1
+        and cell ~= "P" and cell ~= "@" and cell ~= "T" and cell ~= "t"
+        and cell ~= "Q" and cell ~= "*" and cell ~= "M"))
+
       local threatVal = 0
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and threatHeat[wy] and threatHeat[wy][wx] then
         threatVal = threatHeat[wy][wx] or 0
       end
-      if showThreat and threatVal > 0 then
+      if showThreat and adornable and threatVal > 0 then
         if threatVal >= 3 then cell = "!" .. cell
         elseif threatVal >= 2 then cell = "~" .. cell
         end
       end
 
-      if showExploration and math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and TA.dfModeRecentCells[wy] and TA.dfModeRecentCells[wy][wx] then
+      if showExploration and adornable and math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and TA.dfModeRecentCells[wy] and TA.dfModeRecentCells[wy][wx] then
         cell = "+" .. cell
       end
 
@@ -10437,11 +10652,48 @@ local function BuildDFModeDisplay()
 
       table.insert(row, cell)
     end
-    table.insert(lines, table.concat(row, " "))
+
+    -- Horizontal mark-edge rows: when 3+ consecutive cells are the mark edge
+    -- glyph "o", drop the spaces between just those cells so they read as a
+    -- continuous "ooooo" segment instead of "o o o o o" (which over-stretches
+    -- the rectangle horizontally relative to its vertical sides).
+    local function IsEdgeGlyph(s)
+      if not s then return false end
+      local visible = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+      return visible == "o"
+    end
+
+    local pieces = {}
+    local i = 1
+    while i <= #row do
+      local cell = row[i]
+      if IsEdgeGlyph(cell) then
+        local j = i
+        while j <= #row and IsEdgeGlyph(row[j]) do j = j + 1 end
+        local runLen = j - i
+        if runLen >= 3 then
+          if #pieces > 0 then table.insert(pieces, " ") end
+          for k = i, j - 1 do table.insert(pieces, row[k]) end
+          i = j
+        else
+          if #pieces > 0 then table.insert(pieces, " ") end
+          table.insert(pieces, cell)
+          i = i + 1
+        end
+      else
+        if #pieces > 0 then table.insert(pieces, " ") end
+        table.insert(pieces, cell)
+        i = i + 1
+      end
+    end
+    table.insert(lines, table.concat(pieces, ""))
   end
 
   TA.dfModeTerrainRenderStats = terrainStats
   local display = table.concat(lines, "\n")
+  -- Stash the raw rendered grid (no color codes stripped) so /ta df copy
+  -- can show it in a copyable popup for debugging perimeter rendering.
+  TA.dfModeLastRawDisplay = display
 
   if viewMode == "threat" or viewMode == "combined" then
     local legendEnabled = (TA.dfModeLegendEnabled ~= false)
@@ -11848,6 +12100,54 @@ local function TA_ExecuteTerminalInputLines(lines, opts)
   TA.inputHistoryPos = 0
   TA.inputDraft = ""
 
+  -- Multi-line body folding: if the first line is a body-taking command
+  -- (macrocreate / macroset), treat ALL subsequent lines as additional body
+  -- lines so multi-line macros can be authored with Shift+Enter.
+  if #lines >= 2 then
+    local first = lines[1]
+    local firstLower = first:lower()
+
+    -- macrocreate <name> [body...] + subsequent body lines
+    if firstLower:match("^macrocreate%s+") then
+      local rest = first:match("^%S+%s+(.-)%s*$")
+      if rest and rest ~= "" then
+        local macroName, inlineBody
+        if rest:sub(1, 1) == '"' then
+          -- quoted name with optional inline body: "Name" body...
+          macroName, inlineBody = rest:match('^"([^"]+)"%s*(.*)$')
+        else
+          -- unquoted single-token name with optional inline body
+          macroName, inlineBody = rest:match("^(%S+)%s*(.*)$")
+        end
+        if macroName and macroName ~= "" then
+          local extra = table.concat(lines, "\n", 2)
+          local multiBody
+          if inlineBody and inlineBody ~= "" then
+            multiBody = inlineBody .. "\n" .. extra
+          else
+            multiBody = extra
+          end
+          CreateNewMacro(macroName, multiBody)
+          return false
+        end
+      end
+    end
+
+    -- macroset <idx> [body...] + subsequent body lines
+    local msIdx, msInline = first:match("^[Mm][Aa][Cc][Rr][Oo][Ss][Ee][Tt]%s+(%d+)%s*(.*)$")
+    if msIdx then
+      local extra = table.concat(lines, "\n", 2)
+      local multiBody
+      if msInline and msInline ~= "" then
+        multiBody = msInline .. "\n" .. extra
+      else
+        multiBody = extra
+      end
+      SetMacroBody(tonumber(msIdx), multiBody)
+      return false
+    end
+  end
+
   TA.deferTerminalRefocus = false
   for i = 1, #lines do
     TA_ProcessInputCommand(lines[i])
@@ -12429,7 +12729,9 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
       "ml xp ", "ml xp warrior ", "ml xp set ", "ml xp mode ",
       "recipes ", "recipes search", "recipes makeable",
       "bug show ", "bug copy ",
-      "df ", "df rotation ", "df profile ", "df view ",
+      "df ", "df size ", "df grid ", "df cell ", "df markradius ",
+      "df rotation ", "df orientation ", "df square ",
+      "df profile ", "df view ", "df hue ", "df legend ", "df calibrate ", "df sonar ",
       "memory ", "focus ", "castfocus ", "macro ", "macroinfo ",
       "skills weapons", "skills professions", "skills defense",
       "help ", "help advanced", "help combat", "help economy",
@@ -12572,7 +12874,13 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA.dfModeRotationMode = TextAdventurerDB.dfModeRotationMode
     if TextAdventurerDB.dfModeHueEnabled == nil then
-      TextAdventurerDB.dfModeHueEnabled = false
+      TextAdventurerDB.dfModeHueEnabled = true
+    end
+    -- One-time migration: adopt new default (hue on) for legacy characters
+    -- that still have old hue=false saved.
+    if TextAdventurerDB.dfModeHueDefaultMigratedToOn ~= true then
+      TextAdventurerDB.dfModeHueEnabled = true
+      TextAdventurerDB.dfModeHueDefaultMigratedToOn = true
     end
     TA.dfModeHueEnabled = TextAdventurerDB.dfModeHueEnabled and true or false
     if TextAdventurerDB.dfModeCalibrationEnabled == nil then
@@ -12620,6 +12928,13 @@ TA:SetScript("OnEvent", function(self, event, ...)
     if type(TextAdventurerDB.dfModeWidth) ~= "number" or type(TextAdventurerDB.dfModeHeight) ~= "number" then
       TextAdventurerDB.dfModeWidth = DF_MODE_DEFAULT_WIDTH
       TextAdventurerDB.dfModeHeight = DF_MODE_DEFAULT_HEIGHT
+    end
+    -- One-time migration: expand frames stuck below the new minimum usable width
+    if TextAdventurerDB.dfModeWidthExpandedMigration ~= true then
+      if TextAdventurerDB.dfModeWidth < DF_MODE_MIN_USABLE_WIDTH then
+        TextAdventurerDB.dfModeWidth = DF_MODE_DEFAULT_WIDTH
+      end
+      TextAdventurerDB.dfModeWidthExpandedMigration = true
     end
     TA_SetDFModeSize(TextAdventurerDB.dfModeWidth, TextAdventurerDB.dfModeHeight, true)
     if TA.dfModeEnabled then

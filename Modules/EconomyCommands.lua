@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-function TA_RegisterEconomyCommandHandlers(exactHandlers, addPatternHandler)
+﻿function TA_RegisterEconomyCommandHandlers(exactHandlers, addPatternHandler)
   if TA.economyCommandHandlersRegistered then
     return
   end

@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-local PROFESSION_NAME_BY_KEY = {
+﻿local PROFESSION_NAME_BY_KEY = {
   alchemy = "Alchemy",
   alch = "Alchemy",
   blacksmithing = "Blacksmithing",

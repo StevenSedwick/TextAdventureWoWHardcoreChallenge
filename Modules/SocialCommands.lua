@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-function TA_RegisterSocialCommandHandlers(exactHandlers, addPatternHandler)
+﻿function TA_RegisterSocialCommandHandlers(exactHandlers, addPatternHandler)
   if TA.socialCommandHandlersRegistered then
     return
   end

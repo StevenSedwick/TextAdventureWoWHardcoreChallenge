@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-function TA_RegisterNavigationCommandHandlers(exactHandlers, addPatternHandler)
+﻿function TA_RegisterNavigationCommandHandlers(exactHandlers, addPatternHandler)
   if TA.navigationCommandHandlersRegistered then
     return
   end
@@ -275,6 +273,40 @@ function TA_HandleNavigationInputCommand(lower, msg)
 
   if lower == "df status" or lower == "dfmode status" then
     TA_DFModeStatus()
+    return true
+  end
+
+  if lower == "df copy" or lower == "dfmode copy" then
+    local raw = TA and TA.dfModeLastRawDisplay
+    if not raw or raw == "" then
+      AddLine("system", "No DF render captured yet. Open DF mode first.")
+      return true
+    end
+    -- Strip WoW color codes so the copyable text is plain ASCII.
+    local plain = raw:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    if not StaticPopupDialogs["TEXTADVENTURER_DF_COPY"] then
+      StaticPopupDialogs["TEXTADVENTURER_DF_COPY"] = {
+        text = "DF render (Ctrl+A, Ctrl+C to copy):",
+        button1 = "Close",
+        hasEditBox = true,
+        editBoxWidth = 600,
+        OnShow = function(self)
+          local eb = self.editBox or self.EditBox
+          if not eb then return end
+          eb:SetMultiLine(true)
+          eb:SetMaxLetters(0)
+          eb:SetText(self.data or "")
+          eb:HighlightText()
+          eb:SetFocus()
+        end,
+        EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+      }
+    end
+    StaticPopup_Show("TEXTADVENTURER_DF_COPY", nil, nil, plain)
     return true
   end
 

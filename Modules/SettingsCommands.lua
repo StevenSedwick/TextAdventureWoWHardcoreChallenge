@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-function TA_RunCVarList(filter)
+﻿function TA_RunCVarList(filter)
   if not ConsoleExec then
     AddLine("system", "Console command API unavailable.")
     return

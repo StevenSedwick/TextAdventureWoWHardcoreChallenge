@@ -1,6 +1,4 @@
----@diagnostic disable: undefined-global
-
-function TA_RegisterQuestCommandHandlers(exactHandlers, addPatternHandler)
+﻿function TA_RegisterQuestCommandHandlers(exactHandlers, addPatternHandler)
   if TA.questCommandHandlersRegistered then
     return
   end
