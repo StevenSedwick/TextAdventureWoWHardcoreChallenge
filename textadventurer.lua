@@ -306,7 +306,8 @@ end
 function TA_FindActiveChatEditBox()
   local total = NUM_CHAT_WINDOWS or 10
   for i = 1, total do
-    local editBox = _G["ChatFrame" .. i .. "EditBox"]
+    local chatFrame = _G["ChatFrame" .. i]
+    local editBox = (chatFrame and chatFrame.editBox) or _G["ChatFrame" .. i .. "EditBox"]
     if editBox and editBox:IsShown() then
       return editBox
     end
@@ -336,6 +337,16 @@ function TA_UpdateCommandPreviewBox()
     overlay.commandPreviewBox:Show()
   end
   if overlay.tex then overlay.tex:Show() end
+  -- Defensive re-lift: Blizzard's chat code (ChatEdit_ActivateChat,
+  -- ChatEdit_OnEditFocusGained) resets the edit box strata back to "DIALOG"
+  -- after our hooks fire, which sinks it under the TOOLTIP-strata blackout.
+  -- Re-apply every tick while text mode is on so the typed text is always
+  -- visible.
+  if editBox:GetFrameStrata() ~= "TOOLTIP" then
+    editBox:SetFrameStrata("TOOLTIP")
+    editBox:SetFrameLevel(12050)
+    editBox:SetAlpha(1)
+  end
 end
 
 overlay:SetScript("OnUpdate", function(self, elapsed)
@@ -362,7 +373,10 @@ TA.chatEditBoxLayerState = TA.chatEditBoxLayerState or {}
 function TA_SyncProtectedCommandEditBoxes(enabled)
   local total = NUM_CHAT_WINDOWS or 10
   for i = 1, total do
-    local editBox = _G["ChatFrame" .. i .. "EditBox"]
+    -- Modern chat refactor exposes ChatFrameN.editBox; fall back to the
+    -- legacy global if the field isn't present.
+    local chatFrame = _G["ChatFrame" .. i]
+    local editBox = (chatFrame and chatFrame.editBox) or _G["ChatFrame" .. i .. "EditBox"]
     if editBox then
       if enabled then
         if not TA.chatEditBoxLayerState[editBox] then
@@ -373,13 +387,20 @@ function TA_SyncProtectedCommandEditBoxes(enabled)
           }
         end
         if not editBox.__taLayerHooked then
-          editBox:HookScript("OnShow", function(self)
+          local function reapply(self)
             if TA and TA.textMode then
               self:SetFrameStrata("TOOLTIP")
               self:SetFrameLevel(12050)
               self:SetAlpha(1)
             end
-          end)
+          end
+          -- Blizzard's ChatEdit_ActivateChat resets strata back to "DIALOG"
+          -- after our show hook fires, sinking the edit box below the
+          -- TOOLTIP-strata blackout overlay. Re-apply on every focus event so
+          -- the edit box stays visible whenever the user is actually typing.
+          editBox:HookScript("OnShow", reapply)
+          editBox:HookScript("OnEditFocusGained", reapply)
+          editBox:HookScript("OnTextChanged", reapply)
           editBox.__taLayerHooked = true
         end
         -- Keep slash-command typing visible above blackout while preserving
@@ -6828,6 +6849,15 @@ local function ReportVendorItems()
     AddLine("loot", "The merchant has nothing for sale right now.")
     return
   end
+  -- Prime every page so GetMerchantItemInfo returns full data for items past
+  -- page 1. Without this the immersive (hidden MerchantFrame) mode lists
+  -- nothing but the first page's items.
+  if TA_PrimeMerchantPageForIndex then
+    local perPage = tonumber(MERCHANT_ITEMS_PER_PAGE) or 10
+    for p = 1, math.ceil(num / perPage) do
+      TA_PrimeMerchantPageForIndex(((p - 1) * perPage) + 1)
+    end
+  end
   for i = 1, num do
     local name, texture, price, quantity, numAvail, isUsable, extendedCost = GetMerchantItemInfo(i)
     if name then
@@ -7206,6 +7236,36 @@ function TA:ReportMoneyStatusEvent()
   ReportMoney()
 end
 
+-- In Classic Era the default MerchantFrame is paginated (10 items per page) and
+-- only "primes" item data for the page that has been rendered at least once.
+-- When immersive mode hides the MerchantFrame, pages beyond 1 are never
+-- rendered, so GetMerchantItemInfo(i) returns nil and BuyMerchantItem(i, n)
+-- silently fails for indexes 11+. We work around this by forcing
+-- MerchantFrame.page to the page containing `index` and calling
+-- MerchantFrame_Update so the client reads each slot at least once.
+function TA_PrimeMerchantPageForIndex(index)
+  index = tonumber(index)
+  if not index or index < 1 then return end
+  local perPage = tonumber(MERCHANT_ITEMS_PER_PAGE) or 10
+  local page = math.floor((index - 1) / perPage) + 1
+  if MerchantFrame and MerchantFrame_Update then
+    local prevPage = MerchantFrame.page or 1
+    if MerchantFrame.page ~= page then
+      MerchantFrame.page = page
+    end
+    -- MerchantFrame_Update reads slot data for the current page even when the
+    -- frame itself is not visible, which is enough to populate name/price for
+    -- GetMerchantItemInfo and BuyMerchantItem.
+    pcall(MerchantFrame_Update)
+    -- Restore the page so the user's default UI (if they ever Esc to it) is
+    -- not yanked around.
+    if MerchantFrame.page ~= prevPage then
+      MerchantFrame.page = prevPage
+      pcall(MerchantFrame_Update)
+    end
+  end
+end
+
 function TA_RestockVendorItem(itemQuery, desiredCount)
   if not TA.vendorOpen then
     AddLine("system", "No merchant window is open.")
@@ -7226,6 +7286,14 @@ function TA_RestockVendorItem(itemQuery, desiredCount)
   if num <= 0 then
     AddLine("system", "Merchant has no items to restock.")
     return
+  end
+
+  -- Prime every page so name lookups succeed for items past page 1.
+  if TA_PrimeMerchantPageForIndex then
+    local perPage = tonumber(MERCHANT_ITEMS_PER_PAGE) or 10
+    for p = 1, math.ceil(num / perPage) do
+      TA_PrimeMerchantPageForIndex(((p - 1) * perPage) + 1)
+    end
   end
 
   local merchantIndex = nil
@@ -7331,6 +7399,7 @@ function TA_ReportVendorItemDetails(index)
     return
   end
 
+  if TA_PrimeMerchantPageForIndex then TA_PrimeMerchantPageForIndex(index) end
   local name, _, price, quantity, numAvail = GetMerchantItemInfo(index)
   if not name then
     AddLine("system", "Could not read that merchant item.")
@@ -7517,6 +7586,7 @@ local function BuyVendorItem(index, quantity)
     AddLine("system", string.format("Invalid item index. Merchant has %d items.", num))
     return
   end
+  if TA_PrimeMerchantPageForIndex then TA_PrimeMerchantPageForIndex(index) end
   local name, _, price, stackSize = GetMerchantItemInfo(index)
   if not name then
     AddLine("system", "Could not read that merchant item.")
@@ -7549,6 +7619,7 @@ function TA_CheckVendorPurchase(index, quantity)
     return
   end
 
+  if TA_PrimeMerchantPageForIndex then TA_PrimeMerchantPageForIndex(index) end
   local name, _, price, stackSize, numAvail = GetMerchantItemInfo(index)
   if not name then
     AddLine("system", "Could not read that merchant item.")
