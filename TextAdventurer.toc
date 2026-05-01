@@ -1,8 +1,9 @@
-## Interface: 11508
+## Interface: 11508, 40402, 50500
 ## Title: Text Adventurer
 ## Notes: Text-first command console for Classic Era telemetry, tactical overlays, and DPS helpers. Hardcore warning: WILL eventually get your character killed. First-run autostart is OFF.
 ## Author: Steven Sedwick
 ## Version: 0.3-alpha11
+## X-Curse-Project-ID: 1523223
 ## SavedVariablesPerCharacter: TextAdventurerDB
 ## OptionalDeps: !BugGrabber, BugSack, Questie, Guidelime, TomTom, WoWPro
 Ace3\LibStub\LibStub.lua
