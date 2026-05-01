@@ -1,0 +1,29 @@
+package-as: TextAdventurer
+
+# Local copies of Ace3 (./Ace3) and LibRangeCheck-3.0 (./Libs) are
+# already committed and referenced by the TOC, so no externals are
+# needed. The packager will ship them as-is.
+
+enable-nolib-creation: no
+
+ignore:
+  - .vscode
+  - .venv
+  - .luarc.json
+  - .gitignore
+  - tools
+  - test
+  - SavedVariables
+  - release
+  - BugSack
+  - Questie
+  - EXTRACTION_GUIDE.md
+  - "New Text Document.txt"
+  - TextAdventurer.toc.txt
+  - "*_BACKUP*.lua"
+  - "*_BACKUPRECENT*.lua"
+  - "*_PREMERGE*.lua"
+  - "*_backuponemore*.lua"
+  - "*.bak"
+  - "*.tmp"
+  - "*.log"
