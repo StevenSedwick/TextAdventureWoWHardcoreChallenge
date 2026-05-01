@@ -1,4 +1,8 @@
-## Interface: 11508, 40402, 50500
+## Interface: 11508
+## Interface-Classic: 11508
+## Interface-BCC: 20504
+## Interface-Wrath: 30403
+## Interface-Cata: 40402
 ## Title: Text Adventurer
 ## Notes: Text-first command console for Classic Era telemetry, tactical overlays, and DPS helpers. Hardcore warning: WILL eventually get your character killed. First-run autostart is OFF.
 ## Author: Steven Sedwick
