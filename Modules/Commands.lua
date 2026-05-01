@@ -102,6 +102,9 @@ TA.EXACT_INPUT_HANDLERS = {
   ["profile disable"] = function() TA:DisableProfiler() end,
   ["profile results"] = function() TA:PrintProfiler() end,
   ["loglimit"] = function() TA_SetLineLimit(nil, false) end,
+  ["hidescreenshot"] = function() TA_SetHideScreenshotMessage(nil, false) end,
+  ["hidescreenshot on"] = function() TA_SetHideScreenshotMessage(true, false) end,
+  ["hidescreenshot off"] = function() TA_SetHideScreenshotMessage(false, false) end,
 }
 
 TA.PATTERN_INPUT_HANDLERS = {

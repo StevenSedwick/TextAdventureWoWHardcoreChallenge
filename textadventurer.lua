@@ -819,6 +819,107 @@ function TA_SetLineLimit(limit, silent)
   end
 end
 
+-- Suppress "Screenshot captured as..." chat spam.
+if TA.hideScreenshotMessage == nil then TA.hideScreenshotMessage = true end
+TA._screenshotFilterInstalled = false
+
+local function TA_ScreenshotChatFilter(_, _, msg)
+  if not TA.hideScreenshotMessage then return false end
+  if type(msg) ~= "string" then return false end
+  -- SCREENSHOT_SUCCESS = "Screenshot captured as %s"; SCREENSHOT_FAILURE = "Screenshot failed."
+  if msg:find("Screenshot captured as", 1, true)
+    or msg:find("Screenshot failed", 1, true) then
+    return true
+  end
+  if SCREENSHOT_SUCCESS then
+    local pat = "^" .. SCREENSHOT_SUCCESS:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%%%s", ".+") .. "$"
+    if msg:match(pat) then return true end
+  end
+  if SCREENSHOT_FAILURE and msg == SCREENSHOT_FAILURE then return true end
+  return false
+end
+
+function TA_InstallScreenshotFilter()
+  if not TA._screenshotChatFilterInstalled and ChatFrame_AddMessageEventFilter then
+    ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", TA_ScreenshotChatFilter)
+    TA._screenshotChatFilterInstalled = true
+  end
+  -- Suppress the on-screen yellow "Screenshot captured as..." UIErrorsFrame popup.
+  if UIErrorsFrame and UIErrorsFrame.AddMessage and not TA._uiErrorsOriginalAddMessage then
+    TA._uiErrorsOriginalAddMessage = UIErrorsFrame.AddMessage
+    UIErrorsFrame.AddMessage = function(self, msg, ...)
+      if TA.debugScreenshotFilter and type(msg) == "string" then
+        print("[TA-SS] UIErrors:", msg)
+      end
+      if TA.hideScreenshotMessage and type(msg) == "string"
+        and (msg:lower():find("screenshot", 1, true)) then
+        return
+      end
+      return TA._uiErrorsOriginalAddMessage(self, msg, ...)
+    end
+  end
+  if UIErrorsFrame and UIErrorsFrame.AddExternalErrorMessage and not TA._uiErrorsOriginalAddExternal then
+    TA._uiErrorsOriginalAddExternal = UIErrorsFrame.AddExternalErrorMessage
+    UIErrorsFrame.AddExternalErrorMessage = function(self, msg, ...)
+      if TA.debugScreenshotFilter and type(msg) == "string" then
+        print("[TA-SS] UIErrors-Ext:", msg)
+      end
+      if TA.hideScreenshotMessage and type(msg) == "string"
+        and (msg:lower():find("screenshot", 1, true)) then
+        return
+      end
+      return TA._uiErrorsOriginalAddExternal(self, msg, ...)
+    end
+  end
+  -- Some screenshot text may be raised via RaidNotice / RaidWarning frames; cover those too.
+  for _, frameName in ipairs({ "RaidNotice_AddMessage" }) do
+    local orig = _G[frameName]
+    if type(orig) == "function" and not TA["_orig_" .. frameName] then
+      TA["_orig_" .. frameName] = orig
+      _G[frameName] = function(noticeFrame, textString, ...)
+        if TA.hideScreenshotMessage and type(textString) == "string"
+          and (textString:find("Screenshot captured as", 1, true)
+            or textString:find("Screenshot failed", 1, true)) then
+          return
+        end
+        return TA["_orig_" .. frameName](noticeFrame, textString, ...)
+      end
+    end
+  end
+  -- Override the FrameXML screenshot event handler if it's a global function (Classic).
+  if type(Screenshot_OnEvent) == "function" and not TA._origScreenshotOnEvent then
+    TA._origScreenshotOnEvent = Screenshot_OnEvent
+    Screenshot_OnEvent = function(self, event, ...)
+      if TA.hideScreenshotMessage
+        and (event == "SCREENSHOT_SUCCEEDED" or event == "SCREENSHOT_FAILED") then
+        return
+      end
+      return TA._origScreenshotOnEvent(self, event, ...)
+    end
+  end
+  TA._screenshotFilterInstalled = true
+end
+
+-- Try installing right now in case UIErrorsFrame already exists at file-load time.
+if pcall(TA_InstallScreenshotFilter) then end
+
+function TA_SetHideScreenshotMessage(enabled, silent)
+  if enabled == nil then
+    AddLine("system", string.format("Screenshot message: %s",
+      TA.hideScreenshotMessage and "HIDDEN" or "shown"))
+    AddLine("system", "Usage: hidescreenshot on|off")
+    return
+  end
+  TA.hideScreenshotMessage = enabled and true or false
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.hideScreenshotMessage = TA.hideScreenshotMessage
+  TA_InstallScreenshotFilter()
+  if not silent then
+    AddLine("system", string.format("Screenshot 'captured' message %s.",
+      TA.hideScreenshotMessage and "hidden" or "shown"))
+  end
+end
+
 function AddLine(kind, msg)
   if not msg or msg == "" then return end
   local c = COLORS[kind] or COLORS.system
@@ -11929,6 +12030,25 @@ local function BuildStaticPopupList()
         kind = "deleteItem"
         title = "Confirm item deletion"
         defaultAction = "decline"
+      elseif text:find("bound to you", 1, true) or text:find("become soulbound", 1, true)
+          or text:find("become non%-refundable") or text:find("BIND") or text:find("soulbound") then
+        -- BoE equip / refundable-loss confirmation. Default action is accept
+        -- so the player can finish equipping the upgrade with /ta accept 1.
+        kind = "equipBind"
+        title = "Confirm bind on equip"
+        defaultAction = "accept"
+      end
+
+      -- Generic fallback: surface any popup with at least one button so the
+      -- user is never stuck unable to interact with a Blizzard dialog. Title
+      -- previews the first ~60 chars of the dialog text.
+      if not kind then
+        local btn1 = _G[frameName .. "Button1"]
+        if btn1 and btn1:IsShown() and text and text ~= "" then
+          kind = "generic"
+          title = "Dialog: " .. (text:sub(1, 60):gsub("\n", " "))
+          defaultAction = "accept"
+        end
       end
       
       if kind then
@@ -12028,6 +12148,10 @@ local function RespondToPopup(index, action)
         AddLine("quest", "Duel accepted.")
       elseif p.kind == "deleteItem" then
         AddLine("loot", "Item deletion confirmed.")
+      elseif p.kind == "equipBind" then
+        AddLine("loot", "Equip confirmed (item is now soulbound).")
+      else
+        AddLine("system", string.format("Accepted: %s", p.title))
       end
     else
       AddLine("system", string.format("%s button not accessible.", p.title))
@@ -12043,6 +12167,10 @@ local function RespondToPopup(index, action)
         AddLine("quest", "Duel declined.")
       elseif p.kind == "deleteItem" then
         AddLine("loot", "Item deletion declined.")
+      elseif p.kind == "equipBind" then
+        AddLine("loot", "Equip cancelled.")
+      else
+        AddLine("system", string.format("Declined: %s", p.title))
       end
     else
       AddLine("system", string.format("%s decline button not accessible.", p.title))
@@ -13033,6 +13161,11 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TextAdventurerDB.lineLimit = TA.lineLimit or 400
     end
     TA_SetLineLimit(TextAdventurerDB.lineLimit, true)
+    if TextAdventurerDB.hideScreenshotMessage == nil then
+      TextAdventurerDB.hideScreenshotMessage = true
+    end
+    TA.hideScreenshotMessage = TextAdventurerDB.hideScreenshotMessage and true or false
+    TA_InstallScreenshotFilter()
     if ChatFrame1 then
       ChatFrame1:Show()
       ChatFrame1:SetFrameLevel(5000)
