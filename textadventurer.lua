@@ -170,8 +170,17 @@ TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
 TA.performanceFrameHooks = {}
-TA.tickerIntervals = { move = 0.01, nearby = 0.01, memory = 0.01, df = 0.1 }
+TA.tickerIntervals = { move = 0.2, nearby = 0.25, memory = 0.5, df = 0.1 }
 TA.tickerIntervals.warlockPrompt = 0.75
+local AWARENESS_SUBEVENTS = {
+  SWING_DAMAGE = true, RANGE_DAMAGE = true, SPELL_DAMAGE = true,
+  SPELL_PERIODIC_DAMAGE = true, SPELL_BUILDING_DAMAGE = true,
+  ENVIRONMENTAL_DAMAGE = true, DAMAGE_SHIELD = true, DAMAGE_SPLIT = true,
+  SPELL_HEAL = true, SPELL_PERIODIC_HEAL = true,
+  SWING_MISSED = true, SPELL_MISSED = true,
+  UNIT_DIED = true, UNIT_DESTROYED = true,
+  PARTY_KILL = true,
+}
 TA.tickerIntervals.warriorPrompt = 0.75
 
 local GRID_SIZE_LEGACY_DEFAULT = 12
@@ -778,6 +787,145 @@ end
 
 TA_PublishPublicAPI()
 
+-- ============================================================
+-- External streaming (TA_Stream)
+-- Wrapped in `do ... end` so its locals don't count against the file-chunk's
+-- 200-local cap. Cross-block reads (AddLine, PLAYER_TARGET_CHANGED) use
+-- TA._streamEnabled instead of a file-scope local.
+-- ============================================================
+TA._streamEnabled = false
+do
+  local STREAM_SENTINEL = "##TA##"
+  local streamFrame = nil
+  local streamSeq = 0
+
+  local function ta_json_escape(s)
+    s = tostring(s)
+    s = s:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
+    return s
+  end
+  local function ta_json_encode(v)
+    local t = type(v)
+    if t == "nil" then return "null" end
+    if t == "boolean" then return v and "true" or "false" end
+    if t == "number" then
+      if v ~= v or v == math.huge or v == -math.huge then return "null" end
+      return string.format("%.6g", v)
+    end
+    if t == "string" then return '"' .. ta_json_escape(v) .. '"' end
+    if t == "table" then
+      local n = #v
+      local isArray = n > 0
+      if isArray then
+        for k in pairs(v) do
+          if type(k) ~= "number" or k < 1 or k > n or k ~= math.floor(k) then
+            isArray = false; break
+          end
+        end
+      end
+      local parts = {}
+      if isArray then
+        for i = 1, n do parts[#parts+1] = ta_json_encode(v[i]) end
+        return "[" .. table.concat(parts, ",") .. "]"
+      else
+        for k, val in pairs(v) do
+          parts[#parts+1] = '"' .. ta_json_escape(k) .. '":' .. ta_json_encode(val)
+        end
+        return "{" .. table.concat(parts, ",") .. "}"
+      end
+    end
+    return "null"
+  end
+
+  local function TA_StreamEnsureFrame()
+    if streamFrame then return streamFrame end
+    for i = 1, NUM_CHAT_WINDOWS or 10 do
+      local name = GetChatWindowInfo and select(1, GetChatWindowInfo(i))
+      if name == "TAStream" then
+        streamFrame = _G["ChatFrame" .. i]
+        break
+      end
+    end
+    if not streamFrame and FCF_OpenNewWindow then
+      streamFrame = FCF_OpenNewWindow("TAStream")
+      if streamFrame then
+        streamFrame:UnregisterAllEvents()
+        if FCF_SetWindowAlpha then FCF_SetWindowAlpha(streamFrame, 0) end
+        streamFrame:SetAlpha(0)
+        streamFrame:Hide()
+        local tab = _G[streamFrame:GetName() .. "Tab"]
+        if tab then tab:Hide(); tab:SetAlpha(0) end
+      end
+    end
+    return streamFrame
+  end
+
+  local function TA_StreamWrite(eventName, payload)
+    if not TA._streamEnabled then return end
+    local f = TA_StreamEnsureFrame()
+    if not f then return end
+    streamSeq = streamSeq + 1
+    f:AddMessage(STREAM_SENTINEL .. ta_json_encode({
+      seq = streamSeq, t = GetTime(), ev = eventName, p = payload,
+    }))
+  end
+
+  local STREAM_EVENTS = { "LINE", "TARGET", "READY", "COMBAT_ENTER", "COMBAT_LEAVE", "DEATH", "COMMAND_EXECUTED", "SLASH_SENT" }
+  local function TA_StreamAttachListeners()
+    for _, ev in ipairs(STREAM_EVENTS) do
+      local bucket = TAExternalCallbacks[ev]
+      if not bucket then bucket = {}; TAExternalCallbacks[ev] = bucket end
+      local marker = "_taStream_" .. ev
+      if not bucket[marker] then
+        local evName = ev
+        local fn = function(payload) TA_StreamWrite(evName, payload) end
+        bucket[#bucket + 1] = fn
+        bucket[marker] = true
+      end
+    end
+  end
+
+  function TA_StreamEnable(on)
+    if on == nil then on = not TA._streamEnabled end
+    if on then
+      TA_StreamEnsureFrame()
+      TA_StreamAttachListeners()
+      if ConsoleExec then ConsoleExec("LoggingChat 1") end
+      TA._streamEnabled = true
+      AddLine("system", "Stream ON. Tail Logs/WoWChatLog.txt for lines beginning with '" .. STREAM_SENTINEL .. "'.")
+      TA_StreamWrite("STREAM_START", { version = TA_API_VERSION, time = time() })
+    else
+      TA_StreamWrite("STREAM_STOP", { time = time() })
+      TA._streamEnabled = false
+      if ConsoleExec then ConsoleExec("LoggingChat 0") end
+      AddLine("system", "Stream OFF. LoggingChat disabled.")
+    end
+  end
+
+  function TA_StreamStatus()
+    return TA._streamEnabled, streamSeq
+  end
+
+  SLASH_TASTREAM1 = "/tastream"
+  SlashCmdList["TASTREAM"] = function(msg)
+    msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if msg == "off" or msg == "0" or msg == "false" then
+      TA_StreamEnable(false)
+    elseif msg == "on" or msg == "1" or msg == "true" or msg == "" then
+      TA_StreamEnable(true)
+    elseif msg == "test" then
+      if not TA._streamEnabled then TA_StreamEnable(true) end
+      TA_EmitExternal("LINE", { kind = "system", text = "stream test ping" })
+      AddLine("system", "Sent test ping to stream.")
+    elseif msg == "status" then
+      local on, n = TA_StreamStatus()
+      AddLine("system", string.format("Stream: %s, seq=%d", on and "ON" or "OFF", n or 0))
+    else
+      AddLine("system", "Usage: /tastream [on|off|test|status]")
+    end
+  end
+end
+
 function TA_SetLineLimit(limit, silent)
   local minLimit = 100
   local maxLimit = 2000
@@ -897,6 +1045,31 @@ function TA_InstallScreenshotFilter()
       return TA._origScreenshotOnEvent(self, event, ...)
     end
   end
+  -- Last-resort: unregister the screenshot events from any frame that listens for them.
+  -- The popup may be drawn directly by an engine-side handler bound to these events.
+  if EnumerateFrames then
+    local f = EnumerateFrames()
+    while f do
+      if f.IsEventRegistered and f.UnregisterEvent then
+        local ok1 = pcall(function() return f:IsEventRegistered("SCREENSHOT_SUCCEEDED") end)
+        if ok1 then
+          if f:IsEventRegistered("SCREENSHOT_SUCCEEDED") then
+            f:UnregisterEvent("SCREENSHOT_SUCCEEDED")
+            if TA.debugScreenshotFilter then
+              print("[TA-SS] unregistered SCREENSHOT_SUCCEEDED from", f:GetName() or tostring(f))
+            end
+          end
+          if f:IsEventRegistered("SCREENSHOT_FAILED") then
+            f:UnregisterEvent("SCREENSHOT_FAILED")
+            if TA.debugScreenshotFilter then
+              print("[TA-SS] unregistered SCREENSHOT_FAILED from", f:GetName() or tostring(f))
+            end
+          end
+        end
+      end
+      f = EnumerateFrames(f)
+    end
+  end
   TA._screenshotFilterInstalled = true
 end
 
@@ -923,8 +1096,13 @@ end
 function AddLine(kind, msg)
   if not msg or msg == "" then return end
   local c = COLORS[kind] or COLORS.system
+  local now = time()
+  if now ~= TA._tsCacheT then
+    TA._tsCache = date("%H:%M:%S")
+    TA._tsCacheT = now
+  end
   local line = {
-    text = date("%H:%M:%S") .. "  " .. msg,
+    text = TA._tsCache .. "  " .. msg,
     r = c[1], g = c[2], b = c[3],
   }
   table.insert(TA.lines, line)
@@ -938,6 +1116,9 @@ function AddLine(kind, msg)
     panel.text.flashAnim:Play()
   end
   panel.text:ScrollToBottom()
+  if TA._streamEnabled then
+    TA_EmitExternal("LINE", { kind = kind, text = msg, ts = TA._tsCacheT })
+  end
 end
 
 function TA_BroadcastDangerWarningToChat()
@@ -8868,9 +9049,9 @@ local function TA_SetTickerProfile(profile)
     TA.tickerIntervals.warlockPrompt = 1.50
     TA.tickerIntervals.warriorPrompt = 1.50
   else
-    TA.tickerIntervals.move = 0.01
-    TA.tickerIntervals.nearby = 0.01
-    TA.tickerIntervals.memory = 0.01
+    TA.tickerIntervals.move = 0.2
+    TA.tickerIntervals.nearby = 0.25
+    TA.tickerIntervals.memory = 0.5
     TA.tickerIntervals.df = 0.1
     TA.tickerIntervals.warlockPrompt = 0.75
     TA.tickerIntervals.warriorPrompt = 0.75
@@ -11338,6 +11519,121 @@ local function CheckWallHeuristic()
   end
 end
 
+-- Positional awareness without protected APIs.
+-- UnitPosition only returns coordinates for player/pet/group members in
+-- Classic Era; for arbitrary mobs we fall back to the nameplate-derived
+-- cache (TA.lastNearbyUnits) populated by CollectNearbyUnitsWithPositions,
+-- and finally to LibRangeCheck-3.0 for a range-bucket distance (no bearing).
+-- Axis convention follows the rest of the addon (see ~10174):
+--   first return  = world NORTH (Y)
+--   second return = needs negation for EAST
+-- GetPlayerFacing: 0 = north, increases CCW (90deg = west).
+local function TA_GetRangeCheck()
+  if TA._rangeCheck ~= nil then return TA._rangeCheck or nil end
+  local ok, lib = pcall(function() return LibStub and LibStub("LibRangeCheck-3.0", true) end)
+  TA._rangeCheck = (ok and lib) or false
+  return TA._rangeCheck or nil
+end
+
+function TA_RelativeBearing(unitToken)
+  if not unitToken then return nil end
+  if not UnitExists(unitToken) then return nil end
+  local pa, pb = UnitPosition("player")
+
+  local ua, ub
+  if pa and pb then
+    ua, ub = UnitPosition(unitToken)
+    if not (ua and ub) then
+      local guid = UnitGUID(unitToken)
+      if guid and TA.lastNearbyUnits then
+        for _, bucket in pairs(TA.lastNearbyUnits) do
+          if type(bucket) == "table" then
+            for i = 1, #bucket do
+              local u = bucket[i]
+              if u and u.guid == guid and u.hasExactPos and u.worldX and u.worldY then
+                ua, ub = u.worldX, u.worldY
+                break
+              end
+            end
+          end
+          if ua and ub then break end
+        end
+      end
+    end
+  end
+
+  if pa and pb and ua and ub then
+    local dn = ua - pa
+    local de = pb - ub
+    local dist = math.sqrt(dn * dn + de * de)
+    if dist < 0.01 then
+      return { distance = 0, bearingRad = 0, bearingDeg = 0, clock = 12, forward = 0, strafe = 0, behind = false, source = "exact" }
+    end
+    local f = GetPlayerFacing() or 0
+    local sinf, cosf = math.sin(f), math.cos(f)
+    local forward = de * (-sinf) + dn * cosf
+    local strafe  = de *  cosf  + dn * sinf
+    local bodyAng = math.atan2(strafe, forward)
+    local deg = (bodyAng * 180 / math.pi) % 360
+    local clock = math.floor(deg / 30 + 0.5)
+    if clock <= 0 or clock >= 12 then clock = 12 end
+    return {
+      distance   = dist,
+      bearingRad = bodyAng,
+      bearingDeg = deg,
+      clock      = clock,
+      forward    = forward,
+      strafe     = strafe,
+      behind     = forward < 0,
+      source     = "exact",
+    }
+  end
+
+  -- Fall back to LibRangeCheck-3.0 for a distance bucket. No bearing info.
+  local rc = TA_GetRangeCheck()
+  if rc then
+    local minR, maxR = rc:GetRange(unitToken)
+    if minR then
+      local mid = maxR and ((minR + maxR) * 0.5) or minR
+      return {
+        distance    = mid,
+        distanceMin = minR,
+        distanceMax = maxR,
+        clock       = nil,
+        forward     = nil,
+        strafe      = nil,
+        behind      = nil,
+        source      = "rangecheck",
+      }
+    end
+  end
+  return nil
+end
+
+-- Narrate the relative bearing to the current target (or any unit) as a
+-- terse text-adventure line. Cheap; safe to call from CheckTarget or a
+-- throttled awareness tick.
+function TA_NarrateBearing(unitToken, label)
+  local b = TA_RelativeBearing(unitToken or "target")
+  if not b then return end
+  local who = label or (UnitName(unitToken or "target")) or "target"
+  if b.clock then
+    AddLine("trace", string.format(
+      "%s is %.1fyd at your %d o'clock (%s%.1fyd fwd, %s%.1fyd %s).",
+      who, b.distance, b.clock,
+      b.forward >= 0 and "+" or "", b.forward,
+      b.strafe  >= 0 and "+" or "", math.abs(b.strafe),
+      b.strafe >= 0 and "right" or "left"
+    ))
+  else
+    if b.distanceMax then
+      AddLine("trace", string.format("%s is %.0f-%.0fyd away (range-check, no bearing).", who, b.distanceMin or 0, b.distanceMax))
+    else
+      AddLine("trace", string.format("%s is more than %.0fyd away (range-check, no bearing).", who, b.distanceMin or b.distance or 0))
+    end
+  end
+end
+
 local function CheckMovement()
   local speed = GetUnitSpeed("player") or 0
   local movingNow = speed > 0
@@ -11553,6 +11849,23 @@ local function CheckAwareness()
       if info.friendly then AddLine("friendly", info.friendly) end
     end
     TA.lastNearbySignature = signature
+  end
+  -- Bearing narration: only emit when the target changes or its
+  -- distance-band/clock-face moves, to avoid per-tick spam.
+  if UnitExists("target") and not UnitIsDead("target") then
+    local b = TA_RelativeBearing("target")
+    if b then
+      local guid = UnitGUID("target") or "?"
+      local distBucket = math.floor((b.distance or 0) / 5)
+      local clockKey = b.clock or "rc"
+      local bucket = guid .. ":" .. tostring(clockKey) .. ":" .. distBucket
+      if bucket ~= TA.lastTargetBearingBucket then
+        TA_NarrateBearing("target")
+        TA.lastTargetBearingBucket = bucket
+      end
+    end
+  else
+    TA.lastTargetBearingBucket = nil
   end
 end
 
@@ -12991,6 +13304,10 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
     TA_FocusTerminalInput(true)
   elseif lower == "input" or lower == "i" or lower == "t" then
     TA_FocusTerminalInput(true)
+  elseif lower == "stream" or lower:sub(1, 7) == "stream " then
+    local rest = original:sub(7):match("^%s*(.-)%s*$") or ""
+    local handler = SlashCmdList and SlashCmdList["TASTREAM"]
+    if handler then handler(rest) else AddLine("system", "Stream handler unavailable.") end
   else
     TA_ProcessInputCommand(original)
   end
@@ -13274,11 +13591,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
   elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
     TA:ProfileStart("COMBAT_LOG_EVENT_UNFILTERED")
     local subevent = HandleCombatLog()
-    if subevent and (
-      string.find(subevent, "DAMAGE", 1, true)
-      or string.find(subevent, "HEAL", 1, true)
-      or string.find(subevent, "THREAT", 1, true)
-      or subevent == "UNIT_DIED") then
+    if subevent and AWARENESS_SUBEVENTS[subevent] then
       TA_RequestAwarenessRefresh(false)
     end
     TA:ProfileEnd("COMBAT_LOG_EVENT_UNFILTERED")
@@ -13288,6 +13601,23 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA:ProfileEnd("HandleChatEvent")
   elseif event == "PLAYER_TARGET_CHANGED" then
     CheckTarget()
+    TA.lastTargetBearingBucket = nil
+    if UnitExists("target") and not UnitIsDead("target") then
+      TA_NarrateBearing("target")
+      if TA._streamEnabled then
+        local b = TA_RelativeBearing("target")
+        TA_EmitExternal("TARGET", {
+          name = UnitName("target"),
+          guid = UnitGUID("target"),
+          level = UnitLevel("target"),
+          hp = UnitHealth("target"), hpMax = UnitHealthMax("target"),
+          hostile = UnitCanAttack("player", "target") and true or false,
+          bearing = b,
+        })
+      end
+    elseif TA._streamEnabled then
+      TA_EmitExternal("TARGET", { cleared = true })
+    end
     TA_RequestAwarenessRefresh(true)
   elseif event == "PLAYER_MONEY" then
     TA:ReportMoneyStatusEvent()
