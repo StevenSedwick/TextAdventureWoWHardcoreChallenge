@@ -273,6 +273,58 @@ overlay.tex = overlay:CreateTexture(nil, "BACKGROUND")
 overlay.tex:SetAllPoints()
 overlay.tex:SetColorTexture(0, 0, 0, 1)
 
+-- =====================================================================
+-- StaticPopup elevator
+--
+-- TextAdventurer's blackout `overlay` sits at FULLSCREEN_DIALOG strata,
+-- which is ABOVE the default DIALOG strata that Blizzard's StaticPopup
+-- frames use. That means popups (party invite, trade request, duel,
+-- BoE bind confirmation, etc.) render *behind* the opaque black sheet
+-- and are invisible / unclickable until the user runs `/ta accept N`.
+--
+-- The fix is to promote every visible StaticPopup to TOOLTIP strata
+-- (one level above our blackout) and bump its frame level above all
+-- our other chrome (panel, command preview, edit box). Children
+-- (buttons, edit boxes inside the popup) inherit strata from the
+-- parent so click handling Just Works.
+--
+-- We hook StaticPopup_Show so this fires the moment Blizzard surfaces
+-- a popup, and we also rescan whenever our overlay turns on (to catch
+-- popups that were already up).
+-- =====================================================================
+local TA_POPUP_STRATA = "TOOLTIP"
+local TA_POPUP_LEVEL  = 12500   -- > 12050 (chat editbox) and 12000 (cmd preview)
+
+local function TA_LiftPopup(dialog)
+  if not dialog or not dialog.IsVisible or not dialog:IsVisible() then return end
+  if dialog:GetFrameStrata() ~= TA_POPUP_STRATA then
+    dialog:SetFrameStrata(TA_POPUP_STRATA)
+  end
+  if (dialog:GetFrameLevel() or 0) < TA_POPUP_LEVEL then
+    dialog:SetFrameLevel(TA_POPUP_LEVEL)
+  end
+  dialog:SetAlpha(1)
+end
+
+function TA_LiftAllVisiblePopups()
+  for i = 1, 10 do
+    TA_LiftPopup(_G["StaticPopup" .. i])
+  end
+end
+
+if type(hooksecurefunc) == "function" and type(StaticPopup_Show) == "function" then
+  hooksecurefunc("StaticPopup_Show", function()
+    -- Defer one frame so Blizzard finishes wiring the popup before we lift it.
+    if C_Timer and C_Timer.After then
+      C_Timer.After(0, TA_LiftAllVisiblePopups)
+    else
+      TA_LiftAllVisiblePopups()
+    end
+  end)
+end
+
+overlay:HookScript("OnShow", TA_LiftAllVisiblePopups)
+
 function TA_InitCommandPreviewBox()
   if not overlay or overlay.__taCommandPreviewInit then return end
   local box = CreateFrame("Frame", nil, overlay, "BackdropTemplate")
