@@ -10,6 +10,7 @@
   exactHandlers["coins"] = function() ReportMoney() end
   exactHandlers["inventory"] = function() ReportInventory() end
   exactHandlers["bags"] = function() ReportInventory() end
+  exactHandlers["bank"] = function() ReportBank() end
   exactHandlers["gear"] = function() ReportEquipment() end
   exactHandlers["equipment"] = function() ReportEquipment() end
   exactHandlers["vendor"] = function() ReportVendorItems() end

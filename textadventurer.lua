@@ -6464,6 +6464,51 @@ local function ReportInventory()
   end
 end
 
+local function ReportBank()
+  if not (BankFrame and BankFrame:IsShown()) then
+    AddLine("system", "You must be at a banker with the bank window open to view bank contents.")
+    return
+  end
+
+  local totalItems = 0
+
+  -- Main 28 bank slots (bag index -1)
+  local mainSlots = C_Container.GetContainerNumSlots(-1) or 28
+  local mainItems = 0
+  for slot = 1, mainSlots do
+    local info = C_Container.GetContainerItemInfo(-1, slot)
+    if info then
+      AddLine("loot", string.format("Bank slot %d: %s x%d", slot, info.hyperlink or ("item:" .. tostring(info.itemID or "?")), info.stackCount or 1))
+      mainItems = mainItems + 1
+      totalItems = totalItems + 1
+    end
+  end
+  if mainItems == 0 then
+    AddLine("system", "Bank main slots: empty.")
+  end
+
+  -- Bank bag slots (indices 5–11)
+  for bag = 5, 11 do
+    local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+    if numSlots > 0 then
+      local bagItems = 0
+      for slot = 1, numSlots do
+        local info = C_Container.GetContainerItemInfo(bag, slot)
+        if info then
+          AddLine("loot", string.format("Bank bag %d slot %d: %s x%d", bag - 4, slot, info.hyperlink or ("item:" .. tostring(info.itemID or "?")), info.stackCount or 1))
+          bagItems = bagItems + 1
+          totalItems = totalItems + 1
+        end
+      end
+      if bagItems == 0 then
+        AddLine("system", string.format("Bank bag %d: empty (%d slots).", bag - 4, numSlots))
+      end
+    end
+  end
+
+  AddLine("system", string.format("Bank total: %d item stack(s).", totalItems))
+end
+
 local function GetActionSlotName(slot)
   if slot <= 12 then return string.format("Bar1-%d", slot) end
   if slot <= 24 then return string.format("Bar2-%d", slot - 12) end
@@ -12946,6 +12991,7 @@ function TA_RunPatternSelfTest(modeArg)
     "readitem 0 1",
     "restock food 5",
     "buyback 1",
+    "bank",
     "map on",
     "map off",
     "df profile balanced",

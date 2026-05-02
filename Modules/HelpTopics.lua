@@ -158,6 +158,7 @@ function TA_Help_ShowTopic(topicArg)
   if key == "economy" then
     AddLine("system", "Help: Inventory & Economy")
     AddLine("system", "  inventory/bags - bag contents and free space.")
+    AddLine("system", "  bank - bank contents (must be at a banker with bank window open).")
     AddLine("system", "  lootpreview - inspect corpse loot slots before taking items.")
     AddLine("system", "  gear/equipment - equipped items summary.")
     AddLine("system", "  equip <item name> - equip an item by name.")
