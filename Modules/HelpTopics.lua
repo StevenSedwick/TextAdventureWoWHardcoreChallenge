@@ -74,6 +74,11 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  fps/framerate - show current FPS in chat output.")
     AddLine("system", "  behind/backstab - positional check for rear attacks.")
     AddLine("system", "  marka, markb, spacing - geometric pull spacing estimate.")
+    AddLine("system", "  weapondance - compare bag/equipped weapons for Paladin SoR weapon dance DPS.")
+    AddLine("system", "  sordance - alias for weapondance.")
+    AddLine("system", "  swingtimer on/off - enable/disable the 'SWING NOW' weapon dance hint.")
+    AddLine("system", "  swingtimer status - show hint state, latency, and reaction buffer.")
+    AddLine("system", "  swingtimer reaction <ms> - tune how early the hint fires (default 50 ms).")
     return
   end
 

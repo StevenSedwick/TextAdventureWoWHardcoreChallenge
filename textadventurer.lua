@@ -3485,12 +3485,60 @@ end
 local function CheckSwingTimer()
   if not TA.swingReadyAt or TA.swingReadyAt == 0 then return end
   local remain = TA.swingReadyAt - GetTime()
-  if remain <= 0 and TA.lastSwingState ~= "ready" then
+  if TA.swingDanceHintEnabled then
+    local lagSec = 0
+    if GetNetStats then
+      lagSec = (tonumber(select(4, GetNetStats())) or 0) / 1000
+    end
+    local reactionBuf = tonumber(TA.swingDanceReactionBuffer) or 0.05
+    local hintThreshold = lagSec + reactionBuf
+    if remain > -0.1 and remain <= hintThreshold and TA.lastSwingState ~= "hintnow" then
+      AddLine("playerCombat", "Your hands glow bright. SWING YOUR WEAPON NOW!")
+      TA.lastSwingState = "hintnow"
+      return
+    end
+  end
+  if remain <= 0 and TA.lastSwingState ~= "ready" and TA.lastSwingState ~= "hintnow" then
     AddLine("playerCombat", "Your next strike is ready.")
     TA.lastSwingState = "ready"
-  elseif remain > 0 and remain <= 0.3 and TA.lastSwingState ~= "soon" then
+  elseif remain > 0 and remain <= 0.3 and TA.lastSwingState ~= "soon" and not TA.swingDanceHintEnabled then
     AddLine("playerCombat", "Your strike is about to land again.")
     TA.lastSwingState = "soon"
+  end
+end
+
+function TA_SetSwingDanceHint(args)
+  args = (args or ""):match("^%s*(.-)%s*$")
+  local cmd = (args:match("^(%S+)") or ""):lower()
+  if cmd == "on" then
+    TA.swingDanceHintEnabled = true
+    AddLine("system", "Swing dance hint enabled. Fires before each swing at latency + reaction buffer.")
+  elseif cmd == "off" then
+    TA.swingDanceHintEnabled = false
+    AddLine("system", "Swing dance hint disabled.")
+  elseif cmd == "status" then
+    local lagSec = 0
+    if GetNetStats then
+      lagSec = (tonumber(select(4, GetNetStats())) or 0) / 1000
+    end
+    local buf = tonumber(TA.swingDanceReactionBuffer) or 0.05
+    AddLine("system", string.format(
+      "Swing hint: %s | Latency: %d ms | Reaction buffer: %d ms | Fires at: %d ms before swing.",
+      TA.swingDanceHintEnabled and "ON" or "OFF",
+      math.floor(lagSec * 1000),
+      math.floor(buf * 1000),
+      math.floor((lagSec + buf) * 1000)
+    ))
+  elseif cmd == "reaction" then
+    local ms = tonumber(args:match("%S+%s+(%d+)"))
+    if not ms then
+      AddLine("system", "Usage: swingtimer reaction <ms>  (e.g. swingtimer reaction 100)")
+      return
+    end
+    TA.swingDanceReactionBuffer = ms / 1000
+    AddLine("system", string.format("Reaction buffer set to %d ms.", ms))
+  else
+    AddLine("system", "Usage: swingtimer on|off|status|reaction <ms>")
   end
 end
 
@@ -4192,6 +4240,172 @@ function TA_GetJudgementConnectChance(targetLevel)
   local connect = 1 - miss
   if connect < 0.5 then connect = 0.5 end
   return connect
+end
+
+local function TA_ScanWeaponTooltip(bag, slot, isEquipped, equippedSlot)
+  if not CreateFrame or not UIParent then return nil end
+  if not TA.bagInspectTooltip then
+    TA.bagInspectTooltip = CreateFrame("GameTooltip", "TextAdventurerBagInspectTooltip", UIParent, "GameTooltipTemplate")
+  end
+  local tip = TA.bagInspectTooltip
+  if not tip then return nil end
+  tip:SetOwner(UIParent, "ANCHOR_NONE")
+  tip:ClearLines()
+  if isEquipped then
+    if tip.SetInventoryItem then
+      tip:SetInventoryItem("player", equippedSlot or 16)
+    else
+      tip:Hide()
+      return nil
+    end
+  else
+    if tip.SetBagItem then
+      tip:SetBagItem(bag, slot)
+    else
+      tip:Hide()
+      return nil
+    end
+  end
+  local tipName = tip:GetName()
+  local speed, minDmg, maxDmg
+  for i = 1, tip:NumLines() do
+    local left = _G[tipName .. "TextLeft" .. i]
+    local right = _G[tipName .. "TextRight" .. i]
+    local ltext = left and left:GetText() or ""
+    local rtext = right and right:GetText() or ""
+    local lo, hi = ltext:match("(%d+)%s*%-%s*(%d+)%s+Damage")
+    if lo then minDmg = tonumber(lo); maxDmg = tonumber(hi) end
+    local rlo, rhi = rtext:match("(%d+)%s*%-%s*(%d+)%s+Damage")
+    if rlo then minDmg = tonumber(rlo); maxDmg = tonumber(rhi) end
+    local ls = ltext:match("Speed%s+(%d+%.?%d*)")
+    if ls then speed = tonumber(ls) end
+    local rs = rtext:match("Speed%s+(%d+%.?%d*)")
+    if rs then speed = tonumber(rs) end
+  end
+  tip:Hide()
+  return speed, minDmg, maxDmg
+end
+
+function TA_BuildWeaponDanceReport()
+  local sorRow = TA_GetLiveSpellRankRow("sor")
+  if not sorRow then
+    AddLine("playerCombat", "Weapon dance report unavailable: no Seal of Righteousness rank found in spellbook.")
+    return
+  end
+  local spellPower = TA_GetSpellPowerHoly()
+  local sorBase = ((sorRow.min or 0) + (sorRow.max or 0)) / 2
+  local sorHit = sorBase + spellPower * (sorRow.coeff or 0)
+  -- In Classic 1.12 SoR scales linearly with weapon speed; 3.0s is the reference point.
+  local sorRef = 3.0
+  local sorDpsRate = sorHit / sorRef
+
+  local cfg = TA_GetSealLiveConfig and TA_GetSealLiveConfig() or {}
+  local meleeConnect = TA_GetMeleeConnectChance(cfg.targetLevel, cfg.attackFromBehind)
+
+  local weapons = {}
+
+  -- Equipped main-hand (slot 16)
+  local eqSpeed = UnitAttackSpeed("player")
+  local eqMinDmg, eqMaxDmg = UnitDamage("player")
+  if eqSpeed and eqSpeed > 0 and eqMinDmg and eqMaxDmg then
+    local eqName = "Equipped"
+    local eqLink = GetInventoryItemLink and GetInventoryItemLink("player", 16)
+    if eqLink then
+      local n = GetItemInfo(eqLink)
+      if n then eqName = n end
+    end
+    table.insert(weapons, {
+      name = eqName,
+      speed = eqSpeed,
+      avgDmg = (eqMinDmg + eqMaxDmg) / 2,
+      sorPerSwing = sorDpsRate * eqSpeed,
+      whiteDps = ((eqMinDmg + eqMaxDmg) / 2) / eqSpeed,
+      isEquipped = true,
+      loc = "Main Hand",
+    })
+  end
+
+  -- Bags 0-4
+  if C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo then
+    for bag = 0, 4 do
+      local numSlots = C_Container.GetContainerNumSlots(bag)
+      if numSlots and numSlots > 0 then
+        for slot = 1, numSlots do
+          local info = C_Container.GetContainerItemInfo(bag, slot)
+          if info and info.itemID then
+            local itemLink = info.hyperlink
+              or (C_Container.GetContainerItemLink and C_Container.GetContainerItemLink(bag, slot))
+            if itemLink then
+              local iName, _, _, _, _, _, _, _, iEquipLoc = GetItemInfo(itemLink)
+              local isMainHand = iEquipLoc == "INVTYPE_WEAPON"
+                or iEquipLoc == "INVTYPE_2HWEAPON"
+                or iEquipLoc == "INVTYPE_WEAPONMAINHAND"
+              if isMainHand then
+                local speed, minDmg, maxDmg = TA_ScanWeaponTooltip(bag, slot, false)
+                if speed and speed > 0 and minDmg and maxDmg then
+                  local avgDmg = (minDmg + maxDmg) / 2
+                  table.insert(weapons, {
+                    name = iName or "Unknown",
+                    speed = speed,
+                    avgDmg = avgDmg,
+                    sorPerSwing = sorDpsRate * speed,
+                    whiteDps = avgDmg / speed,
+                    isEquipped = false,
+                    loc = string.format("Bag%d/%d", bag, slot),
+                  })
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  if #weapons == 0 then
+    AddLine("playerCombat", "No weapons found. Equip a weapon or place weapons in your bags.")
+    return
+  end
+
+  table.sort(weapons, function(a, b) return a.sorPerSwing > b.sorPerSwing end)
+
+  AddLine("playerCombat", string.format(
+    "=== Weapon Dance Report (SoR rank %d, %d SP) ===",
+    sorRow.rank or 0, math.floor(spellPower)
+  ))
+  AddLine("playerCombat", string.format(
+    "%-22s  %5s  %9s  %8s  %s",
+    "Weapon", "Speed", "SoR/Swing", "WhiteDPS", "Where"
+  ))
+  for _, w in ipairs(weapons) do
+    local tag = w.isEquipped and "[EQ]" or "    "
+    AddLine("playerCombat", string.format(
+      "%s %-18s  %5.2f  %9.1f  %8.1f  %s",
+      tag, w.name:sub(1, 18), w.speed,
+      w.sorPerSwing * meleeConnect,
+      w.whiteDps * meleeConnect,
+      w.loc
+    ))
+  end
+
+  local equippedW = nil
+  for _, w in ipairs(weapons) do
+    if w.isEquipped then equippedW = w; break end
+  end
+  local bestDonor = weapons[1]
+  if equippedW and bestDonor and not bestDonor.isEquipped then
+    local danceGain = (bestDonor.sorPerSwing - equippedW.sorPerSwing) * meleeConnect
+    local danceGainDps = danceGain / equippedW.speed
+    AddLine("playerCombat", string.format(
+      "Dance bonus: +%.1f SoR/swap with '%s' (%.2fs), ~+%.2f effective DPS.",
+      danceGain, bestDonor.name:sub(1, 22), bestDonor.speed, danceGainDps
+    ))
+    AddLine("playerCombat", "Use 'swingtimer on' to enable the swap-now hint.")
+  elseif #weapons == 1 and equippedW then
+    AddLine("playerCombat", "No bag weapons found. Place slower weapons in bags for comparison.")
+  elseif bestDonor and bestDonor.isEquipped then
+    AddLine("playerCombat", "Your equipped weapon is already the best SoR donor in your bags.")
+  end
 end
 
 function TA_ReportLiveSealDpsComparison()
@@ -13023,6 +13237,12 @@ function TA_RunPatternSelfTest(modeArg)
     "ml xp warrior weapon dual-wield",
     "sealdps set 30 100 90",
     "sealdps import 30:100:90",
+    "weapondance",
+    "sordance",
+    "swingtimer on",
+    "swingtimer off",
+    "swingtimer status",
+    "swingtimer reaction 100",
     "macroset 1 /say test",
     "macrorename 1 test",
     "macrocreate test /say hi",
@@ -13285,6 +13505,7 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
       "skills weapons", "skills professions", "skills defense",
       "help ", "help advanced", "help combat", "help economy",
       "help navigation", "help social", "help quests",
+      "swingtimer ",
     }
     for _, cmd in ipairs(prefixCmds) do
       local cmdLower = cmd:lower()
@@ -14005,5 +14226,7 @@ _G.TA_HandleSettingCommand = TA_HandleSettingCommand
 _G.TA_SetNamedCVar = TA_SetNamedCVar
 _G.TA_ReportNamedCVar = TA_ReportNamedCVar
 _G.GRID_SIZE_STANDARD = GRID_SIZE_STANDARD
+_G.TA_BuildWeaponDanceReport = TA_BuildWeaponDanceReport
+_G.TA_SetSwingDanceHint = TA_SetSwingDanceHint
 
 
