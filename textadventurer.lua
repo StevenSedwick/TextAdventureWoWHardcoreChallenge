@@ -135,7 +135,7 @@ TA.dfModeEnabled = true
 TA.lastNearbyUnits = {}
 TA.nearbyUnitsCacheAt = 0
 TA.nearbyUnitsCacheInterval = 0.20
-TA.dfModeGridSize = 31
+TA.dfModeGridSize = 35
 TA.dfModeInnerRadius = nil
 TA.dfModeInnerRadiusGridSize = nil
 TA.dfModeLastUpdate = 0
@@ -13342,14 +13342,6 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.dfModeLegendEnabled = (TextAdventurerDB.dfModeLegendEnabled ~= false)
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
       local savedGrid = math.floor(TextAdventurerDB.dfModeGridSize)
-      -- One-time migration from the old default 35 to the new perf-friendly default 31.
-      if TextAdventurerDB.dfModeGridSizeMigratedTo31 ~= true then
-        if savedGrid == 35 then
-          savedGrid = 31
-          TextAdventurerDB.dfModeGridSize = 31
-        end
-        TextAdventurerDB.dfModeGridSizeMigratedTo31 = true
-      end
       if savedGrid < 5 then savedGrid = 5 end
       if savedGrid > 99 then savedGrid = 99 end
       if savedGrid % 2 == 0 then savedGrid = savedGrid + 1 end
