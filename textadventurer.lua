@@ -134,8 +134,8 @@ TA.pendingCVarList = false
 TA.dfModeEnabled = true
 TA.lastNearbyUnits = {}
 TA.nearbyUnitsCacheAt = 0
-TA.nearbyUnitsCacheInterval = 0.15
-TA.dfModeGridSize = 35
+TA.nearbyUnitsCacheInterval = 0.20
+TA.dfModeGridSize = 31
 TA.dfModeInnerRadius = nil
 TA.dfModeInnerRadiusGridSize = nil
 TA.dfModeLastUpdate = 0
@@ -143,8 +143,8 @@ TA.dfModeViewMode = "threat"  -- tactical, threat, exploration, combined
 TA.dfModeProfile = "full"  -- balanced, full
 TA.dfModeOrientation = "fixed"  -- fixed (north-up), rotating (heading-up)
 TA.dfModeRotationMode = "smooth"  -- smooth, octant (45-degree snaps for squarer geometry)
-TA.dfModeLookaheadSeconds = 0.12  -- short player-only projection to make DF cell transitions feel snappier
-TA.dfModeHysteresisEnterPct = 0.38  -- enter next DF cell early, then require backing out farther before snapping back
+TA.dfModeLookaheadSeconds = 0.15  -- short player-only projection to make DF cell transitions feel snappier
+TA.dfModeHysteresisEnterPct = 0.42  -- enter next DF cell early, then require backing out farther before snapping back
 TA.dfModeAnchorCellX = nil
 TA.dfModeAnchorCellY = nil
 TA.dfModeMarkRadius = 5  -- cells around mark center to draw edge ring (0 = center cell only)
@@ -154,9 +154,6 @@ TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
 TA.dfModeShowLevelFilter = nil  -- nil = show all, number = threshold
 TA.dfModeLastNearestMarkID = nil
 TA.dfModeLastNearestMarkDist = nil
-TA.dfModeSonarContacts = {}
-TA.dfModeSonarPulseUntil = 0
-TA.dfModeSonarTTL = 60
 TA.dfModeLastKnownUnits = {}
 TA.dfModeCorpseContacts = {}
 TA.dfModeCorpseTTL = 45
@@ -170,7 +167,7 @@ TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
 TA.performanceFrameHooks = {}
-TA.tickerIntervals = { move = 0.2, nearby = 0.25, memory = 0.5, df = 0.1 }
+TA.tickerIntervals = { move = 0.2, nearby = 0.25, memory = 0.5, df = 0.15 }
 TA.tickerIntervals.warlockPrompt = 0.75
 local AWARENESS_SUBEVENTS = {
   SWING_DAMAGE = true, RANGE_DAMAGE = true, SPELL_DAMAGE = true,
@@ -9043,16 +9040,16 @@ local PERFORMANCE_FRAME_NAMES = {
 local function TA_SetTickerProfile(profile)
   if profile == "performance" then
     TA.tickerIntervals.move = 0.05
-    TA.tickerIntervals.nearby = 0.05
+    TA.tickerIntervals.nearby = 0.10
     TA.tickerIntervals.memory = 0.10
-    TA.tickerIntervals.df = 0.05
+    TA.tickerIntervals.df = 0.10
     TA.tickerIntervals.warlockPrompt = 1.50
     TA.tickerIntervals.warriorPrompt = 1.50
   else
     TA.tickerIntervals.move = 0.2
     TA.tickerIntervals.nearby = 0.25
     TA.tickerIntervals.memory = 0.5
-    TA.tickerIntervals.df = 0.1
+    TA.tickerIntervals.df = 0.15
     TA.tickerIntervals.warlockPrompt = 0.75
     TA.tickerIntervals.warriorPrompt = 0.75
   end
@@ -9397,62 +9394,30 @@ end
     return units
   end
 
-local function TA_ClearDFSonar()
-  TA.dfModeSonarContacts = {}
-end
-
-local function TA_RecordDFSonarContacts(units, mapID)
+local function TA_RecordDFLastKnownUnits(units, mapID)
   if not units or not mapID then return end
   local now = GetTime()
-  local ttl = tonumber(TA.dfModeSonarTTL) or 8
-  local contactTable = TA.dfModeSonarContacts or {}
   local lastKnown = TA.dfModeLastKnownUnits or {}
   local function ingest(kind, list)
     for _, u in ipairs(list or {}) do
-      if u and u.hasExactPos and u.worldX and u.worldY then
-        local key = u.guid or (kind .. ":" .. (u.name or "unknown"))
-        local existing = contactTable[key] or {}
-        existing.name = u.name or existing.name or "Unknown"
-        existing.kind = kind
-        existing.mapID = mapID
-        existing.worldX = u.worldX
-        existing.worldY = u.worldY
-        existing.seenAt = now
-        existing.expiresAt = now + ttl
-        contactTable[key] = existing
-        if u.guid then
-          lastKnown[u.guid] = {
-            guid = u.guid,
-            name = u.name or "Unknown",
-            kind = kind,
-            mapID = mapID,
-            worldX = u.worldX,
-            worldY = u.worldY,
-            seenAt = now,
-            expiresAt = now + math.max(ttl, 30),
-          }
-        end
+      if u and u.hasExactPos and u.worldX and u.worldY and u.guid then
+        lastKnown[u.guid] = {
+          guid = u.guid,
+          name = u.name or "Unknown",
+          kind = kind,
+          mapID = mapID,
+          worldX = u.worldX,
+          worldY = u.worldY,
+          seenAt = now,
+          expiresAt = now + 30,
+        }
       end
     end
   end
   ingest("hostile", units.hostile)
   ingest("neutral", units.neutral)
   ingest("friendly", units.friendly)
-  TA.dfModeSonarContacts = contactTable
   TA.dfModeLastKnownUnits = lastKnown
-end
-
-local function TA_PruneDFSonarContacts(mapID)
-  local now = GetTime()
-  local count = 0
-  for key, c in pairs(TA.dfModeSonarContacts or {}) do
-    if type(c) ~= "table" or c.expiresAt == nil or c.expiresAt <= now or (mapID and c.mapID and c.mapID ~= mapID) then
-      TA.dfModeSonarContacts[key] = nil
-    else
-      count = count + 1
-    end
-  end
-  return count
 end
 
 local function TA_PruneDFLastKnownUnits(mapID)
@@ -9495,18 +9460,6 @@ local function TA_PruneDFCorpseContacts(mapID)
       TA.dfModeCorpseContacts[key] = nil
     end
   end
-end
-
-local function TA_TriggerDFSonarPing(seconds)
-  local duration = tonumber(seconds) or 4
-  if duration < 1 then duration = 1 end
-  if duration > 20 then duration = 20 end
-  TA.dfModeSonarPulseUntil = GetTime() + duration
-  if TA.dfModeEnabled then
-    TA.dfModeLastUpdate = 0
-    TA_UpdateDFMode()
-  end
-  return duration
 end
 
 local function TA_GetLoadedTerrainData()
@@ -10066,11 +10019,14 @@ local function BuildDFModeDisplay()
 
   local gridSize = TA.dfModeGridSize or 21
   local radius = math.floor(gridSize / 2)
-  -- innerRadius is large enough that after any rotation, all display cells map to valid world cells.
-  -- A rotated square needs sqrt(2) * radius coverage; we use 1.45 for a small safety margin.
-  if TA.dfModeInnerRadiusGridSize ~= gridSize then
-    TA.dfModeInnerRadius = math.ceil(radius * 1.45)
-    TA.dfModeInnerRadiusGridSize = gridSize
+  -- innerRadius covers all display cells after rotation. In fixed orientation no rotation
+  -- happens so we can save grid allocation by using radius directly.
+  local orientation = TA.dfModeOrientation or "fixed"
+  local rotationMode = TA.dfModeRotationMode or "smooth"
+  local innerRadiusKey = gridSize * 2 + (orientation == "fixed" and 0 or 1)
+  if TA.dfModeInnerRadiusGridSize ~= innerRadiusKey then
+    TA.dfModeInnerRadius = (orientation == "fixed") and radius or math.ceil(radius * 1.45)
+    TA.dfModeInnerRadiusGridSize = innerRadiusKey
   end
   local innerRadius = TA.dfModeInnerRadius or math.ceil(radius * 1.45)
   -- Each DF grid cell represents this many in-game yards. Must be a whole number
@@ -10079,8 +10035,6 @@ local function BuildDFModeDisplay()
   local calibrationEnabled = TA.dfModeCalibrationEnabled and true or false
   local viewMode = TA.dfModeViewMode or "threat"
   local profile = TA.dfModeProfile or "full"
-  local orientation = TA.dfModeOrientation or "fixed"
-  local rotationMode = TA.dfModeRotationMode or "smooth"
   local balanced = (profile ~= "full")
 
   -- Get facing direction
@@ -10092,14 +10046,20 @@ local function BuildDFModeDisplay()
   TA.dfModeNavHint = nil
 
   -- Build the world grid at innerRadius so rotation never hits an out-of-bounds edge.
-  local grid = {}
-  local threatHeat = {}
+  -- Reuse scratch tables across builds: this avoids 2*(innerRadius*2+1)^2 table allocations per tick.
+  TA._dfScratch = TA._dfScratch or {}
+  local scratch = TA._dfScratch
+  local grid = scratch.grid or {}
+  local threatHeat = scratch.threatHeat or {}
+  scratch.grid = grid
+  scratch.threatHeat = threatHeat
+  -- Resize if needed (grow only; shrinking is unnecessary for a steady grid size).
   for y = -innerRadius, innerRadius do
-    grid[y] = {}
-    threatHeat[y] = {}
+    local row = grid[y]; if not row then row = {}; grid[y] = row end
+    local hrow = threatHeat[y]; if not hrow then hrow = {}; threatHeat[y] = hrow end
     for x = -innerRadius, innerRadius do
-      grid[y][x] = "."
-      threatHeat[y][x] = 0
+      row[x] = "."
+      hrow[x] = 0
     end
   end
 
@@ -10108,10 +10068,7 @@ local function BuildDFModeDisplay()
 
   -- Get nearby units
   local units = GetNearbyUnitsWithPositions()
-  if (tonumber(TA.dfModeSonarPulseUntil) or 0) > now then
-    TA_RecordDFSonarContacts(units, mapID)
-  end
-  TA_PruneDFSonarContacts(mapID)
+  TA_RecordDFLastKnownUnits(units, mapID)
   TA_PruneDFLastKnownUnits(mapID)
   TA_PruneDFCorpseContacts(mapID)
 
@@ -10550,34 +10507,6 @@ local function BuildDFModeDisplay()
     end
   end
 
-  -- Sonar echo overlay: recent exact-contact memory to improve map definition between direct sightings.
-  for _, c in pairs(TA.dfModeSonarContacts or {}) do
-    if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
-      local dx_yards = c.worldX - playerWorldX
-      local dy_yards = c.worldY - playerWorldY
-      local east = dx_yards
-      local north = dy_yards
-      local sx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-      local sy = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
-      if math.abs(sx) <= innerRadius and math.abs(sy) <= innerRadius and grid[sy] and grid[sy][sx] and grid[sy][sx] == "." then
-        local ttl = math.max(1, (tonumber(TA.dfModeSonarTTL) or 8))
-        local age = now - (c.seenAt or now)
-        local glyph = "'"
-        if c.kind == "hostile" then
-          if age <= ttl * 0.33 then glyph = "h"
-          elseif age <= ttl * 0.66 then glyph = ":"
-          else glyph = "." end
-          threatHeat[sy][sx] = (threatHeat[sy][sx] or 0) + 1
-        elseif c.kind == "friendly" then
-          glyph = age <= ttl * 0.5 and "f" or ","
-        else
-          glyph = age <= ttl * 0.5 and "n" or ","
-        end
-        grid[sy][sx] = glyph
-      end
-    end
-  end
-
   -- Corpse overlay: recently killed units at their last known exact position.
   for _, c in pairs(TA.dfModeCorpseContacts or {}) do
     if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
@@ -10680,7 +10609,17 @@ local function BuildDFModeDisplay()
     deltaMax = nil,
     cliffDrops = 0,
   }
-  local terrainCache = {}
+  -- Persistent terrain cache: TA_GetTerrainContextAtWorldPos is the single biggest cost in
+  -- BuildDFModeDisplay. Cache it across DF builds, keyed by the snapped player cell + map +
+  -- yards/cell + lookup mode. Wipe whenever the key changes (i.e. the player crosses a cell).
+  local snappedPlayerCellX = (playerWorldX and yardsPerCell and yardsPerCell > 0) and math.floor(playerWorldX / yardsPerCell + 0.5) or 0
+  local snappedPlayerCellY = (playerWorldY and yardsPerCell and yardsPerCell > 0) and math.floor(playerWorldY / yardsPerCell + 0.5) or 0
+  local terrainCacheKey = string.format("%s:%s:%d:%d:%d", tostring(mapID or "?"), tostring(terrainLookupMode or "?"), snappedPlayerCellX, snappedPlayerCellY, math.floor(yardsPerCell or 0))
+  if TA._dfTerrainCacheKey ~= terrainCacheKey then
+    TA._dfTerrainCache = {}
+    TA._dfTerrainCacheKey = terrainCacheKey
+  end
+  local terrainCache = TA._dfTerrainCache
   local gridDistanceCache = {}
 
   local function TA_GetGridDistance(x, y)
@@ -10779,14 +10718,16 @@ local function BuildDFModeDisplay()
   end
 
   local showTerrainView = (viewMode == "threat" or viewMode == "combined")
-  local terrainLayer = {}
-  local terrainHeatLayer = {}
+  scratch.terrainLayer = scratch.terrainLayer or {}
+  scratch.terrainHeatLayer = scratch.terrainHeatLayer or {}
+  local terrainLayer = scratch.terrainLayer
+  local terrainHeatLayer = scratch.terrainHeatLayer
 
   -- Pass 1: sample terrain glyphs for each display cell so we can smooth noisy
   -- one-off spikes without requerying terrain on the render pass.
   for y = radius, -radius, -1 do
-    terrainLayer[y] = {}
-    terrainHeatLayer[y] = {}
+    local tlrow = terrainLayer[y]; if not tlrow then tlrow = {}; terrainLayer[y] = tlrow end
+    local throw = terrainHeatLayer[y]; if not throw then throw = {}; terrainHeatLayer[y] = throw end
     for x = -radius, radius do
       terrainStats.samples = terrainStats.samples + 1
 
@@ -11006,23 +10947,17 @@ local function BuildDFModeDisplay()
       table.insert(row, cell)
     end
 
-    -- Horizontal mark-edge rows: when 3+ consecutive cells are the mark edge
-    -- glyph "o", drop the spaces between just those cells so they read as a
+    -- Horizontal mark-edge rows: when 3+ consecutive cells are the (unadorned)
+    -- mark edge glyph, drop the spaces between just those cells so they read as a
     -- continuous "ooooo" segment instead of "o o o o o" (which over-stretches
     -- the rectangle horizontally relative to its vertical sides).
-    local function IsEdgeGlyph(s)
-      if not s then return false end
-      local visible = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-      return visible == "o"
-    end
-
     local pieces = {}
     local i = 1
     while i <= #row do
       local cell = row[i]
-      if IsEdgeGlyph(cell) then
+      if cell == markEdgeGlyph then
         local j = i
-        while j <= #row and IsEdgeGlyph(row[j]) do j = j + 1 end
+        while j <= #row and row[j] == markEdgeGlyph do j = j + 1 end
         local runLen = j - i
         if runLen >= 3 then
           if #pieces > 0 then table.insert(pieces, " ") end
@@ -11720,7 +11655,9 @@ function TA_GetProjectedDFPlayerWorldPosition(playerWorldX, playerWorldY)
   local projectedWorldX = playerWorldX
   local projectedWorldY = playerWorldY
   if lookaheadSeconds > 0 then
-    local lookaheadYards = math.min(speed * lookaheadSeconds, 1.25)
+    -- Lookahead cap: max half a cell so projection cannot leap past the snap zone.
+    local lookaheadCap = 0.5 * (TA_GetEffectiveDFYardsPerCell() or 3)
+    local lookaheadYards = math.min(speed * lookaheadSeconds, lookaheadCap)
     local forwardX = -math.sin(facing)
     local forwardY = math.cos(facing)
     projectedWorldX = projectedWorldX + (forwardX * lookaheadYards)
@@ -12911,9 +12848,6 @@ function TA_RunPatternSelfTest(modeArg)
     "df size 300 600",
     "df grid 35",
     "df markradius 2",
-    "df sonar",
-    "df sonar ping 2",
-    "df sonar ttl 8",
     "route show test",
     "route list",
     "questinfo 1",
@@ -12968,7 +12902,6 @@ function TA_RunPatternSelfTest(modeArg)
     "df adaptive on",
     "df adaptive mode combat",
     "df adaptive thresholds 10 20 40",
-    "df sonar clear",
     "route start test",
     "route follow test",
     "route follow off",
@@ -13243,7 +13176,7 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
       "bug show ", "bug copy ",
       "df ", "df size ", "df grid ", "df cell ", "df markradius ",
       "df rotation ", "df orientation ", "df square ",
-      "df profile ", "df view ", "df hue ", "df legend ", "df calibrate ", "df sonar ",
+      "df profile ", "df view ", "df hue ", "df legend ", "df calibrate ",
       "memory ", "focus ", "castfocus ", "macro ", "macroinfo ",
       "skills weapons", "skills professions", "skills defense",
       "help ", "help advanced", "help combat", "help economy",
@@ -13409,6 +13342,14 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.dfModeLegendEnabled = (TextAdventurerDB.dfModeLegendEnabled ~= false)
     if type(TextAdventurerDB.dfModeGridSize) == "number" then
       local savedGrid = math.floor(TextAdventurerDB.dfModeGridSize)
+      -- One-time migration from the old default 35 to the new perf-friendly default 31.
+      if TextAdventurerDB.dfModeGridSizeMigratedTo31 ~= true then
+        if savedGrid == 35 then
+          savedGrid = 31
+          TextAdventurerDB.dfModeGridSize = 31
+        end
+        TextAdventurerDB.dfModeGridSizeMigratedTo31 = true
+      end
       if savedGrid < 5 then savedGrid = 5 end
       if savedGrid > 99 then savedGrid = 99 end
       if savedGrid % 2 == 0 then savedGrid = savedGrid + 1 end
@@ -13966,10 +13907,6 @@ _G.TA_ReportGameSettings = TA_ReportGameSettings
 _G.TA_HandleSettingCommand = TA_HandleSettingCommand
 _G.TA_SetNamedCVar = TA_SetNamedCVar
 _G.TA_ReportNamedCVar = TA_ReportNamedCVar
-_G.TA_PruneDFSonarContacts = TA_PruneDFSonarContacts
-_G.TA_TriggerDFSonarPing = TA_TriggerDFSonarPing
-_G.TA_ClearDFSonar = TA_ClearDFSonar
-
 _G.GRID_SIZE_STANDARD = GRID_SIZE_STANDARD
 
 
