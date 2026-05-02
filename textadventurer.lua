@@ -13928,6 +13928,7 @@ _G.ReportCharacterStats = ReportCharacterStats
 _G.ReportEquipmentChange = ReportEquipmentChange
 _G.ReportEquipment = ReportEquipment
 _G.ReportInventory = ReportInventory
+_G.ReportBank = ReportBank
 _G.ReportActionBars = ReportActionBars
 _G.ReportMacros = ReportMacros
 _G.ReportSpellbook = ReportSpellbook
