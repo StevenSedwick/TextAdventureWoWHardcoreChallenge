@@ -212,6 +212,7 @@ local COLORS = {
   quest    = { 0.95, 0.95, 0.45 },
   chat     = { 0.80, 0.80, 1.00 },
   whisper  = { 1.00, 0.60, 1.00 },
+  swingDance = { 0.20, 1.00, 1.00 },
 }
 
 -- Performance profiling system
@@ -3493,7 +3494,7 @@ local function CheckSwingTimer()
     local reactionBuf = tonumber(TA.swingDanceReactionBuffer) or 0.05
     local hintThreshold = lagSec + reactionBuf
     if remain > -0.1 and remain <= hintThreshold and TA.lastSwingState ~= "hintnow" then
-      AddLine("playerCombat", "Your hands glow bright. SWING YOUR WEAPON NOW!")
+      AddLine("swingDance", "Your hands glow bright. SWING YOUR WEAPON NOW!")
       TA.lastSwingState = "hintnow"
       return
     end
