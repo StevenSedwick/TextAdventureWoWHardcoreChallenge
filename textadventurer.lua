@@ -7054,6 +7054,61 @@ function TA_BindBagItemToActionSlot(actionSlot, bag, slot)
   end
 end
 
+function TA_MoveBagItem(srcBag, srcSlot, dstBag, dstSlot)
+  local function BagLabel(bag)
+    return bag == 0 and "backpack" or ("bag " .. tostring(bag))
+  end
+  if srcBag == nil or srcSlot == nil or dstBag == nil or dstSlot == nil then
+    AddLine("system", "Usage: moveitem <srcBag> <srcSlot> <dstBag> <dstSlot>")
+    AddLine("system", "  Bags: 0=backpack, 1-4=bag slots. Example: moveitem 0 3 1 1")
+    return
+  end
+
+  if InCombatLockdown and InCombatLockdown() then
+    AddLine("system", "Cannot move items during combat.")
+    return
+  end
+
+  if not (C_Container and C_Container.GetContainerItemInfo and C_Container.PickupContainerItem) then
+    AddLine("system", "Container API unavailable.")
+    return
+  end
+
+  local srcInfo = C_Container.GetContainerItemInfo(srcBag, srcSlot)
+  if not srcInfo then
+    AddLine("system", string.format("No item in %s slot %d.", BagLabel(srcBag), srcSlot))
+    return
+  end
+
+  local srcName = srcInfo.hyperlink or tostring(srcInfo.itemID or "item")
+  local dstInfo = C_Container.GetContainerItemInfo(dstBag, dstSlot)
+
+  ClearCursor()
+  C_Container.PickupContainerItem(srcBag, srcSlot)
+
+  local cursorType = GetCursorInfo and GetCursorInfo() or nil
+  if cursorType ~= "item" then
+    ClearCursor()
+    AddLine("system", string.format("Could not pick up %s from %s slot %d.", srcName, BagLabel(srcBag), srcSlot))
+    return
+  end
+
+  C_Container.PickupContainerItem(dstBag, dstSlot)
+  ClearCursor()
+
+  local newSrcInfo = C_Container.GetContainerItemInfo(srcBag, srcSlot)
+  local newDstInfo = C_Container.GetContainerItemInfo(dstBag, dstSlot)
+
+  if dstInfo then
+    local dstName = dstInfo.hyperlink or tostring(dstInfo.itemID or "item")
+    AddLine("system", string.format("Swapped %s (%s/%d) with %s (%s/%d).",
+      srcName, BagLabel(srcBag), srcSlot,
+      dstName, BagLabel(dstBag), dstSlot))
+  else
+    AddLine("system", string.format("Moved %s to %s slot %d.", srcName, BagLabel(dstBag), dstSlot))
+  end
+end
+
 local function DoTargetCommand(arg)
   if not arg or arg == "" then
     AddLine("system", "Usage: target nearest, target next, target corpse, or target <name>")
@@ -12882,6 +12937,7 @@ function TA_RunPatternSelfTest(modeArg)
     "bind 1 1",
     "bindmacro 1 1",
     "binditem 1 0 1",
+    "moveitem 0 1 1 1",
     "buycheck 1",
     "buycheck 1 2",
     "vendorinfo 1",
@@ -13168,7 +13224,7 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
     end
     -- Also include known prefix commands not fully in EXACT_INPUT_HANDLERS
     local prefixCmds = {
-      "equip ", "binditem ", "bind ", "bindmacro ",
+      "equip ", "binditem ", "moveitem ", "bind ", "bindmacro ",
       "actions ", "bars ", "sell ", "destroy ", "use ",
       "mark ", "unmark ", "renamemark ", "goto ", "route ",
       "ml xp ", "ml xp warrior ", "ml xp set ", "ml xp mode ",
