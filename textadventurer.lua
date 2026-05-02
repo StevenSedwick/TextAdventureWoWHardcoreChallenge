@@ -12992,6 +12992,8 @@ function TA_RunPatternSelfTest(modeArg)
     "restock food 5",
     "buyback 1",
     "bank",
+    "spellbook all",
+    "spells full",
     "map on",
     "map off",
     "df profile balanced",
