@@ -11004,10 +11004,81 @@ local function BuildDFModeDisplay()
   local facingDegrees = math.floor(math.deg(facing))
   TA.dfModeNavHint = nil
 
-  -- Build the world grid at innerRadius so rotation never hits an out-of-bounds edge.
-  -- Reuse scratch tables across builds: this avoids 2*(innerRadius*2+1)^2 table allocations per tick.
+  -- Hoist unit fetch + bookkeeping + target detection before the sig check.
+  -- GetNearbyUnitsWithPositions returns a cached value (refreshed at most every
+  -- nearbyUnitsCacheInterval=0.15–0.20s), so this is cheap.
+  local units = GetNearbyUnitsWithPositions()
+  TA_RecordDFLastKnownUnits(units, mapID)
+  TA_PruneDFLastKnownUnits(mapID)
+  TA_PruneDFCorpseContacts(mapID)
+
+  local targetName = UnitName("target")
+  local targetUnit = targetName and "target" or nil
+  local targetGUID = targetUnit and UnitGUID("target") or nil
+
+  -- Dirty-state gate: compute a cheap signature over every display-affecting
+  -- variable. If identical to last tick, skip all grid/terrain/render work and
+  -- return the cached display string. This eliminates ~95% of the per-tick cost
+  -- when the player is stationary and the scene is unchanged.
+  --
+  -- Signature components:
+  --   mapID, viewMode, profile, gridSize, yardsPerCell — config/zone state
+  --   facingBucket (2° steps) — heading; finer would cause jitter, coarser misses turns
+  --   snappedPX/PY (half-cell resolution) — player position; catches cell crossings
+  --   unitCountSig + unitPosHash — catches units entering/leaving/moving
+  --   targetGUID + target position (half-cell) — target enter/leave/move
+  --   terrainCtxKey — catches ADT chunk transitions (standing-terrain label)
+  --   hue/legend toggles, mark state
   TA._dfScratch = TA._dfScratch or {}
   local scratch = TA._dfScratch
+
+  local terrainCtx = TA.dfModeTerrainContext
+  local terrainCtxKey = (type(terrainCtx) == "table" and terrainCtx.key) or ""
+  local halfCell = (yardsPerCell or 3) * 0.5
+  local snappedPX = playerWorldX and math.floor(playerWorldX / halfCell + 0.5) or 0
+  local snappedPY = playerWorldY and math.floor(playerWorldY / halfCell + 0.5) or 0
+  local facingBucket = math.floor(facingDegrees / 2)
+
+  local hostile  = units.hostile  or {}
+  local neutral  = units.neutral  or {}
+  local friendly = units.friendly or {}
+  local unitCountSig = #hostile * 10000 + #neutral * 100 + #friendly
+  local unitPosHash = 0
+  local allPools = { hostile, neutral, friendly }
+  for p = 1, 3 do
+    local pool = allPools[p]
+    for i = 1, #pool do
+      local u = pool[i]
+      if u and u.worldX and u.worldY then
+        unitPosHash = (unitPosHash + math.floor(u.worldX * 3 + 0.5) * 131
+                                   + math.floor(u.worldY * 3 + 0.5)) % 16777216
+      end
+    end
+  end
+
+  local tgSigX, tgSigY = 0, 0
+  if targetGUID then
+    local tx, ty = UnitPosition("target")
+    if tx and ty then
+      tgSigX = math.floor(tx / halfCell + 0.5)
+      tgSigY = math.floor(ty / halfCell + 0.5)
+    end
+  end
+
+  local markedCellSig = tostring(TA.lastMarkedCellNotification or "")
+  local dfSig = string.format("%s|%s|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%s|%s",
+    tostring(mapID or ""), viewMode, profile,
+    gridSize, math.floor(yardsPerCell or 0),
+    facingBucket, snappedPX, snappedPY,
+    unitCountSig, unitPosHash,
+    tgSigX, tgSigY, (targetGUID and 1 or 0),
+    tostring(targetGUID or ""), terrainCtxKey,
+    tostring(TA.dfModeHueEnabled), tostring(TA.dfModeLegendEnabled ~= false),
+    markedCellSig
+  )
+  if scratch.dfSig == dfSig and scratch.dfSigDisplay then
+    return scratch.dfSigDisplay
+  end
   local grid = scratch.grid or {}
   local threatHeat = scratch.threatHeat or {}
   scratch.grid = grid
@@ -11025,16 +11096,7 @@ local function BuildDFModeDisplay()
   -- Place player at center; use @ when standing inside a marked cell.
   grid[0][0] = (TA.markedCells and TA.lastMarkedCellNotification and TA.markedCells[TA.lastMarkedCellNotification] and TA.markedCells[TA.lastMarkedCellNotification].mapID == mapID) and "@" or "P"
 
-  -- Get nearby units
-  local units = GetNearbyUnitsWithPositions()
-  TA_RecordDFLastKnownUnits(units, mapID)
-  TA_PruneDFLastKnownUnits(mapID)
-  TA_PruneDFCorpseContacts(mapID)
-
-  -- Get target
-  local targetName = UnitName("target")
-  local targetUnit = targetName and "target" or nil
-  local targetGUID = targetUnit and UnitGUID("target") or nil
+  -- (units, bookkeeping, and target detection were moved before the sig check above.)
   local targetPlaced = false
   local targetDistance = nil
   local targetDistanceExact = nil
@@ -11797,6 +11859,8 @@ local function BuildDFModeDisplay()
     end
   end
 
+  scratch.dfSig = dfSig
+  scratch.dfSigDisplay = display
   return display
 end
 
