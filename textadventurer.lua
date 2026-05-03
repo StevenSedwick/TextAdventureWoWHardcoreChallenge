@@ -11495,8 +11495,14 @@ local function BuildDFModeDisplay()
   local showTerrainView = (viewMode == "threat" or viewMode == "combined")
   scratch.terrainLayer = scratch.terrainLayer or {}
   scratch.terrainHeatLayer = scratch.terrainHeatLayer or {}
+  scratch.rotWX = scratch.rotWX or {}
+  scratch.rotWY = scratch.rotWY or {}
   local terrainLayer = scratch.terrainLayer
   local terrainHeatLayer = scratch.terrainHeatLayer
+  -- Cache rotated world coords per (y,x) so the render pass below can reuse
+  -- them instead of recomputing the same rotation/round per cell.
+  local rotWX = scratch.rotWX
+  local rotWY = scratch.rotWY
   dfCtx.terrainLayer = terrainLayer
 
   -- Pass 1: sample terrain glyphs for each display cell so we can smooth noisy
@@ -11504,11 +11510,15 @@ local function BuildDFModeDisplay()
   for y = radius, -radius, -1 do
     local tlrow = terrainLayer[y]; if not tlrow then tlrow = {}; terrainLayer[y] = tlrow end
     local throw = terrainHeatLayer[y]; if not throw then throw = {}; terrainHeatLayer[y] = throw end
+    local wxrow = rotWX[y]; if not wxrow then wxrow = {}; rotWX[y] = wxrow end
+    local wyrow = rotWY[y]; if not wyrow then wyrow = {}; rotWY[y] = wyrow end
     for x = -radius, radius do
       terrainStats.samples = terrainStats.samples + 1
 
       local wx = dfCtx.roundNearest((x * displayCosA) - (y * displaySinA))
       local wy = dfCtx.roundNearest((x * displaySinA) + (y * displayCosA))
+      wxrow[x] = wx
+      wyrow[x] = wy
       local dist = dfCtx.getGridDistance(x, y)
 
       local baseCell = "."
@@ -11613,10 +11623,12 @@ local function BuildDFModeDisplay()
 
   for y = radius, -radius, -1 do
     local rowN = 0
+    local wxrow = rotWX[y]
+    local wyrow = rotWY[y]
     for x = -radius, radius do
-      -- Rotate viewport with heading: screen coords -> world coords.
-      local wx = dfCtx.roundNearest((x * displayCosA) - (y * displaySinA))
-      local wy = dfCtx.roundNearest((x * displaySinA) + (y * displayCosA))
+      -- Reuse rotated world coords computed during pass 1 above.
+      local wx = wxrow[x]
+      local wy = wyrow[x]
 
       -- Hoist bounds check: used by grid, threat, and exploration lookups.
       local inBounds = math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius
