@@ -14238,6 +14238,17 @@ TA:SetScript("OnEvent", function(self, event, ...)
       local h = math.floor(total / 3600)
       AddLine("status", string.format("Time played: %dh on this character.", h))
     end
+  elseif event == "CHAT_MSG_COMBAT_FACTION_CHANGE" then
+    local message = ...
+    if type(message) == "string" and message ~= "" then
+      AddLine("status", "* " .. message)
+    end
+  elseif event == "PLAYER_UPDATE_RESTING" then
+    if IsResting and IsResting() then
+      AddLine("status", "You feel a hearth's warmth wash over you. (Rested)")
+    else
+      AddLine("status", "You step away from rest. The world stirs again.")
+    end
   elseif event == "GOSSIP_SHOW" then
     TA_NarrateGossipText()
     TryAutoQuestFromGossip()
@@ -14250,6 +14261,17 @@ TA:SetScript("OnEvent", function(self, event, ...)
 
   elseif event == "TRAINER_SHOW" then
     AddLine("quest", "Trainer opened. Type trainer, train 1, or train all.")
+  elseif event == "TAXIMAP_OPENED" then
+    AddLine("place", "The flight master spreads out a map of routes.")
+    if TA_ReportTaxiNodes then
+      if C_Timer and C_Timer.After then
+        C_Timer.After(0.3, function() TA_ReportTaxiNodes() end)
+      else
+        TA_ReportTaxiNodes()
+      end
+    end
+  elseif event == "TAXIMAP_CLOSED" then
+    AddLine("place", "You roll up the flight master's map.")
   elseif event == "TRADE_SKILL_SHOW" then
     AddLine("quest", "Profession opened. Type recipes or recipeinfo <index>.")
   elseif event == "CRAFT_SHOW" then
@@ -14363,6 +14385,8 @@ TA:RegisterEvent("BAG_UPDATE_DELAYED")
 TA:RegisterEvent("GOSSIP_SHOW")
 TA:RegisterEvent("QUEST_GREETING")
 TA:RegisterEvent("TRAINER_SHOW")
+TA:RegisterEvent("TAXIMAP_OPENED")
+TA:RegisterEvent("TAXIMAP_CLOSED")
 TA:RegisterEvent("TRADE_SKILL_SHOW")
 TA:RegisterEvent("CRAFT_SHOW")
 TA:RegisterEvent("QUEST_DETAIL")
@@ -14417,6 +14441,8 @@ TA:RegisterEvent("DUEL_FINISHED")
 TA:RegisterEvent("PARTY_INVITE_REQUEST")
 TA:RegisterEvent("READY_CHECK")
 TA:RegisterEvent("TIME_PLAYED_MSG")
+TA:RegisterEvent("CHAT_MSG_COMBAT_FACTION_CHANGE")
+TA:RegisterEvent("PLAYER_UPDATE_RESTING")
 TA:RegisterEvent("WHO_LIST_UPDATE")
 
 TA.chatKeepAlive = C_Timer.NewTicker(2, function()

@@ -32,3 +32,4 @@ Modules\SpellbookCommands.lua
 Modules\PaladinCommands.lua
 Modules\MailCommands.lua
 Modules\SocialPromptCommands.lua
+Modules\TaxiCommands.lua
