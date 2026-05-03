@@ -53,7 +53,14 @@
         "GetNumTradeSkills",
         "GetTradeSkillInfo",
         "GetNumCrafts",
-        "GetCraftInfo"
+        "GetCraftInfo",
+        "GetNumSpellTabs",
+        "GetSpellTabInfo",
+        "GetSpellBookItemName",
+        "GetSpellBookItemInfo",
+        "PickupSpellBookItem",
+        "HasPetSpells",
+        "PickupContainerItem"
     ],
     "type.weakUnionCheck": true
 }
