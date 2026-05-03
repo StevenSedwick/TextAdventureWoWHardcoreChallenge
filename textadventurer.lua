@@ -9687,6 +9687,12 @@ local function TA_SetTickerProfile(profile)
     TA.tickerIntervals.df = 0.10
     TA.tickerIntervals.warlockPrompt = 1.50
     TA.tickerIntervals.warriorPrompt = 1.50
+    -- Tighten the DF render radius to match the higher tick frequency: fewer
+    -- cells to paint per tick keeps the per-tick budget roughly the same while
+    -- delivering faster updates. Override is a conservative 85% of the current
+    -- grid half-size (e.g. radius 17→14 for gridSize=35). The world grid
+    -- (innerRadius) stays the same size so no grid reallocation occurs.
+    TA.dfModeRenderRadiusOverride = math.floor(math.floor((TA.dfModeGridSize or 35) / 2) * 0.85)
   else
     TA.tickerIntervals.move = 0.2
     TA.tickerIntervals.nearby = 0.25
@@ -9694,6 +9700,7 @@ local function TA_SetTickerProfile(profile)
     TA.tickerIntervals.df = 0.15
     TA.tickerIntervals.warlockPrompt = 0.75
     TA.tickerIntervals.warriorPrompt = 0.75
+    TA.dfModeRenderRadiusOverride = nil
   end
 end
 
@@ -10977,7 +10984,7 @@ local function BuildDFModeDisplay()
   TA.dfModeTerrainContext = TA_GetTerrainContextAtMapPos()
 
   local gridSize = TA.dfModeGridSize or 21
-  local radius = math.floor(gridSize / 2)
+  local radius = TA.dfModeRenderRadiusOverride or math.floor(gridSize / 2)
   -- innerRadius covers all display cells after rotation. In fixed orientation no rotation
   -- happens so we can save grid allocation by using radius directly.
   local orientation = TA.dfModeOrientation or "fixed"
@@ -11066,7 +11073,7 @@ local function BuildDFModeDisplay()
   end
 
   local markedCellSig = tostring(TA.lastMarkedCellNotification or "")
-  local dfSig = string.format("%s|%s|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%s|%s",
+  local dfSig = string.format("%s|%s|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%s|%s|%d",
     tostring(mapID or ""), viewMode, profile,
     gridSize, math.floor(yardsPerCell or 0),
     facingBucket, snappedPX, snappedPY,
@@ -11074,7 +11081,7 @@ local function BuildDFModeDisplay()
     tgSigX, tgSigY, (targetGUID and 1 or 0),
     tostring(targetGUID or ""), terrainCtxKey,
     tostring(TA.dfModeHueEnabled), tostring(TA.dfModeLegendEnabled ~= false),
-    markedCellSig
+    markedCellSig, (TA.dfModeRenderRadiusOverride or -1)
   )
   if scratch.dfSig == dfSig and scratch.dfSigDisplay then
     return scratch.dfSigDisplay
