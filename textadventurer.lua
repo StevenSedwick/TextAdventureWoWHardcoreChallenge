@@ -10710,7 +10710,19 @@ function dfCtx.getTerrainCellAtOffset(wx, wy)
     return nil
   end
   local terrainCache = dfCtx.terrainCache
-  local key = tostring(wx) .. ":" .. tostring(wy)
+  local yardsPerCell = dfCtx.yardsPerCell or 3
+  local sampleX = px + (wx * yardsPerCell)
+  local sampleY = py + (wy * yardsPerCell)
+  -- Key the cache on the snapped *absolute* world cell. The terrain at a fixed
+  -- world position is invariant under player motion, so this lets the cache
+  -- survive walking/running indefinitely (only invalidated on map/mode/ypc
+  -- changes — handled by the caller in BuildDFModeDisplay). Size is bounded
+  -- by a soft cap (also enforced by the caller).
+  local snapX = sampleX >= 0 and math.floor(sampleX / yardsPerCell + 0.5)
+                              or  math.ceil(sampleX / yardsPerCell - 0.5)
+  local snapY = sampleY >= 0 and math.floor(sampleY / yardsPerCell + 0.5)
+                              or  math.ceil(sampleY / yardsPerCell - 0.5)
+  local key = snapX .. ":" .. snapY
   local cached = terrainCache[key]
   if cached ~= nil then
     return cached ~= false and cached or nil
@@ -10718,11 +10730,9 @@ function dfCtx.getTerrainCellAtOffset(wx, wy)
 
   local stats = dfCtx.terrainStats
   if stats then stats.lookups = (stats.lookups or 0) + 1 end
-  local yardsPerCell = dfCtx.yardsPerCell or 3
-  local sampleX = px + (wx * yardsPerCell)
-  local sampleY = py + (wy * yardsPerCell)
   local terrainCell = TA_GetTerrainContextAtWorldPos(sampleX, sampleY, dfCtx.terrainLookupMode)
   terrainCache[key] = terrainCell or false
+  terrainCache._count = (terrainCache._count or 0) + 1
   return terrainCell
 end
 
@@ -11459,12 +11469,15 @@ local function BuildDFModeDisplay()
     cliffDrops = 0,
   }
   -- Persistent terrain cache: TA_GetTerrainContextAtWorldPos is the single biggest cost in
-  -- BuildDFModeDisplay. Cache it across DF builds, keyed by the snapped player cell + map +
-  -- yards/cell + lookup mode. Wipe whenever the key changes (i.e. the player crosses a cell).
-  local snappedPlayerCellX = (playerWorldX and yardsPerCell and yardsPerCell > 0) and math.floor(playerWorldX / yardsPerCell + 0.5) or 0
-  local snappedPlayerCellY = (playerWorldY and yardsPerCell and yardsPerCell > 0) and math.floor(playerWorldY / yardsPerCell + 0.5) or 0
-  local terrainCacheKey = string.format("%s:%s:%d:%d:%d", tostring(mapID or "?"), tostring(terrainLookupMode or "?"), snappedPlayerCellX, snappedPlayerCellY, math.floor(yardsPerCell or 0))
-  if TA._dfTerrainCacheKey ~= terrainCacheKey then
+  -- BuildDFModeDisplay. Cache it across DF builds, keyed inside the lookup helper by the
+  -- snapped *absolute* world cell, so the cache survives player movement (terrain is
+  -- world-anchored, not player-anchored). Wipe only when map / lookup mode / yards-per-cell
+  -- changes -- those genuinely invalidate every entry. Bound size with a soft cap so a long
+  -- session walking across a continent does not grow the cache unboundedly.
+  local terrainCacheKey = string.format("%s:%s:%d", tostring(mapID or "?"), tostring(terrainLookupMode or "?"), math.floor(yardsPerCell or 0))
+  local terrainCacheSizeCap = 30000
+  if TA._dfTerrainCacheKey ~= terrainCacheKey
+      or (TA._dfTerrainCache and (TA._dfTerrainCache._count or 0) > terrainCacheSizeCap) then
     TA._dfTerrainCache = {}
     TA._dfTerrainCacheKey = terrainCacheKey
   end
