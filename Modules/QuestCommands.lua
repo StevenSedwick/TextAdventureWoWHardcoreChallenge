@@ -59,6 +59,8 @@
   addPatternHandler("^decline%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "decline") end)
   addPatternHandler("^quest%s+mode%s+(%a+)$", function(m) TA_SetQuestNarrationMode(m) end)
   addPatternHandler("^quest%s+delay%s+([%d%.]+)$", function(s) TA_SetQuestAcceptDelay(tonumber(s)) end)
+  addPatternHandler("^quest%s+reward%s+info%s+(.+)$", function(arg) TA_ReportQuestLogRewardItemInfo(arg) end)
+  addPatternHandler("^questreward%s+info%s+(.+)$", function(arg) TA_ReportQuestLogRewardItemInfo(arg) end)
   addPatternHandler("^quest%s+rewards%s+(.+)$", function(arg) TA_ReportActiveQuestRewards(arg) end)
   addPatternHandler("^questrewards%s+(.+)$", function(arg) TA_ReportActiveQuestRewards(arg) end)
   addPatternHandler("^abandon%s+(.+)$", function(arg)
