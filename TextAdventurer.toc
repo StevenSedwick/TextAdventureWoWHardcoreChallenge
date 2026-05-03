@@ -22,6 +22,7 @@ Modules\DFMode.lua
 Modules\QuestRouter.lua
 Modules\Awareness.lua
 Modules\WarlockDPS.lua
+Modules\MLXPTracker.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
 Modules\QuestCommands.lua
