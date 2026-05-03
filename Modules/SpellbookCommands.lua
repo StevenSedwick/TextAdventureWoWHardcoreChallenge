@@ -103,7 +103,7 @@ local function TA_SpellbookSummary()
     local name, _, offset, numSpells = GetSpellTabInfo(tab)
     L(string.format("  [%d] %s - %d spell(s)", tab, name or ("Tab " .. tab), numSpells or 0))
   end
-  L("Use: ta spellbook <tab> | ta spell <name> | ta find <text>")
+  L("Use: ta spellbook <tab> | ta spell <name> | ta find <text> | ta spellbook all")
 end
 
 local function TA_SpellbookListTab(tab)
@@ -399,6 +399,20 @@ function TA_RegisterSpellbookCommandHandlers(exactHandlers, addPatternHandler)
   exactHandlers["spellbook"] = function() TA_SpellbookSummary() end
   exactHandlers["book"]      = function() TA_SpellbookSummary() end
   exactHandlers["spells"]    = function() TA_SpellbookSummary() end
+
+  -- Legacy full-dump view (lists every spell across all tabs in one printout, plus pets).
+  local function LegacyDump()
+    if _G.ReportSpellbook then
+      _G.ReportSpellbook()
+    else
+      L("Legacy spellbook view unavailable.")
+    end
+  end
+  exactHandlers["spellbook all"]  = LegacyDump
+  exactHandlers["book all"]       = LegacyDump
+  exactHandlers["spells all"]     = LegacyDump
+  exactHandlers["spellbook full"] = LegacyDump
+  exactHandlers["spells full"]    = LegacyDump
 
   exactHandlers["trainer"]              = function() TA_TrainerList(nil) end
   exactHandlers["trainer available"]    = function() TA_TrainerList("available") end
