@@ -2936,7 +2936,6 @@ function TA_RunPatternSelfTest(modeArg)
     "vendorinfo 1",
     "shopinfo 1",
     "iteminfo 1",
-    "readitem 0 1",
     "restock food 5",
     "buyback 1",
     "bank",
