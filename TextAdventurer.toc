@@ -16,6 +16,7 @@ WarlockSheetData.lua
 TerrainData_Azeroth.lua
 textadventurer.lua
 Modules\CellMath.lua
+Modules\MarkedCells.lua
 Modules\Terrain.lua
 Modules\DFMode.lua
 Modules\HelpTopics.lua
