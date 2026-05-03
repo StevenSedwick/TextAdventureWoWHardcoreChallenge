@@ -11464,7 +11464,17 @@ local function BuildDFModeDisplay()
     TA._dfTerrainCacheKey = terrainCacheKey
   end
   local terrainCache = TA._dfTerrainCache
-  local gridDistanceCache = {}
+  -- Persistent grid distance cache: getGridDistance(x,y) is a pure function of
+  -- (x,y) integer offsets in [-radius, radius]. The values are identical every
+  -- tick as long as `radius` is unchanged, so allocate once per radius and
+  -- reuse across ticks. Avoids ~(2*radius+1)^2 sqrt + table-grow operations
+  -- on the warm-up tick after each rebuild.
+  local gridDistCacheBundle = scratch.gridDist
+  if (not gridDistCacheBundle) or gridDistCacheBundle.radius ~= radius then
+    gridDistCacheBundle = { radius = radius, cache = {} }
+    scratch.gridDist = gridDistCacheBundle
+  end
+  local gridDistanceCache = gridDistCacheBundle.cache
   dfCtx.terrainCache = terrainCache
   dfCtx.gridDistanceCache = gridDistanceCache
   dfCtx.terrainStats = terrainStats
@@ -11590,6 +11600,12 @@ local function BuildDFModeDisplay()
   TA.dfModeTerrainStandingLabel = standingLabel
   TA.dfModeTerrainStandingShort = standingShort
 
+  -- Loop-invariant: viewMode does not change inside the render loop.
+  local showThreat = (viewMode == "threat" or viewMode == "combined")
+  local showExploration = (viewMode == "exploration" or viewMode == "combined")
+  local showRange = (viewMode == "tactical" or viewMode == "combined")
+  local showTerrain = showTerrainView
+
   for y = radius, -radius, -1 do
     local row = {}
     for x = -radius, radius do
@@ -11601,11 +11617,6 @@ local function BuildDFModeDisplay()
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
         cell = grid[wy][wx]
       end
-
-      local showThreat = (viewMode == "threat" or viewMode == "combined")
-      local showExploration = (viewMode == "exploration" or viewMode == "combined")
-      local showRange = (viewMode == "tactical" or viewMode == "combined")
-      local showTerrain = showTerrainView
 
       if showTerrain and cell == "." then
         local glyph = dfCtx.getSmoothedTerrainGlyph(x, y)
