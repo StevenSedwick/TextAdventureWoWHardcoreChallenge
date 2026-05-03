@@ -1,4 +1,4 @@
-﻿-- TextAdventurer.lua
+-- TextAdventurer.lua
 ---@diagnostic disable: deprecated
 -- Put this file in:
 -- World of Warcraft/_classic_/Interface/AddOns/TextAdventurer/
@@ -83,6 +83,10 @@ TA.lastTargetHealthBucket = nil
 TA.lastHealthWarningState = nil
 TA.lastExplorationBucket = nil
 TA.autoQuests = true
+TA.questNarration = "cinematic"
+TA.questAcceptDelay = 1.5
+TA.questTextWrapWidth = 80
+TA.lastQuestNarration = { kind = nil, title = nil, body = nil, npc = nil }
 TA.captureChat = true
 TA.lastBuffSnapshot = {}
 TA.swingReadyAt = 0
@@ -213,6 +217,8 @@ local COLORS = {
   chat     = { 0.80, 0.80, 1.00 },
   whisper  = { 1.00, 0.60, 1.00 },
   swingDance = { 0.20, 1.00, 1.00 },
+  questText = { 0.95, 0.85, 0.55 },
+  questNpc  = { 1.00, 0.92, 0.70 },
 }
 
 -- Performance profiling system
@@ -12160,6 +12166,194 @@ local function HandleChatEvent(event, message, sender, _, _, _, _, _, _, channel
   AddLine(info.kind, string.format("[%s] %s: %s", prefix, name, message))
 end
 
+function TA_GetNpcName()
+  if UnitExists and UnitName and UnitExists("npc") then
+    return UnitName("npc")
+  end
+  if UnitExists and UnitName and UnitExists("questnpc") then
+    return UnitName("questnpc")
+  end
+  if UnitExists and UnitName and UnitExists("target") then
+    return UnitName("target")
+  end
+  return nil
+end
+
+function TA_WrapAndPrintQuestText(kind, text)
+  if type(text) ~= "string" or text == "" then return end
+  local width = tonumber(TA.questTextWrapWidth) or 80
+  if width < 30 then width = 30 end
+  text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
+  for paragraph in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if paragraph == "" then
+      AddLine(kind, " ")
+    else
+      local line = ""
+      for word in paragraph:gmatch("%S+") do
+        if line == "" then
+          line = word
+        elseif (#line + 1 + #word) <= width then
+          line = line .. " " .. word
+        else
+          AddLine(kind, line)
+          line = word
+        end
+      end
+      if line ~= "" then AddLine(kind, line) end
+    end
+  end
+end
+
+function TA_NarrateQuestDetail()
+  local title = (GetTitleText and GetTitleText()) or "Quest"
+  local body  = (GetQuestText and GetQuestText()) or ""
+  local obj   = (GetObjectiveText and GetObjectiveText()) or ""
+  local npc   = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "detail", title = title, body = body, objective = obj, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s offers a quest: \"%s\"", npc, title))
+  else
+    AddLine("questNpc", string.format("New quest offered: \"%s\"", title))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+  if obj and obj ~= "" then
+    AddLine("questNpc", "Objective:")
+    TA_WrapAndPrintQuestText("questText", obj)
+  end
+  if TA.questNarration == "manual" or not TA.autoQuests then
+    AddLine("quest", "Type 'accept' to take the quest, or 'decline' to refuse.")
+  elseif TA.questNarration == "cinematic" then
+    AddLine("quest", string.format("(Auto-accepting in %.1fs. Type 'decline' to cancel.)", TA.questAcceptDelay or 1.5))
+  end
+end
+
+function TA_NarrateQuestProgress()
+  local body = (GetProgressText and GetProgressText()) or ""
+  local npc  = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "progress", title = nil, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s says:", npc))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+  if TA.questNarration == "manual" or not TA.autoQuests then
+    if IsQuestCompletable and IsQuestCompletable() then
+      AddLine("quest", "Type 'complete' to hand in the quest.")
+    end
+  end
+end
+
+function TA_NarrateQuestReward()
+  local title = (GetTitleText and GetTitleText()) or "Quest"
+  local body  = (GetRewardText and GetRewardText()) or ""
+  local npc   = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "reward", title = title, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s completes \"%s\":", npc, title))
+  else
+    AddLine("questNpc", string.format("Quest complete: \"%s\"", title))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+  if GetNumQuestChoices then
+    local n = GetNumQuestChoices() or 0
+    if n > 1 then
+      AddLine("quest", string.format("This quest offers %d reward choices. Type 'rewards' to list, then 'reward <n>' to pick.", n))
+    end
+  end
+end
+
+function TA_NarrateQuestGreeting()
+  local body = (GetGreetingText and GetGreetingText()) or ""
+  local npc  = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "greeting", title = nil, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s greets you:", npc))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+end
+
+function TA_NarrateGossipText()
+  local body = nil
+  if C_GossipInfo and C_GossipInfo.GetText then body = C_GossipInfo.GetText() end
+  if (not body or body == "") and GetGossipText then body = GetGossipText() end
+  if not body or body == "" then return end
+  local npc = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "gossip", title = nil, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s says:", npc))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+end
+
+function TA_ReplayLastQuestText(kindFilter)
+  local last = TA.lastQuestNarration
+  if not last or not last.body or last.body == "" then
+    AddLine("system", "No quest text in memory.")
+    return
+  end
+  if kindFilter and last.kind ~= kindFilter then
+    AddLine("system", string.format("Last quest text was a %s, not %s.", tostring(last.kind), kindFilter))
+    return
+  end
+  if last.npc and last.npc ~= "" then
+    AddLine("questNpc", string.format("%s%s:", last.npc, last.title and (" — \""..last.title.."\"") or ""))
+  end
+  TA_WrapAndPrintQuestText("questText", last.body)
+end
+
+function TA_AcceptQuestFromTerminal()
+  if AcceptQuest then
+    AcceptQuest()
+    AddLine("quest", "Quest accepted.")
+  else
+    AddLine("system", "No quest dialogue is open.")
+  end
+end
+
+function TA_DeclineQuestFromTerminal()
+  if DeclineQuest then
+    DeclineQuest()
+    AddLine("quest", "Quest declined.")
+  elseif CloseQuest then
+    CloseQuest()
+    AddLine("quest", "Quest dialogue closed.")
+  else
+    AddLine("system", "No quest dialogue is open.")
+  end
+end
+
+function TA_SetQuestNarrationMode(mode)
+  mode = (type(mode) == "string") and mode:lower() or ""
+  if mode ~= "cinematic" and mode ~= "instant" and mode ~= "manual" then
+    AddLine("system", "Usage: quest mode cinematic | instant | manual")
+    AddLine("system", string.format("Current mode: %s", tostring(TA.questNarration)))
+    return
+  end
+  TA.questNarration = mode
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.questNarration = mode
+  AddLine("quest", string.format("Quest narration mode set to '%s'.", mode))
+  if mode == "cinematic" then
+    AddLine("quest", "Quest text will print, then auto-accept after a brief pause.")
+  elseif mode == "instant" then
+    AddLine("quest", "Quest text will print and the quest will be accepted immediately.")
+  else
+    AddLine("quest", "Quest text will print only. Type 'accept' / 'decline' / 'complete' to act.")
+  end
+end
+
+function TA_SetQuestAcceptDelay(seconds)
+  local s = tonumber(seconds)
+  if not s or s < 0 or s > 10 then
+    AddLine("system", "Usage: quest delay <seconds 0-10>")
+    AddLine("system", string.format("Current delay: %.1fs", TA.questAcceptDelay or 1.5))
+    return
+  end
+  TA.questAcceptDelay = s
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.questAcceptDelay = s
+  AddLine("quest", string.format("Quest auto-accept delay set to %.1fs (cinematic mode).", s))
+end
+
 local function TryAutoQuestFromGossip()
   if not TA.autoQuests then return end
   if C_GossipInfo then
@@ -13582,6 +13776,16 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TextAdventurerDB.ml = type(TextAdventurerDB.ml) == "table" and TextAdventurerDB.ml or {}
     TA_GetMLStore()
     TextAdventurerDB.markedCells = TextAdventurerDB.markedCells or {}
+    if type(TextAdventurerDB.questNarration) == "string" then
+      local m = TextAdventurerDB.questNarration:lower()
+      if m == "cinematic" or m == "instant" or m == "manual" then
+        TA.questNarration = m
+      end
+    end
+    local savedDelay = tonumber(TextAdventurerDB.questAcceptDelay)
+    if savedDelay and savedDelay >= 0 and savedDelay <= 10 then
+      TA.questAcceptDelay = savedDelay
+    end
     TextAdventurerDB.cellAnchors = type(TextAdventurerDB.cellAnchors) == "table" and TextAdventurerDB.cellAnchors or {}
     local savedGridSize = tonumber(TextAdventurerDB.gridSize)
     if not savedGridSize
@@ -13979,9 +14183,11 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.vendorOpen = false
     AddLine("loot", "The merchant closes their wares.")
   elseif event == "GOSSIP_SHOW" then
+    TA_NarrateGossipText()
     TryAutoQuestFromGossip()
     ReportGossipOptions()
   elseif event == "QUEST_GREETING" then
+    TA_NarrateQuestGreeting()
     TryAutoQuestFromGossip()
     ReportGossipOptions()
 
@@ -14000,11 +14206,29 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.pendingItemTextRead = nil
     TA.lastItemTextSignature = nil
   elseif event == "QUEST_DETAIL" then
-    TryAcceptQuest()
+    TA_NarrateQuestDetail()
+    if TA.autoQuests and TA.questNarration ~= "manual" then
+      if TA.questNarration == "cinematic" then
+        local delay = tonumber(TA.questAcceptDelay) or 1.5
+        if C_Timer and C_Timer.After then
+          C_Timer.After(delay, function() TryAcceptQuest() end)
+        else
+          TryAcceptQuest()
+        end
+      else
+        TryAcceptQuest()
+      end
+    end
   elseif event == "QUEST_PROGRESS" then
-    TryCompleteQuest()
+    TA_NarrateQuestProgress()
+    if TA.autoQuests and TA.questNarration ~= "manual" then
+      TryCompleteQuest()
+    end
   elseif event == "QUEST_COMPLETE" then
-    TryGetQuestReward()
+    TA_NarrateQuestReward()
+    if TA.autoQuests and TA.questNarration ~= "manual" then
+      TryGetQuestReward()
+    end
   elseif event == "QUEST_LOG_UPDATE" then
     ReportQuestObjectiveChanges()
     local qStore = TA_GetQuestRouterStore()
