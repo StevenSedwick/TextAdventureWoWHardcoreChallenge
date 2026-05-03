@@ -24,6 +24,7 @@ Modules\Awareness.lua
 Modules\WarlockDPS.lua
 Modules\PaladinSealDPS.lua
 Modules\MLXPTracker.lua
+Modules\QuestNarration.lua
 Modules\VendorInventory.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
