@@ -22,6 +22,7 @@ Modules\MarkedCells.lua
 Modules\Terrain.lua
 Modules\DFMode.lua
 Modules\QuestRouter.lua
+Modules\Routing.lua
 Modules\Awareness.lua
 Modules\WarlockDPS.lua
 Modules\PaladinSealDPS.lua
