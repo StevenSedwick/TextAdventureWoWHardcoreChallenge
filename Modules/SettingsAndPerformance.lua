@@ -11,7 +11,7 @@
 --   * TA_ReportGameSettings     -- print snapshot of common settings
 --   * TA_ReportFPS              -- print current framerate
 --   * TA_SetTickerProfile       -- (module-local) low/high-freq ticker intervals
---   * TA_ApplyPerformanceFrameSuppression -- (module-local) hide Blizzard frames
+--   * TA_ApplyPerformanceFrameSuppression -- (global) hide Blizzard frames
 --   * TA_RestoreSuppressedFrames          -- (module-local) restore hidden frames
 --   * TA_ReportPerformanceStatus -- print performance mode status
 --   * TA_EnablePerformanceMode  -- turn on performance mode
@@ -22,9 +22,10 @@
 --
 -- ReportPathMemory and ReportExplorationMemory are promoted from local
 -- to global because NavigationCommands.lua calls them directly.
--- TA_SetTickerProfile, TA_ApplyPerformanceFrameSuppression, and
--- TA_RestoreSuppressedFrames stay module-local (only used within this
--- file). Their redundant _G.X = X mirrors are removed.
+-- TA_SetTickerProfile and TA_ApplyPerformanceFrameSuppression are promoted
+-- to globals because PLAYER_LOGIN and DF mode toggles in textadventurer.lua
+-- call them. TA_RestoreSuppressedFrames stays module-local (only used
+-- within this file). Their redundant _G.X = X mirrors are removed.
 --
 -- Depends on: AddLine, TA (tickerIntervals, performanceModeEnabled,
 -- performancePendingApply, performanceHiddenFrames, performanceFrameHooks,
@@ -189,7 +190,7 @@ function TA_SetTickerProfile(profile)
   end
 end
 
-local function TA_ApplyPerformanceFrameSuppression()
+function TA_ApplyPerformanceFrameSuppression()
   if InCombatLockdown and InCombatLockdown() then
     TA.performancePendingApply = true
     AddLine("system", "Performance frame suppression queued until you leave combat.")
