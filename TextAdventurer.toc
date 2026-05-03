@@ -46,6 +46,7 @@ Modules\DFDanger.lua
 Modules\SettingsCommands.lua
 Modules\WarlockMLCommands.lua
 Modules\MacroRecipeCommands.lua
+Modules\TrainerAndRecipes.lua
 Modules\TalentCommands.lua
 Modules\LootRollCommands.lua
 Modules\SpellbookCommands.lua
