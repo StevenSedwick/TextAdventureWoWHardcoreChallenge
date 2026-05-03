@@ -26,6 +26,21 @@
   exactHandlers["turnin"] = function() CompleteQuestFromTerminal() end
   exactHandlers["rewards"] = function() ListQuestRewards() end
   exactHandlers["rewardinfo"] = function() AddLine("system", "Usage: rewardinfo <index>") end
+  exactHandlers["accept"] = function() TA_AcceptQuestFromTerminal() end
+  exactHandlers["decline"] = function() TA_DeclineQuestFromTerminal() end
+  exactHandlers["read quest"] = function() TA_ReplayLastQuestText("detail") end
+  exactHandlers["read progress"] = function() TA_ReplayLastQuestText("progress") end
+  exactHandlers["read reward"] = function() TA_ReplayLastQuestText("reward") end
+  exactHandlers["read greeting"] = function() TA_ReplayLastQuestText("greeting") end
+  exactHandlers["read gossip"] = function() TA_ReplayLastQuestText("gossip") end
+  exactHandlers["read last"] = function() TA_ReplayLastQuestText(nil) end
+  exactHandlers["quest mode"] = function() TA_SetQuestNarrationMode(nil) end
+  exactHandlers["quest delay"] = function() TA_SetQuestAcceptDelay(nil) end
+  exactHandlers["quest rewards"] = function() TA_ReportActiveQuestRewards(nil) end
+  exactHandlers["questrewards"] = function() TA_ReportActiveQuestRewards(nil) end
+  exactHandlers["abandon"] = function() AddLine("system", "Usage: abandon <index|name>  (then 'abandon confirm')") end
+  exactHandlers["abandon confirm"] = function() TA_ConfirmAbandonQuest() end
+  exactHandlers["abandon cancel"] = function() TA_CancelAbandonQuest() end
 
   addPatternHandler("^questroute%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end)
   addPatternHandler("^quest%s+route%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end)
@@ -42,6 +57,18 @@
   end)
   addPatternHandler("^accept%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "accept") end)
   addPatternHandler("^decline%s+(%d+)$", function(idx) RespondToPopup(tonumber(idx), "decline") end)
+  addPatternHandler("^quest%s+mode%s+(%a+)$", function(m) TA_SetQuestNarrationMode(m) end)
+  addPatternHandler("^quest%s+delay%s+([%d%.]+)$", function(s) TA_SetQuestAcceptDelay(tonumber(s)) end)
+  addPatternHandler("^quest%s+reward%s+info%s+(.+)$", function(arg) TA_ReportQuestLogRewardItemInfo(arg) end)
+  addPatternHandler("^questreward%s+info%s+(.+)$", function(arg) TA_ReportQuestLogRewardItemInfo(arg) end)
+  addPatternHandler("^quest%s+rewards%s+(.+)$", function(arg) TA_ReportActiveQuestRewards(arg) end)
+  addPatternHandler("^questrewards%s+(.+)$", function(arg) TA_ReportActiveQuestRewards(arg) end)
+  addPatternHandler("^abandon%s+(.+)$", function(arg)
+    local lower = string.lower(arg)
+    if lower == "confirm" then TA_ConfirmAbandonQuest()
+    elseif lower == "cancel" then TA_CancelAbandonQuest()
+    else TA_AbandonQuestFromTerminal(arg) end
+  end)
 
   TA.questCommandHandlersRegistered = true
 end

@@ -1,4 +1,4 @@
-﻿-- TextAdventurer.lua
+-- TextAdventurer.lua
 ---@diagnostic disable: deprecated
 -- Put this file in:
 -- World of Warcraft/_classic_/Interface/AddOns/TextAdventurer/
@@ -83,9 +83,16 @@ TA.lastTargetHealthBucket = nil
 TA.lastHealthWarningState = nil
 TA.lastExplorationBucket = nil
 TA.autoQuests = true
+TA.questNarration = "cinematic"
+TA.questAcceptDelay = 1.5
+TA.questTextWrapWidth = 80
+TA.lastQuestNarration = { kind = nil, title = nil, body = nil, npc = nil }
 TA.captureChat = true
 TA.lastBuffSnapshot = {}
 TA.swingReadyAt = 0
+TA.swingDanceLog = {}
+TA.swingDanceLogMax = 20
+TA.lastSwingHintAt = nil
 TA.lastSwingState = nil
 TA.inputHistory = {}
 TA.inputHistoryMax = 50
@@ -134,7 +141,7 @@ TA.pendingCVarList = false
 TA.dfModeEnabled = true
 TA.lastNearbyUnits = {}
 TA.nearbyUnitsCacheAt = 0
-TA.nearbyUnitsCacheInterval = 0.15
+TA.nearbyUnitsCacheInterval = 0.20
 TA.dfModeGridSize = 35
 TA.dfModeInnerRadius = nil
 TA.dfModeInnerRadiusGridSize = nil
@@ -143,8 +150,8 @@ TA.dfModeViewMode = "threat"  -- tactical, threat, exploration, combined
 TA.dfModeProfile = "full"  -- balanced, full
 TA.dfModeOrientation = "fixed"  -- fixed (north-up), rotating (heading-up)
 TA.dfModeRotationMode = "smooth"  -- smooth, octant (45-degree snaps for squarer geometry)
-TA.dfModeLookaheadSeconds = 0.12  -- short player-only projection to make DF cell transitions feel snappier
-TA.dfModeHysteresisEnterPct = 0.38  -- enter next DF cell early, then require backing out farther before snapping back
+TA.dfModeLookaheadSeconds = 0.15  -- short player-only projection to make DF cell transitions feel snappier
+TA.dfModeHysteresisEnterPct = 0.42  -- enter next DF cell early, then require backing out farther before snapping back
 TA.dfModeAnchorCellX = nil
 TA.dfModeAnchorCellY = nil
 TA.dfModeMarkRadius = 5  -- cells around mark center to draw edge ring (0 = center cell only)
@@ -154,9 +161,6 @@ TA.dfModeEnemyPatrols = {}  -- Track enemy positions over time
 TA.dfModeShowLevelFilter = nil  -- nil = show all, number = threshold
 TA.dfModeLastNearestMarkID = nil
 TA.dfModeLastNearestMarkDist = nil
-TA.dfModeSonarContacts = {}
-TA.dfModeSonarPulseUntil = 0
-TA.dfModeSonarTTL = 60
 TA.dfModeLastKnownUnits = {}
 TA.dfModeCorpseContacts = {}
 TA.dfModeCorpseTTL = 45
@@ -170,7 +174,7 @@ TA.performanceModeEnabled = false
 TA.performancePendingApply = false
 TA.performanceHiddenFrames = {}
 TA.performanceFrameHooks = {}
-TA.tickerIntervals = { move = 0.2, nearby = 0.25, memory = 0.5, df = 0.1 }
+TA.tickerIntervals = { move = 0.2, nearby = 0.25, memory = 0.5, df = 0.15 }
 TA.tickerIntervals.warlockPrompt = 0.75
 local AWARENESS_SUBEVENTS = {
   SWING_DAMAGE = true, RANGE_DAMAGE = true, SPELL_DAMAGE = true,
@@ -215,6 +219,9 @@ local COLORS = {
   quest    = { 0.95, 0.95, 0.45 },
   chat     = { 0.80, 0.80, 1.00 },
   whisper  = { 1.00, 0.60, 1.00 },
+  swingDance = { 0.20, 1.00, 1.00 },
+  questText = { 0.95, 0.85, 0.55 },
+  questNpc  = { 1.00, 0.92, 0.70 },
 }
 
 -- Performance profiling system
@@ -1388,6 +1395,9 @@ function HandleCombatLog()
     if IsSourcePlayerOrPet(sourceFlags) then
       ResetSwingTimer()
     end
+    if CombatLog_Object_IsA and COMBATLOG_FILTER_ME and CombatLog_Object_IsA(sourceFlags, COMBATLOG_FILTER_ME) then
+      TA_RecordSwingReaction()
+    end
   elseif subevent == "SPELL_DAMAGE" or subevent == "SPELL_PERIODIC_DAMAGE" or subevent == "RANGE_DAMAGE" then
     if IsSourcePlayerOrPet(sourceFlags) or IsDestPlayerOrPet(destFlags) then
       local color = IsSourcePlayerOrPet(sourceFlags) and "playerCombat" or "enemyCombat"
@@ -1403,6 +1413,9 @@ function HandleCombatLog()
     end
     if IsSourcePlayerOrPet(sourceFlags) then
       ResetSwingTimer()
+    end
+    if CombatLog_Object_IsA and COMBATLOG_FILTER_ME and CombatLog_Object_IsA(sourceFlags, COMBATLOG_FILTER_ME) then
+      TA_RecordSwingReaction()
     end
   elseif subevent == "SPELL_MISSED" or subevent == "RANGE_MISSED" then
     if IsSourcePlayerOrPet(sourceFlags) or IsDestPlayerOrPet(destFlags) then
@@ -2683,6 +2696,253 @@ local function ReportQuestInfo(arg)
   ReportQuestInfoByIndex(index)
 end
 
+function TA_ResolveQuestIndex(arg)
+  local total = GetNumQuestLogEntries and GetNumQuestLogEntries() or 0
+  if total <= 0 then return nil, "Your quest log is empty." end
+  if arg and arg ~= "" then
+    local n = tonumber(arg)
+    if n then
+      local title, _, _, isHeader = GetQuestLogTitle(n)
+      if not title or isHeader then return nil, string.format("No quest at index %d.", n) end
+      return n
+    end
+    local idx = FindQuestIndexByName(arg)
+    if not idx then return nil, string.format("No quest matched '%s'.", arg) end
+    return idx
+  end
+  local idx = GetFallbackQuestIndex()
+  if not idx then return nil, "No quest selected. Use the index or quest name." end
+  return idx
+end
+
+function TA_ReportActiveQuestRewards(arg)
+  if not SelectQuestLogEntry or not GetNumQuestLogRewards then
+    AddLine("system", "Quest reward API unavailable.")
+    return
+  end
+  local index, err = TA_ResolveQuestIndex(arg)
+  if not index then AddLine("system", err); return end
+  local title = GetQuestLogTitle(index)
+  local prevSel = GetQuestLogSelection and GetQuestLogSelection() or 0
+  SelectQuestLogEntry(index)
+
+  AddLine("quest", string.format("Rewards for [%d] %s:", index, title or "?"))
+
+  local money = GetQuestLogRewardMoney and GetQuestLogRewardMoney() or 0
+  if money and money > 0 then
+    if TA_FormatMoneyString then
+      AddLine("quest", "  Money: " .. TA_FormatMoneyString(money))
+    else
+      AddLine("quest", string.format("  Money: %d copper", money))
+    end
+  end
+
+  local xp = GetQuestLogRewardXP and GetQuestLogRewardXP() or 0
+  if xp and xp > 0 then
+    AddLine("quest", string.format("  XP: %d", xp))
+  end
+
+  local numChoices = GetNumQuestLogChoices and GetNumQuestLogChoices() or 0
+  if numChoices > 0 then
+    AddLine("quest", string.format("  Choose 1 of %d:", numChoices))
+    for i = 1, numChoices do
+      local name, _, num, quality = GetQuestLogChoiceInfo(i)
+      AddLine("quest", string.format("    [%d] %s x%d", i, name or "?", num or 1))
+    end
+  end
+
+  local numRewards = GetNumQuestLogRewards() or 0
+  if numRewards > 0 then
+    AddLine("quest", "  Guaranteed:")
+    for i = 1, numRewards do
+      local name, _, num, quality = GetQuestLogRewardInfo(i)
+      AddLine("quest", string.format("    - %s x%d", name or "?", num or 1))
+    end
+  end
+
+  local spell = GetQuestLogRewardSpell and (GetQuestLogRewardSpell()) or nil
+  if spell and spell ~= "" then
+    AddLine("quest", "  Spell: " .. tostring(spell))
+  end
+
+  if money == 0 and (xp or 0) == 0 and numChoices == 0 and numRewards == 0 and not spell then
+    AddLine("quest", "  (no rewards listed)")
+  end
+
+  if prevSel and prevSel > 0 and prevSel ~= index then
+    SelectQuestLogEntry(prevSel)
+  end
+  TA.lastQuestRewardsIndex = index
+end
+
+-- Tooltip scraper shared by both active turn-in and quest-log reward detail
+local function TA_ScrapeQuestLogItemTooltip(itemType, slot)
+  if not CreateFrame or not UIParent then return false end
+  if not TA.questLogItemTip then
+    TA.questLogItemTip = CreateFrame("GameTooltip", "TextAdventurerQuestLogItemTip", UIParent, "GameTooltipTemplate")
+  end
+  local tip = TA.questLogItemTip
+  if not tip or not tip.SetQuestLogItem then
+    AddLine("system", "Tooltip API unavailable.")
+    return false
+  end
+  tip:SetOwner(UIParent, "ANCHOR_NONE")
+  tip:ClearLines()
+  tip:SetQuestLogItem(itemType, slot)
+  local tipName = tip:GetName()
+  local shown = 0
+  for i = 1, tip:NumLines() do
+    local left = _G[tipName .. "TextLeft" .. i]
+    local right = _G[tipName .. "TextRight" .. i]
+    local lt = left and left:GetText() or ""
+    local rt = right and right:GetText() or ""
+    if lt ~= "" or rt ~= "" then
+      local line = (rt ~= "") and (lt ~= "" and lt .. "  " .. rt or rt) or lt
+      AddLine("quest", line)
+      shown = shown + 1
+      if shown >= 20 then AddLine("quest", "(truncated)"); break end
+    end
+  end
+  tip:Hide()
+  return shown > 0
+end
+
+function TA_ReportQuestLogRewardItemInfo(arg)
+  -- arg: "[choice|reward] <slot>" or "<questArg> [choice|reward] <slot>"
+  -- Falls back to TA.lastQuestRewardsIndex if no quest specified
+  if not SelectQuestLogEntry then
+    AddLine("system", "Quest log API unavailable.")
+    return
+  end
+
+  local questArg, itemType, slot
+  -- Try "<questArg> choice|reward <n>"
+  local qa, it, sn = arg:match("^(.-)%s+(choice)%s+(%d+)$")
+  if not qa then qa, it, sn = arg:match("^(.-)%s+(reward)%s+(%d+)$") end
+  if qa and it and sn then
+    questArg = qa ~= "" and qa or nil
+    itemType = it
+    slot = tonumber(sn)
+  else
+    -- Try "choice|reward <n>" with no quest prefix
+    it, sn = arg:match("^(choice)%s+(%d+)$")
+    if not it then it, sn = arg:match("^(reward)%s+(%d+)$") end
+    if it and sn then
+      itemType = it
+      slot = tonumber(sn)
+    else
+      -- Try just "<n>" (treat as choice)
+      sn = arg:match("^(%d+)$")
+      if sn then
+        itemType = "choice"
+        slot = tonumber(sn)
+      else
+        -- Try "<questArg> <n>"
+        qa, sn = arg:match("^(.-)%s+(%d+)$")
+        if qa and sn then
+          questArg = qa ~= "" and qa or nil
+          itemType = "choice"
+          slot = tonumber(sn)
+        end
+      end
+    end
+  end
+
+  if not slot or slot < 1 then
+    AddLine("system", "Usage: quest reward info [choice|reward] <slot>  OR  quest reward info <quest> [choice|reward] <slot>")
+    return
+  end
+
+  local index
+  if questArg then
+    local err
+    index, err = TA_ResolveQuestIndex(questArg)
+    if not index then AddLine("system", err); return end
+  else
+    index = TA.lastQuestRewardsIndex or GetFallbackQuestIndex()
+    if not index then
+      AddLine("system", "Run 'quest rewards' first to pick a quest, or specify: quest reward info <quest> <slot>")
+      return
+    end
+  end
+
+  local prevSel = GetQuestLogSelection and GetQuestLogSelection() or 0
+  SelectQuestLogEntry(index)
+
+  local name, _, num, quality
+  if itemType == "choice" then
+    name, _, num, quality = GetQuestLogChoiceInfo and GetQuestLogChoiceInfo(slot)
+  else
+    name, _, num, quality = GetQuestLogRewardInfo and GetQuestLogRewardInfo(slot)
+  end
+
+  if not name then
+    AddLine("system", string.format("No %s item at slot %d for that quest.", itemType, slot))
+    if prevSel and prevSel > 0 then SelectQuestLogEntry(prevSel) end
+    return
+  end
+
+  local qualityName = ({ "Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary" })[(quality or 1) + 1] or "Unknown"
+  AddLine("quest", string.format("%s [%d]: %s x%d  (%s)", itemType == "choice" and "Choice" or "Reward", slot, name, num or 1, qualityName))
+
+  local ok = TA_ScrapeQuestLogItemTooltip(itemType, slot)
+  if not ok then
+    AddLine("quest", "No additional tooltip data available.")
+  end
+
+  if prevSel and prevSel > 0 and prevSel ~= index then
+    SelectQuestLogEntry(prevSel)
+  end
+end
+
+TA.pendingAbandon = TA.pendingAbandon or nil
+
+function TA_AbandonQuestFromTerminal(arg)
+  if not SelectQuestLogEntry or not SetAbandonQuest or not AbandonQuest then
+    AddLine("system", "Abandon API unavailable.")
+    return
+  end
+  local index, err = TA_ResolveQuestIndex(arg)
+  if not index then AddLine("system", err); return end
+  local title = GetQuestLogTitle(index)
+  SelectQuestLogEntry(index)
+  TA.pendingAbandon = { index = index, title = title, at = GetTime() }
+  AddLine("system", string.format("Abandon [%d] '%s' ? Type 'abandon confirm' within 15s to proceed, or 'abandon cancel'.", index, title or "?"))
+end
+
+function TA_ConfirmAbandonQuest()
+  local p = TA.pendingAbandon
+  if not p then
+    AddLine("system", "No quest pending abandon. Use: abandon <index|name>")
+    return
+  end
+  if GetTime() - (p.at or 0) > 15 then
+    TA.pendingAbandon = nil
+    AddLine("system", "Abandon request timed out. Try again.")
+    return
+  end
+  if not SelectQuestLogEntry or not SetAbandonQuest or not AbandonQuest then
+    AddLine("system", "Abandon API unavailable.")
+    TA.pendingAbandon = nil
+    return
+  end
+  SelectQuestLogEntry(p.index)
+  SetAbandonQuest()
+  local confirmName = GetAbandonQuestName and GetAbandonQuestName() or p.title
+  AbandonQuest()
+  AddLine("system", string.format("Abandoned: %s.", confirmName or p.title or "?"))
+  TA.pendingAbandon = nil
+end
+
+function TA_CancelAbandonQuest()
+  if TA.pendingAbandon then
+    AddLine("system", string.format("Abandon of '%s' cancelled.", TA.pendingAbandon.title or "?"))
+    TA.pendingAbandon = nil
+  else
+    AddLine("system", "No abandon pending.")
+  end
+end
+
 local function BuildQuestObjectiveSnapshot()
   local snapshot = {}
   local total = GetNumQuestLogEntries and GetNumQuestLogEntries() or 0
@@ -3488,12 +3748,120 @@ end
 local function CheckSwingTimer()
   if not TA.swingReadyAt or TA.swingReadyAt == 0 then return end
   local remain = TA.swingReadyAt - GetTime()
-  if remain <= 0 and TA.lastSwingState ~= "ready" then
+  if TA.swingDanceHintEnabled then
+    local lagSec = 0
+    if GetNetStats then
+      lagSec = (tonumber(select(4, GetNetStats())) or 0) / 1000
+    end
+    local reactionBuf = tonumber(TA.swingDanceReactionBuffer) or 0.05
+    local hintThreshold = lagSec + reactionBuf
+    if remain > -0.1 and remain <= hintThreshold and TA.lastSwingState ~= "hintnow" then
+      AddLine("swingDance", "Your hands glow bright. SWING YOUR WEAPON NOW!")
+      TA.lastSwingState = "hintnow"
+      TA.lastSwingHintAt = GetTime()
+      return
+    end
+  end
+  if remain <= 0 and TA.lastSwingState ~= "ready" and TA.lastSwingState ~= "hintnow" then
     AddLine("playerCombat", "Your next strike is ready.")
     TA.lastSwingState = "ready"
-  elseif remain > 0 and remain <= 0.3 and TA.lastSwingState ~= "soon" then
+  elseif remain > 0 and remain <= 0.3 and TA.lastSwingState ~= "soon" and not TA.swingDanceHintEnabled then
     AddLine("playerCombat", "Your strike is about to land again.")
     TA.lastSwingState = "soon"
+  end
+end
+
+function TA_RecordSwingReaction()
+  local hintAt = TA.lastSwingHintAt
+  if not hintAt then return end
+  local now = GetTime()
+  local delta = now - hintAt
+  TA.lastSwingHintAt = nil
+  if delta < 0 or delta > 5 then return end
+  TA.swingDanceLog = TA.swingDanceLog or {}
+  table.insert(TA.swingDanceLog, 1, { delta = delta, at = now })
+  local maxN = tonumber(TA.swingDanceLogMax) or 20
+  while #TA.swingDanceLog > maxN do
+    table.remove(TA.swingDanceLog)
+  end
+end
+
+function TA_ReportSwingDanceLog(n)
+  n = tonumber(n) or 5
+  if n < 1 then n = 1 end
+  if n > 20 then n = 20 end
+  local log = TA.swingDanceLog
+  if not log or #log == 0 then
+    AddLine("system", "No swing reaction samples yet. Enable 'swingtimer on' and weapon-swap to collect data.")
+    return
+  end
+  local count = math.min(n, #log)
+  local sum, best, worst = 0, math.huge, -math.huge
+  AddLine("swingDance", string.format("Last %d swing reaction(s) (time from SWING NOW prompt to actual swing):", count))
+  for i = 1, count do
+    local entry = log[i]
+    local ms = entry.delta * 1000
+    local ago = GetTime() - entry.at
+    sum = sum + ms
+    if ms < best then best = ms end
+    if ms > worst then worst = ms end
+    AddLine("swingDance", string.format("  %d. %.0f ms  (%.0fs ago)", i, ms, ago))
+  end
+  local avg = sum / count
+  AddLine("swingDance", string.format("Avg: %.0f ms | Best: %.0f ms | Worst: %.0f ms", avg, best, worst))
+  if GetNetStats then
+    local lagMs = tonumber(select(4, GetNetStats())) or 0
+    local buf = (tonumber(TA.swingDanceReactionBuffer) or 0.05) * 1000
+    AddLine("system", string.format("Lead time given: latency %d ms + buffer %.0f ms = %.0f ms before swing.", lagMs, buf, lagMs + buf))
+  end
+end
+
+function TA_ResetSwingDanceLog()
+  TA.swingDanceLog = {}
+  TA.lastSwingHintAt = nil
+  AddLine("system", "Swing reaction log cleared.")
+end
+
+function TA_SetSwingDanceHint(args)
+  args = (args or ""):match("^%s*(.-)%s*$")
+  local cmd = (args:match("^(%S+)") or ""):lower()
+  if cmd == "on" then
+    TA.swingDanceHintEnabled = true
+    AddLine("system", "Swing dance hint enabled. Fires before each swing at latency + reaction buffer.")
+  elseif cmd == "off" then
+    TA.swingDanceHintEnabled = false
+    AddLine("system", "Swing dance hint disabled.")
+  elseif cmd == "status" then
+    local lagSec = 0
+    if GetNetStats then
+      lagSec = (tonumber(select(4, GetNetStats())) or 0) / 1000
+    end
+    local buf = tonumber(TA.swingDanceReactionBuffer) or 0.05
+    AddLine("system", string.format(
+      "Swing hint: %s | Latency: %d ms | Reaction buffer: %d ms | Fires at: %d ms before swing.",
+      TA.swingDanceHintEnabled and "ON" or "OFF",
+      math.floor(lagSec * 1000),
+      math.floor(buf * 1000),
+      math.floor((lagSec + buf) * 1000)
+    ))
+  elseif cmd == "reaction" then
+    local ms = tonumber(args:match("%S+%s+(%d+)"))
+    if not ms then
+      AddLine("system", "Usage: swingtimer reaction <ms>  (e.g. swingtimer reaction 100)")
+      return
+    end
+    TA.swingDanceReactionBuffer = ms / 1000
+    AddLine("system", string.format("Reaction buffer set to %d ms.", ms))
+  elseif cmd == "log" then
+    local sub = (args:match("^%S+%s+(%S+)") or ""):lower()
+    if sub == "reset" or sub == "clear" then
+      TA_ResetSwingDanceLog()
+    else
+      local n = tonumber(args:match("%S+%s+(%d+)"))
+      TA_ReportSwingDanceLog(n or 5)
+    end
+  else
+    AddLine("system", "Usage: swingtimer on|off|status|reaction <ms>|log [n]|log reset")
   end
 end
 
@@ -4195,6 +4563,172 @@ function TA_GetJudgementConnectChance(targetLevel)
   local connect = 1 - miss
   if connect < 0.5 then connect = 0.5 end
   return connect
+end
+
+local function TA_ScanWeaponTooltip(bag, slot, isEquipped, equippedSlot)
+  if not CreateFrame or not UIParent then return nil end
+  if not TA.bagInspectTooltip then
+    TA.bagInspectTooltip = CreateFrame("GameTooltip", "TextAdventurerBagInspectTooltip", UIParent, "GameTooltipTemplate")
+  end
+  local tip = TA.bagInspectTooltip
+  if not tip then return nil end
+  tip:SetOwner(UIParent, "ANCHOR_NONE")
+  tip:ClearLines()
+  if isEquipped then
+    if tip.SetInventoryItem then
+      tip:SetInventoryItem("player", equippedSlot or 16)
+    else
+      tip:Hide()
+      return nil
+    end
+  else
+    if tip.SetBagItem then
+      tip:SetBagItem(bag, slot)
+    else
+      tip:Hide()
+      return nil
+    end
+  end
+  local tipName = tip:GetName()
+  local speed, minDmg, maxDmg
+  for i = 1, tip:NumLines() do
+    local left = _G[tipName .. "TextLeft" .. i]
+    local right = _G[tipName .. "TextRight" .. i]
+    local ltext = left and left:GetText() or ""
+    local rtext = right and right:GetText() or ""
+    local lo, hi = ltext:match("(%d+)%s*%-%s*(%d+)%s+Damage")
+    if lo then minDmg = tonumber(lo); maxDmg = tonumber(hi) end
+    local rlo, rhi = rtext:match("(%d+)%s*%-%s*(%d+)%s+Damage")
+    if rlo then minDmg = tonumber(rlo); maxDmg = tonumber(rhi) end
+    local ls = ltext:match("Speed%s+(%d+%.?%d*)")
+    if ls then speed = tonumber(ls) end
+    local rs = rtext:match("Speed%s+(%d+%.?%d*)")
+    if rs then speed = tonumber(rs) end
+  end
+  tip:Hide()
+  return speed, minDmg, maxDmg
+end
+
+function TA_BuildWeaponDanceReport()
+  local sorRow = TA_GetLiveSpellRankRow("sor")
+  if not sorRow then
+    AddLine("playerCombat", "Weapon dance report unavailable: no Seal of Righteousness rank found in spellbook.")
+    return
+  end
+  local spellPower = TA_GetSpellPowerHoly()
+  local sorBase = ((sorRow.min or 0) + (sorRow.max or 0)) / 2
+  local sorHit = sorBase + spellPower * (sorRow.coeff or 0)
+  -- In Classic 1.12 SoR scales linearly with weapon speed; 3.0s is the reference point.
+  local sorRef = 3.0
+  local sorDpsRate = sorHit / sorRef
+
+  local cfg = TA_GetSealLiveConfig and TA_GetSealLiveConfig() or {}
+  local meleeConnect = TA_GetMeleeConnectChance(cfg.targetLevel, cfg.attackFromBehind)
+
+  local weapons = {}
+
+  -- Equipped main-hand (slot 16)
+  local eqSpeed = UnitAttackSpeed("player")
+  local eqMinDmg, eqMaxDmg = UnitDamage("player")
+  if eqSpeed and eqSpeed > 0 and eqMinDmg and eqMaxDmg then
+    local eqName = "Equipped"
+    local eqLink = GetInventoryItemLink and GetInventoryItemLink("player", 16)
+    if eqLink then
+      local n = GetItemInfo(eqLink)
+      if n then eqName = n end
+    end
+    table.insert(weapons, {
+      name = eqName,
+      speed = eqSpeed,
+      avgDmg = (eqMinDmg + eqMaxDmg) / 2,
+      sorPerSwing = sorDpsRate * eqSpeed,
+      whiteDps = ((eqMinDmg + eqMaxDmg) / 2) / eqSpeed,
+      isEquipped = true,
+      loc = "Main Hand",
+    })
+  end
+
+  -- Bags 0-4
+  if C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo then
+    for bag = 0, 4 do
+      local numSlots = C_Container.GetContainerNumSlots(bag)
+      if numSlots and numSlots > 0 then
+        for slot = 1, numSlots do
+          local info = C_Container.GetContainerItemInfo(bag, slot)
+          if info and info.itemID then
+            local itemLink = info.hyperlink
+              or (C_Container.GetContainerItemLink and C_Container.GetContainerItemLink(bag, slot))
+            if itemLink then
+              local iName, _, _, _, _, _, _, _, iEquipLoc = GetItemInfo(itemLink)
+              local isMainHand = iEquipLoc == "INVTYPE_WEAPON"
+                or iEquipLoc == "INVTYPE_2HWEAPON"
+                or iEquipLoc == "INVTYPE_WEAPONMAINHAND"
+              if isMainHand then
+                local speed, minDmg, maxDmg = TA_ScanWeaponTooltip(bag, slot, false)
+                if speed and speed > 0 and minDmg and maxDmg then
+                  local avgDmg = (minDmg + maxDmg) / 2
+                  table.insert(weapons, {
+                    name = iName or "Unknown",
+                    speed = speed,
+                    avgDmg = avgDmg,
+                    sorPerSwing = sorDpsRate * speed,
+                    whiteDps = avgDmg / speed,
+                    isEquipped = false,
+                    loc = string.format("Bag%d/%d", bag, slot),
+                  })
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  if #weapons == 0 then
+    AddLine("playerCombat", "No weapons found. Equip a weapon or place weapons in your bags.")
+    return
+  end
+
+  table.sort(weapons, function(a, b) return a.sorPerSwing > b.sorPerSwing end)
+
+  AddLine("playerCombat", string.format(
+    "=== Weapon Dance Report (SoR rank %d, %d SP) ===",
+    sorRow.rank or 0, math.floor(spellPower)
+  ))
+  AddLine("playerCombat", string.format(
+    "%-22s  %5s  %9s  %8s  %s",
+    "Weapon", "Speed", "SoR/Swing", "WhiteDPS", "Where"
+  ))
+  for _, w in ipairs(weapons) do
+    local tag = w.isEquipped and "[EQ]" or "    "
+    AddLine("playerCombat", string.format(
+      "%s %-18s  %5.2f  %9.1f  %8.1f  %s",
+      tag, w.name:sub(1, 18), w.speed,
+      w.sorPerSwing * meleeConnect,
+      w.whiteDps * meleeConnect,
+      w.loc
+    ))
+  end
+
+  local equippedW = nil
+  for _, w in ipairs(weapons) do
+    if w.isEquipped then equippedW = w; break end
+  end
+  local bestDonor = weapons[1]
+  if equippedW and bestDonor and not bestDonor.isEquipped then
+    local danceGain = (bestDonor.sorPerSwing - equippedW.sorPerSwing) * meleeConnect
+    local danceGainDps = danceGain / equippedW.speed
+    AddLine("playerCombat", string.format(
+      "Dance bonus: +%.1f SoR/swap with '%s' (%.2fs), ~+%.2f effective DPS.",
+      danceGain, bestDonor.name:sub(1, 22), bestDonor.speed, danceGainDps
+    ))
+    AddLine("playerCombat", "Use 'swingtimer on' to enable the swap-now hint.")
+  elseif #weapons == 1 and equippedW then
+    AddLine("playerCombat", "No bag weapons found. Place slower weapons in bags for comparison.")
+  elseif bestDonor and bestDonor.isEquipped then
+    AddLine("playerCombat", "Your equipped weapon is already the best SoR donor in your bags.")
+  end
 end
 
 function TA_ReportLiveSealDpsComparison()
@@ -6467,6 +7001,51 @@ local function ReportInventory()
   end
 end
 
+local function ReportBank()
+  if not (BankFrame and BankFrame:IsShown()) then
+    AddLine("system", "You must be at a banker with the bank window open to view bank contents.")
+    return
+  end
+
+  local totalItems = 0
+
+  -- Main 28 bank slots (bag index -1)
+  local mainSlots = C_Container.GetContainerNumSlots(-1) or 28
+  local mainItems = 0
+  for slot = 1, mainSlots do
+    local info = C_Container.GetContainerItemInfo(-1, slot)
+    if info then
+      AddLine("loot", string.format("Bank slot %d: %s x%d", slot, info.hyperlink or ("item:" .. tostring(info.itemID or "?")), info.stackCount or 1))
+      mainItems = mainItems + 1
+      totalItems = totalItems + 1
+    end
+  end
+  if mainItems == 0 then
+    AddLine("system", "Bank main slots: empty.")
+  end
+
+  -- Bank bag slots (indices 5–11)
+  for bag = 5, 11 do
+    local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+    if numSlots > 0 then
+      local bagItems = 0
+      for slot = 1, numSlots do
+        local info = C_Container.GetContainerItemInfo(bag, slot)
+        if info then
+          AddLine("loot", string.format("Bank bag %d slot %d: %s x%d", bag - 4, slot, info.hyperlink or ("item:" .. tostring(info.itemID or "?")), info.stackCount or 1))
+          bagItems = bagItems + 1
+          totalItems = totalItems + 1
+        end
+      end
+      if bagItems == 0 then
+        AddLine("system", string.format("Bank bag %d: empty (%d slots).", bag - 4, numSlots))
+      end
+    end
+  end
+
+  AddLine("system", string.format("Bank total: %d item stack(s).", totalItems))
+end
+
 local function GetActionSlotName(slot)
   if slot <= 12 then return string.format("Bar1-%d", slot) end
   if slot <= 24 then return string.format("Bar2-%d", slot - 12) end
@@ -7054,6 +7633,61 @@ function TA_BindBagItemToActionSlot(actionSlot, bag, slot)
     BindFeedback(string.format("Placed %s into action slot %d (resolved %d).", itemRef, actionSlot, resolvedSlot), "cast")
   else
     BindFeedback(string.format("Could not place %s into action slot %d (resolved %d, slot currently: %s %s).", itemRef, actionSlot, resolvedSlot, tostring(newActionType or "empty"), tostring(newActionID or "")))
+  end
+end
+
+function TA_MoveBagItem(srcBag, srcSlot, dstBag, dstSlot)
+  local function BagLabel(bag)
+    return bag == 0 and "backpack" or ("bag " .. tostring(bag))
+  end
+  if srcBag == nil or srcSlot == nil or dstBag == nil or dstSlot == nil then
+    AddLine("system", "Usage: moveitem <srcBag> <srcSlot> <dstBag> <dstSlot>")
+    AddLine("system", "  Bags: 0=backpack, 1-4=bag slots. Example: moveitem 0 3 1 1")
+    return
+  end
+
+  if InCombatLockdown and InCombatLockdown() then
+    AddLine("system", "Cannot move items during combat.")
+    return
+  end
+
+  if not (C_Container and C_Container.GetContainerItemInfo and C_Container.PickupContainerItem) then
+    AddLine("system", "Container API unavailable.")
+    return
+  end
+
+  local srcInfo = C_Container.GetContainerItemInfo(srcBag, srcSlot)
+  if not srcInfo then
+    AddLine("system", string.format("No item in %s slot %d.", BagLabel(srcBag), srcSlot))
+    return
+  end
+
+  local srcName = srcInfo.hyperlink or tostring(srcInfo.itemID or "item")
+  local dstInfo = C_Container.GetContainerItemInfo(dstBag, dstSlot)
+
+  ClearCursor()
+  C_Container.PickupContainerItem(srcBag, srcSlot)
+
+  local cursorType = GetCursorInfo and GetCursorInfo() or nil
+  if cursorType ~= "item" then
+    ClearCursor()
+    AddLine("system", string.format("Could not pick up %s from %s slot %d.", srcName, BagLabel(srcBag), srcSlot))
+    return
+  end
+
+  C_Container.PickupContainerItem(dstBag, dstSlot)
+  ClearCursor()
+
+  local newSrcInfo = C_Container.GetContainerItemInfo(srcBag, srcSlot)
+  local newDstInfo = C_Container.GetContainerItemInfo(dstBag, dstSlot)
+
+  if dstInfo then
+    local dstName = dstInfo.hyperlink or tostring(dstInfo.itemID or "item")
+    AddLine("system", string.format("Swapped %s (%s/%d) with %s (%s/%d).",
+      srcName, BagLabel(srcBag), srcSlot,
+      dstName, BagLabel(dstBag), dstSlot))
+  else
+    AddLine("system", string.format("Moved %s to %s slot %d.", srcName, BagLabel(dstBag), dstSlot))
   end
 end
 
@@ -9043,16 +9677,16 @@ local PERFORMANCE_FRAME_NAMES = {
 local function TA_SetTickerProfile(profile)
   if profile == "performance" then
     TA.tickerIntervals.move = 0.05
-    TA.tickerIntervals.nearby = 0.05
+    TA.tickerIntervals.nearby = 0.10
     TA.tickerIntervals.memory = 0.10
-    TA.tickerIntervals.df = 0.05
+    TA.tickerIntervals.df = 0.10
     TA.tickerIntervals.warlockPrompt = 1.50
     TA.tickerIntervals.warriorPrompt = 1.50
   else
     TA.tickerIntervals.move = 0.2
     TA.tickerIntervals.nearby = 0.25
     TA.tickerIntervals.memory = 0.5
-    TA.tickerIntervals.df = 0.1
+    TA.tickerIntervals.df = 0.15
     TA.tickerIntervals.warlockPrompt = 0.75
     TA.tickerIntervals.warriorPrompt = 0.75
   end
@@ -9397,62 +10031,30 @@ end
     return units
   end
 
-local function TA_ClearDFSonar()
-  TA.dfModeSonarContacts = {}
-end
-
-local function TA_RecordDFSonarContacts(units, mapID)
+local function TA_RecordDFLastKnownUnits(units, mapID)
   if not units or not mapID then return end
   local now = GetTime()
-  local ttl = tonumber(TA.dfModeSonarTTL) or 8
-  local contactTable = TA.dfModeSonarContacts or {}
   local lastKnown = TA.dfModeLastKnownUnits or {}
   local function ingest(kind, list)
     for _, u in ipairs(list or {}) do
-      if u and u.hasExactPos and u.worldX and u.worldY then
-        local key = u.guid or (kind .. ":" .. (u.name or "unknown"))
-        local existing = contactTable[key] or {}
-        existing.name = u.name or existing.name or "Unknown"
-        existing.kind = kind
-        existing.mapID = mapID
-        existing.worldX = u.worldX
-        existing.worldY = u.worldY
-        existing.seenAt = now
-        existing.expiresAt = now + ttl
-        contactTable[key] = existing
-        if u.guid then
-          lastKnown[u.guid] = {
-            guid = u.guid,
-            name = u.name or "Unknown",
-            kind = kind,
-            mapID = mapID,
-            worldX = u.worldX,
-            worldY = u.worldY,
-            seenAt = now,
-            expiresAt = now + math.max(ttl, 30),
-          }
-        end
+      if u and u.hasExactPos and u.worldX and u.worldY and u.guid then
+        lastKnown[u.guid] = {
+          guid = u.guid,
+          name = u.name or "Unknown",
+          kind = kind,
+          mapID = mapID,
+          worldX = u.worldX,
+          worldY = u.worldY,
+          seenAt = now,
+          expiresAt = now + 30,
+        }
       end
     end
   end
   ingest("hostile", units.hostile)
   ingest("neutral", units.neutral)
   ingest("friendly", units.friendly)
-  TA.dfModeSonarContacts = contactTable
   TA.dfModeLastKnownUnits = lastKnown
-end
-
-local function TA_PruneDFSonarContacts(mapID)
-  local now = GetTime()
-  local count = 0
-  for key, c in pairs(TA.dfModeSonarContacts or {}) do
-    if type(c) ~= "table" or c.expiresAt == nil or c.expiresAt <= now or (mapID and c.mapID and c.mapID ~= mapID) then
-      TA.dfModeSonarContacts[key] = nil
-    else
-      count = count + 1
-    end
-  end
-  return count
 end
 
 local function TA_PruneDFLastKnownUnits(mapID)
@@ -9495,18 +10097,6 @@ local function TA_PruneDFCorpseContacts(mapID)
       TA.dfModeCorpseContacts[key] = nil
     end
   end
-end
-
-local function TA_TriggerDFSonarPing(seconds)
-  local duration = tonumber(seconds) or 4
-  if duration < 1 then duration = 1 end
-  if duration > 20 then duration = 20 end
-  TA.dfModeSonarPulseUntil = GetTime() + duration
-  if TA.dfModeEnabled then
-    TA.dfModeLastUpdate = 0
-    TA_UpdateDFMode()
-  end
-  return duration
 end
 
 local function TA_GetLoadedTerrainData()
@@ -10066,11 +10656,14 @@ local function BuildDFModeDisplay()
 
   local gridSize = TA.dfModeGridSize or 21
   local radius = math.floor(gridSize / 2)
-  -- innerRadius is large enough that after any rotation, all display cells map to valid world cells.
-  -- A rotated square needs sqrt(2) * radius coverage; we use 1.45 for a small safety margin.
-  if TA.dfModeInnerRadiusGridSize ~= gridSize then
-    TA.dfModeInnerRadius = math.ceil(radius * 1.45)
-    TA.dfModeInnerRadiusGridSize = gridSize
+  -- innerRadius covers all display cells after rotation. In fixed orientation no rotation
+  -- happens so we can save grid allocation by using radius directly.
+  local orientation = TA.dfModeOrientation or "fixed"
+  local rotationMode = TA.dfModeRotationMode or "smooth"
+  local innerRadiusKey = gridSize * 2 + (orientation == "fixed" and 0 or 1)
+  if TA.dfModeInnerRadiusGridSize ~= innerRadiusKey then
+    TA.dfModeInnerRadius = (orientation == "fixed") and radius or math.ceil(radius * 1.45)
+    TA.dfModeInnerRadiusGridSize = innerRadiusKey
   end
   local innerRadius = TA.dfModeInnerRadius or math.ceil(radius * 1.45)
   -- Each DF grid cell represents this many in-game yards. Must be a whole number
@@ -10079,8 +10672,6 @@ local function BuildDFModeDisplay()
   local calibrationEnabled = TA.dfModeCalibrationEnabled and true or false
   local viewMode = TA.dfModeViewMode or "threat"
   local profile = TA.dfModeProfile or "full"
-  local orientation = TA.dfModeOrientation or "fixed"
-  local rotationMode = TA.dfModeRotationMode or "smooth"
   local balanced = (profile ~= "full")
 
   -- Get facing direction
@@ -10092,14 +10683,20 @@ local function BuildDFModeDisplay()
   TA.dfModeNavHint = nil
 
   -- Build the world grid at innerRadius so rotation never hits an out-of-bounds edge.
-  local grid = {}
-  local threatHeat = {}
+  -- Reuse scratch tables across builds: this avoids 2*(innerRadius*2+1)^2 table allocations per tick.
+  TA._dfScratch = TA._dfScratch or {}
+  local scratch = TA._dfScratch
+  local grid = scratch.grid or {}
+  local threatHeat = scratch.threatHeat or {}
+  scratch.grid = grid
+  scratch.threatHeat = threatHeat
+  -- Resize if needed (grow only; shrinking is unnecessary for a steady grid size).
   for y = -innerRadius, innerRadius do
-    grid[y] = {}
-    threatHeat[y] = {}
+    local row = grid[y]; if not row then row = {}; grid[y] = row end
+    local hrow = threatHeat[y]; if not hrow then hrow = {}; threatHeat[y] = hrow end
     for x = -innerRadius, innerRadius do
-      grid[y][x] = "."
-      threatHeat[y][x] = 0
+      row[x] = "."
+      hrow[x] = 0
     end
   end
 
@@ -10108,10 +10705,7 @@ local function BuildDFModeDisplay()
 
   -- Get nearby units
   local units = GetNearbyUnitsWithPositions()
-  if (tonumber(TA.dfModeSonarPulseUntil) or 0) > now then
-    TA_RecordDFSonarContacts(units, mapID)
-  end
-  TA_PruneDFSonarContacts(mapID)
+  TA_RecordDFLastKnownUnits(units, mapID)
   TA_PruneDFLastKnownUnits(mapID)
   TA_PruneDFCorpseContacts(mapID)
 
@@ -10550,34 +11144,6 @@ local function BuildDFModeDisplay()
     end
   end
 
-  -- Sonar echo overlay: recent exact-contact memory to improve map definition between direct sightings.
-  for _, c in pairs(TA.dfModeSonarContacts or {}) do
-    if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
-      local dx_yards = c.worldX - playerWorldX
-      local dy_yards = c.worldY - playerWorldY
-      local east = dx_yards
-      local north = dy_yards
-      local sx = east >= 0 and math.floor((east / yardsPerCell) + 0.5) or math.ceil((east / yardsPerCell) - 0.5)
-      local sy = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
-      if math.abs(sx) <= innerRadius and math.abs(sy) <= innerRadius and grid[sy] and grid[sy][sx] and grid[sy][sx] == "." then
-        local ttl = math.max(1, (tonumber(TA.dfModeSonarTTL) or 8))
-        local age = now - (c.seenAt or now)
-        local glyph = "'"
-        if c.kind == "hostile" then
-          if age <= ttl * 0.33 then glyph = "h"
-          elseif age <= ttl * 0.66 then glyph = ":"
-          else glyph = "." end
-          threatHeat[sy][sx] = (threatHeat[sy][sx] or 0) + 1
-        elseif c.kind == "friendly" then
-          glyph = age <= ttl * 0.5 and "f" or ","
-        else
-          glyph = age <= ttl * 0.5 and "n" or ","
-        end
-        grid[sy][sx] = glyph
-      end
-    end
-  end
-
   -- Corpse overlay: recently killed units at their last known exact position.
   for _, c in pairs(TA.dfModeCorpseContacts or {}) do
     if c and c.mapID == mapID and c.worldX and c.worldY and playerWorldX and playerWorldY and c.expiresAt and c.expiresAt > now then
@@ -10680,7 +11246,17 @@ local function BuildDFModeDisplay()
     deltaMax = nil,
     cliffDrops = 0,
   }
-  local terrainCache = {}
+  -- Persistent terrain cache: TA_GetTerrainContextAtWorldPos is the single biggest cost in
+  -- BuildDFModeDisplay. Cache it across DF builds, keyed by the snapped player cell + map +
+  -- yards/cell + lookup mode. Wipe whenever the key changes (i.e. the player crosses a cell).
+  local snappedPlayerCellX = (playerWorldX and yardsPerCell and yardsPerCell > 0) and math.floor(playerWorldX / yardsPerCell + 0.5) or 0
+  local snappedPlayerCellY = (playerWorldY and yardsPerCell and yardsPerCell > 0) and math.floor(playerWorldY / yardsPerCell + 0.5) or 0
+  local terrainCacheKey = string.format("%s:%s:%d:%d:%d", tostring(mapID or "?"), tostring(terrainLookupMode or "?"), snappedPlayerCellX, snappedPlayerCellY, math.floor(yardsPerCell or 0))
+  if TA._dfTerrainCacheKey ~= terrainCacheKey then
+    TA._dfTerrainCache = {}
+    TA._dfTerrainCacheKey = terrainCacheKey
+  end
+  local terrainCache = TA._dfTerrainCache
   local gridDistanceCache = {}
 
   local function TA_GetGridDistance(x, y)
@@ -10779,14 +11355,16 @@ local function BuildDFModeDisplay()
   end
 
   local showTerrainView = (viewMode == "threat" or viewMode == "combined")
-  local terrainLayer = {}
-  local terrainHeatLayer = {}
+  scratch.terrainLayer = scratch.terrainLayer or {}
+  scratch.terrainHeatLayer = scratch.terrainHeatLayer or {}
+  local terrainLayer = scratch.terrainLayer
+  local terrainHeatLayer = scratch.terrainHeatLayer
 
   -- Pass 1: sample terrain glyphs for each display cell so we can smooth noisy
   -- one-off spikes without requerying terrain on the render pass.
   for y = radius, -radius, -1 do
-    terrainLayer[y] = {}
-    terrainHeatLayer[y] = {}
+    local tlrow = terrainLayer[y]; if not tlrow then tlrow = {}; terrainLayer[y] = tlrow end
+    local throw = terrainHeatLayer[y]; if not throw then throw = {}; terrainHeatLayer[y] = throw end
     for x = -radius, radius do
       terrainStats.samples = terrainStats.samples + 1
 
@@ -11006,23 +11584,17 @@ local function BuildDFModeDisplay()
       table.insert(row, cell)
     end
 
-    -- Horizontal mark-edge rows: when 3+ consecutive cells are the mark edge
-    -- glyph "o", drop the spaces between just those cells so they read as a
+    -- Horizontal mark-edge rows: when 3+ consecutive cells are the (unadorned)
+    -- mark edge glyph, drop the spaces between just those cells so they read as a
     -- continuous "ooooo" segment instead of "o o o o o" (which over-stretches
     -- the rectangle horizontally relative to its vertical sides).
-    local function IsEdgeGlyph(s)
-      if not s then return false end
-      local visible = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-      return visible == "o"
-    end
-
     local pieces = {}
     local i = 1
     while i <= #row do
       local cell = row[i]
-      if IsEdgeGlyph(cell) then
+      if cell == markEdgeGlyph then
         local j = i
-        while j <= #row and IsEdgeGlyph(row[j]) do j = j + 1 end
+        while j <= #row and row[j] == markEdgeGlyph do j = j + 1 end
         local runLen = j - i
         if runLen >= 3 then
           if #pieces > 0 then table.insert(pieces, " ") end
@@ -11720,7 +12292,9 @@ function TA_GetProjectedDFPlayerWorldPosition(playerWorldX, playerWorldY)
   local projectedWorldX = playerWorldX
   local projectedWorldY = playerWorldY
   if lookaheadSeconds > 0 then
-    local lookaheadYards = math.min(speed * lookaheadSeconds, 1.25)
+    -- Lookahead cap: max half a cell so projection cannot leap past the snap zone.
+    local lookaheadCap = 0.5 * (TA_GetEffectiveDFYardsPerCell() or 3)
+    local lookaheadYards = math.min(speed * lookaheadSeconds, lookaheadCap)
     local forwardX = -math.sin(facing)
     local forwardY = math.cos(facing)
     projectedWorldX = projectedWorldX + (forwardX * lookaheadYards)
@@ -11906,6 +12480,194 @@ local function HandleChatEvent(event, message, sender, _, _, _, _, _, _, channel
   local prefix = info.label
   if event == "CHAT_MSG_CHANNEL" and channelName and channelName ~= "" then prefix = channelName end
   AddLine(info.kind, string.format("[%s] %s: %s", prefix, name, message))
+end
+
+function TA_GetNpcName()
+  if UnitExists and UnitName and UnitExists("npc") then
+    return UnitName("npc")
+  end
+  if UnitExists and UnitName and UnitExists("questnpc") then
+    return UnitName("questnpc")
+  end
+  if UnitExists and UnitName and UnitExists("target") then
+    return UnitName("target")
+  end
+  return nil
+end
+
+function TA_WrapAndPrintQuestText(kind, text)
+  if type(text) ~= "string" or text == "" then return end
+  local width = tonumber(TA.questTextWrapWidth) or 80
+  if width < 30 then width = 30 end
+  text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
+  for paragraph in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if paragraph == "" then
+      AddLine(kind, " ")
+    else
+      local line = ""
+      for word in paragraph:gmatch("%S+") do
+        if line == "" then
+          line = word
+        elseif (#line + 1 + #word) <= width then
+          line = line .. " " .. word
+        else
+          AddLine(kind, line)
+          line = word
+        end
+      end
+      if line ~= "" then AddLine(kind, line) end
+    end
+  end
+end
+
+function TA_NarrateQuestDetail()
+  local title = (GetTitleText and GetTitleText()) or "Quest"
+  local body  = (GetQuestText and GetQuestText()) or ""
+  local obj   = (GetObjectiveText and GetObjectiveText()) or ""
+  local npc   = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "detail", title = title, body = body, objective = obj, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s offers a quest: \"%s\"", npc, title))
+  else
+    AddLine("questNpc", string.format("New quest offered: \"%s\"", title))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+  if obj and obj ~= "" then
+    AddLine("questNpc", "Objective:")
+    TA_WrapAndPrintQuestText("questText", obj)
+  end
+  if TA.questNarration == "manual" or not TA.autoQuests then
+    AddLine("quest", "Type 'accept' to take the quest, or 'decline' to refuse.")
+  elseif TA.questNarration == "cinematic" then
+    AddLine("quest", string.format("(Auto-accepting in %.1fs. Type 'decline' to cancel.)", TA.questAcceptDelay or 1.5))
+  end
+end
+
+function TA_NarrateQuestProgress()
+  local body = (GetProgressText and GetProgressText()) or ""
+  local npc  = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "progress", title = nil, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s says:", npc))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+  if TA.questNarration == "manual" or not TA.autoQuests then
+    if IsQuestCompletable and IsQuestCompletable() then
+      AddLine("quest", "Type 'complete' to hand in the quest.")
+    end
+  end
+end
+
+function TA_NarrateQuestReward()
+  local title = (GetTitleText and GetTitleText()) or "Quest"
+  local body  = (GetRewardText and GetRewardText()) or ""
+  local npc   = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "reward", title = title, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s completes \"%s\":", npc, title))
+  else
+    AddLine("questNpc", string.format("Quest complete: \"%s\"", title))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+  if GetNumQuestChoices then
+    local n = GetNumQuestChoices() or 0
+    if n > 1 then
+      AddLine("quest", string.format("This quest offers %d reward choices. Type 'rewards' to list, then 'reward <n>' to pick.", n))
+    end
+  end
+end
+
+function TA_NarrateQuestGreeting()
+  local body = (GetGreetingText and GetGreetingText()) or ""
+  local npc  = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "greeting", title = nil, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s greets you:", npc))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+end
+
+function TA_NarrateGossipText()
+  local body = nil
+  if C_GossipInfo and C_GossipInfo.GetText then body = C_GossipInfo.GetText() end
+  if (not body or body == "") and GetGossipText then body = GetGossipText() end
+  if not body or body == "" then return end
+  local npc = TA_GetNpcName()
+  TA.lastQuestNarration = { kind = "gossip", title = nil, body = body, npc = npc }
+  if npc and npc ~= "" then
+    AddLine("questNpc", string.format("%s says:", npc))
+  end
+  TA_WrapAndPrintQuestText("questText", body)
+end
+
+function TA_ReplayLastQuestText(kindFilter)
+  local last = TA.lastQuestNarration
+  if not last or not last.body or last.body == "" then
+    AddLine("system", "No quest text in memory.")
+    return
+  end
+  if kindFilter and last.kind ~= kindFilter then
+    AddLine("system", string.format("Last quest text was a %s, not %s.", tostring(last.kind), kindFilter))
+    return
+  end
+  if last.npc and last.npc ~= "" then
+    AddLine("questNpc", string.format("%s%s:", last.npc, last.title and (" — \""..last.title.."\"") or ""))
+  end
+  TA_WrapAndPrintQuestText("questText", last.body)
+end
+
+function TA_AcceptQuestFromTerminal()
+  if AcceptQuest then
+    AcceptQuest()
+    AddLine("quest", "Quest accepted.")
+  else
+    AddLine("system", "No quest dialogue is open.")
+  end
+end
+
+function TA_DeclineQuestFromTerminal()
+  if DeclineQuest then
+    DeclineQuest()
+    AddLine("quest", "Quest declined.")
+  elseif CloseQuest then
+    CloseQuest()
+    AddLine("quest", "Quest dialogue closed.")
+  else
+    AddLine("system", "No quest dialogue is open.")
+  end
+end
+
+function TA_SetQuestNarrationMode(mode)
+  mode = (type(mode) == "string") and mode:lower() or ""
+  if mode ~= "cinematic" and mode ~= "instant" and mode ~= "manual" then
+    AddLine("system", "Usage: quest mode cinematic | instant | manual")
+    AddLine("system", string.format("Current mode: %s", tostring(TA.questNarration)))
+    return
+  end
+  TA.questNarration = mode
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.questNarration = mode
+  AddLine("quest", string.format("Quest narration mode set to '%s'.", mode))
+  if mode == "cinematic" then
+    AddLine("quest", "Quest text will print, then auto-accept after a brief pause.")
+  elseif mode == "instant" then
+    AddLine("quest", "Quest text will print and the quest will be accepted immediately.")
+  else
+    AddLine("quest", "Quest text will print only. Type 'accept' / 'decline' / 'complete' to act.")
+  end
+end
+
+function TA_SetQuestAcceptDelay(seconds)
+  local s = tonumber(seconds)
+  if not s or s < 0 or s > 10 then
+    AddLine("system", "Usage: quest delay <seconds 0-10>")
+    AddLine("system", string.format("Current delay: %.1fs", TA.questAcceptDelay or 1.5))
+    return
+  end
+  TA.questAcceptDelay = s
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.questAcceptDelay = s
+  AddLine("quest", string.format("Quest auto-accept delay set to %.1fs (cinematic mode).", s))
 end
 
 local function TryAutoQuestFromGossip()
@@ -12911,9 +13673,6 @@ function TA_RunPatternSelfTest(modeArg)
     "df size 300 600",
     "df grid 35",
     "df markradius 2",
-    "df sonar",
-    "df sonar ping 2",
-    "df sonar ttl 8",
     "route show test",
     "route list",
     "questinfo 1",
@@ -12948,6 +13707,7 @@ function TA_RunPatternSelfTest(modeArg)
     "bind 1 1",
     "bindmacro 1 1",
     "binditem 1 0 1",
+    "moveitem 0 1 1 1",
     "buycheck 1",
     "buycheck 1 2",
     "vendorinfo 1",
@@ -12956,6 +13716,9 @@ function TA_RunPatternSelfTest(modeArg)
     "readitem 0 1",
     "restock food 5",
     "buyback 1",
+    "bank",
+    "spellbook all",
+    "spells full",
     "map on",
     "map off",
     "df profile balanced",
@@ -12968,7 +13731,6 @@ function TA_RunPatternSelfTest(modeArg)
     "df adaptive on",
     "df adaptive mode combat",
     "df adaptive thresholds 10 20 40",
-    "df sonar clear",
     "route start test",
     "route follow test",
     "route follow off",
@@ -12986,6 +13748,12 @@ function TA_RunPatternSelfTest(modeArg)
     "ml xp warrior weapon dual-wield",
     "sealdps set 30 100 90",
     "sealdps import 30:100:90",
+    "weapondance",
+    "sordance",
+    "swingtimer on",
+    "swingtimer off",
+    "swingtimer status",
+    "swingtimer reaction 100",
     "macroset 1 /say test",
     "macrorename 1 test",
     "macrocreate test /say hi",
@@ -13235,7 +14003,7 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
     end
     -- Also include known prefix commands not fully in EXACT_INPUT_HANDLERS
     local prefixCmds = {
-      "equip ", "binditem ", "bind ", "bindmacro ",
+      "equip ", "binditem ", "moveitem ", "bind ", "bindmacro ",
       "actions ", "bars ", "sell ", "destroy ", "use ",
       "mark ", "unmark ", "renamemark ", "goto ", "route ",
       "ml xp ", "ml xp warrior ", "ml xp set ", "ml xp mode ",
@@ -13243,11 +14011,12 @@ panel.inputBox:SetScript("OnKeyDown", function(self, key)
       "bug show ", "bug copy ",
       "df ", "df size ", "df grid ", "df cell ", "df markradius ",
       "df rotation ", "df orientation ", "df square ",
-      "df profile ", "df view ", "df hue ", "df legend ", "df calibrate ", "df sonar ",
+      "df profile ", "df view ", "df hue ", "df legend ", "df calibrate ",
       "memory ", "focus ", "castfocus ", "macro ", "macroinfo ",
       "skills weapons", "skills professions", "skills defense",
       "help ", "help advanced", "help combat", "help economy",
       "help navigation", "help social", "help quests",
+      "swingtimer ",
     }
     for _, cmd in ipairs(prefixCmds) do
       local cmdLower = cmd:lower()
@@ -13323,6 +14092,16 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TextAdventurerDB.ml = type(TextAdventurerDB.ml) == "table" and TextAdventurerDB.ml or {}
     TA_GetMLStore()
     TextAdventurerDB.markedCells = TextAdventurerDB.markedCells or {}
+    if type(TextAdventurerDB.questNarration) == "string" then
+      local m = TextAdventurerDB.questNarration:lower()
+      if m == "cinematic" or m == "instant" or m == "manual" then
+        TA.questNarration = m
+      end
+    end
+    local savedDelay = tonumber(TextAdventurerDB.questAcceptDelay)
+    if savedDelay and savedDelay >= 0 and savedDelay <= 10 then
+      TA.questAcceptDelay = savedDelay
+    end
     TextAdventurerDB.cellAnchors = type(TextAdventurerDB.cellAnchors) == "table" and TextAdventurerDB.cellAnchors or {}
     local savedGridSize = tonumber(TextAdventurerDB.gridSize)
     if not savedGridSize
@@ -13719,16 +14498,96 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA.vendorOpen = false
     AddLine("loot", "The merchant closes their wares.")
+  elseif event == "MAIL_SHOW" then
+    AddLine("loot", "You open the mailbox.")
+    if TA_ReportMailInbox then
+      if C_Timer and C_Timer.After then
+        C_Timer.After(0.4, function() TA_ReportMailInbox() end)
+      else
+        TA_ReportMailInbox()
+      end
+    end
+  elseif event == "MAIL_INBOX_UPDATE" then
+    if TA.mailInboxAutoRefresh and TA_ReportMailInbox then
+      TA_ReportMailInbox()
+    end
+  elseif event == "MAIL_CLOSED" then
+    AddLine("loot", "You close the mailbox.")
+  elseif event == "MAIL_SEND_SUCCESS" then
+    AddLine("loot", "Your letter is on its way.")
+  elseif event == "MAIL_FAILED" then
+    AddLine("system", "Mail failed to send.")
+  elseif event == "PLAYER_DEAD" then
+    AddLine("status", "Your spirit drifts free of your body. Type 'release' to wake at the graveyard.")
+  elseif event == "PLAYER_UNGHOST" or event == "PLAYER_ALIVE" then
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost("player") then
+      -- still ghost, ignore
+    else
+      AddLine("status", "Life returns to you. You stand once more.")
+    end
+  elseif event == "RESURRECT_REQUEST" then
+    local sender = ...
+    AddLine("status", string.format("%s offers to bring you back. Type 'accept rez' or 'decline rez'.", tostring(sender or "Someone")))
+  elseif event == "CORPSE_IN_RANGE" then
+    AddLine("status", "Your corpse lies within reach. Type 'retrieve' to reclaim your body.")
+  elseif event == "CORPSE_IN_INSTANCE" then
+    AddLine("status", "Your corpse rests inside an instance. Type 'retrieve' to enter and reclaim it.")
+  elseif event == "CONFIRM_XP_LOSS" then
+    AddLine("status", "The spirit healer offers swift resurrection at a cost. Type 'accept rez' to accept the durability and XP loss.")
+  elseif event == "CONFIRM_BINDER" then
+    local name = ...
+    AddLine("quest", string.format("The innkeeper%s offers to make this your home. Type 'bind' to accept.", name and (" "..name) or ""))
+  elseif event == "DUEL_REQUESTED" then
+    local challenger = ...
+    AddLine("playerCombat", string.format("%s challenges you to a duel! Type 'accept duel' or 'decline duel'.", tostring(challenger or "Someone")))
+  elseif event == "DUEL_FINISHED" then
+    AddLine("playerCombat", "The duel ends.")
+  elseif event == "PARTY_INVITE_REQUEST" then
+    local inviter = ...
+    AddLine("chat", string.format("%s invites you to a party. Type 'accept group' or 'decline group'.", tostring(inviter or "Someone")))
+  elseif event == "READY_CHECK" then
+    local initiator, duration = ...
+    AddLine("chat", string.format("%s calls a ready check (%ds). Type 'ready' or 'notready'.", tostring(initiator or "The leader"), tonumber(duration) or 0))
+  elseif event == "TIME_PLAYED_MSG" then
+    local total, level = ...
+    if total then
+      local h = math.floor(total / 3600)
+      AddLine("status", string.format("Time played: %dh on this character.", h))
+    end
+  elseif event == "CHAT_MSG_COMBAT_FACTION_CHANGE" then
+    local message = ...
+    if type(message) == "string" and message ~= "" then
+      AddLine("status", "* " .. message)
+    end
+  elseif event == "PLAYER_UPDATE_RESTING" then
+    if IsResting and IsResting() then
+      AddLine("status", "You feel a hearth's warmth wash over you. (Rested)")
+    else
+      AddLine("status", "You step away from rest. The world stirs again.")
+    end
   elseif event == "GOSSIP_SHOW" then
+    TA_NarrateGossipText()
     TryAutoQuestFromGossip()
     ReportGossipOptions()
   elseif event == "QUEST_GREETING" then
+    TA_NarrateQuestGreeting()
     TryAutoQuestFromGossip()
     ReportGossipOptions()
 
 
   elseif event == "TRAINER_SHOW" then
     AddLine("quest", "Trainer opened. Type trainer, train 1, or train all.")
+  elseif event == "TAXIMAP_OPENED" then
+    AddLine("place", "The flight master spreads out a map of routes.")
+    if TA_ReportTaxiNodes then
+      if C_Timer and C_Timer.After then
+        C_Timer.After(0.3, function() TA_ReportTaxiNodes() end)
+      else
+        TA_ReportTaxiNodes()
+      end
+    end
+  elseif event == "TAXIMAP_CLOSED" then
+    AddLine("place", "You roll up the flight master's map.")
   elseif event == "TRADE_SKILL_SHOW" then
     AddLine("quest", "Profession opened. Type recipes or recipeinfo <index>.")
   elseif event == "CRAFT_SHOW" then
@@ -13741,11 +14600,29 @@ TA:SetScript("OnEvent", function(self, event, ...)
     TA.pendingItemTextRead = nil
     TA.lastItemTextSignature = nil
   elseif event == "QUEST_DETAIL" then
-    TryAcceptQuest()
+    TA_NarrateQuestDetail()
+    if TA.autoQuests and TA.questNarration ~= "manual" then
+      if TA.questNarration == "cinematic" then
+        local delay = tonumber(TA.questAcceptDelay) or 1.5
+        if C_Timer and C_Timer.After then
+          C_Timer.After(delay, function() TryAcceptQuest() end)
+        else
+          TryAcceptQuest()
+        end
+      else
+        TryAcceptQuest()
+      end
+    end
   elseif event == "QUEST_PROGRESS" then
-    TryCompleteQuest()
+    TA_NarrateQuestProgress()
+    if TA.autoQuests and TA.questNarration ~= "manual" then
+      TryCompleteQuest()
+    end
   elseif event == "QUEST_COMPLETE" then
-    TryGetQuestReward()
+    TA_NarrateQuestReward()
+    if TA.autoQuests and TA.questNarration ~= "manual" then
+      TryGetQuestReward()
+    end
   elseif event == "QUEST_LOG_UPDATE" then
     ReportQuestObjectiveChanges()
     local qStore = TA_GetQuestRouterStore()
@@ -13824,6 +14701,8 @@ TA:RegisterEvent("BAG_UPDATE_DELAYED")
 TA:RegisterEvent("GOSSIP_SHOW")
 TA:RegisterEvent("QUEST_GREETING")
 TA:RegisterEvent("TRAINER_SHOW")
+TA:RegisterEvent("TAXIMAP_OPENED")
+TA:RegisterEvent("TAXIMAP_CLOSED")
 TA:RegisterEvent("TRADE_SKILL_SHOW")
 TA:RegisterEvent("CRAFT_SHOW")
 TA:RegisterEvent("QUEST_DETAIL")
@@ -13860,6 +14739,26 @@ TA:RegisterEvent("CHAT_MSG_SYSTEM")
 TA:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN")
 TA:RegisterEvent("MERCHANT_SHOW")
 TA:RegisterEvent("MERCHANT_CLOSED")
+TA:RegisterEvent("MAIL_SHOW")
+TA:RegisterEvent("MAIL_CLOSED")
+TA:RegisterEvent("MAIL_INBOX_UPDATE")
+TA:RegisterEvent("MAIL_SEND_SUCCESS")
+TA:RegisterEvent("MAIL_FAILED")
+TA:RegisterEvent("PLAYER_DEAD")
+TA:RegisterEvent("PLAYER_UNGHOST")
+TA:RegisterEvent("PLAYER_ALIVE")
+TA:RegisterEvent("RESURRECT_REQUEST")
+TA:RegisterEvent("CORPSE_IN_RANGE")
+TA:RegisterEvent("CORPSE_IN_INSTANCE")
+TA:RegisterEvent("CONFIRM_XP_LOSS")
+TA:RegisterEvent("CONFIRM_BINDER")
+TA:RegisterEvent("DUEL_REQUESTED")
+TA:RegisterEvent("DUEL_FINISHED")
+TA:RegisterEvent("PARTY_INVITE_REQUEST")
+TA:RegisterEvent("READY_CHECK")
+TA:RegisterEvent("TIME_PLAYED_MSG")
+TA:RegisterEvent("CHAT_MSG_COMBAT_FACTION_CHANGE")
+TA:RegisterEvent("PLAYER_UPDATE_RESTING")
 TA:RegisterEvent("WHO_LIST_UPDATE")
 
 TA.chatKeepAlive = C_Timer.NewTicker(2, function()
@@ -13893,6 +14792,7 @@ _G.ReportCharacterStats = ReportCharacterStats
 _G.ReportEquipmentChange = ReportEquipmentChange
 _G.ReportEquipment = ReportEquipment
 _G.ReportInventory = ReportInventory
+_G.ReportBank = ReportBank
 _G.ReportActionBars = ReportActionBars
 _G.ReportMacros = ReportMacros
 _G.ReportSpellbook = ReportSpellbook
@@ -13966,10 +14866,8 @@ _G.TA_ReportGameSettings = TA_ReportGameSettings
 _G.TA_HandleSettingCommand = TA_HandleSettingCommand
 _G.TA_SetNamedCVar = TA_SetNamedCVar
 _G.TA_ReportNamedCVar = TA_ReportNamedCVar
-_G.TA_PruneDFSonarContacts = TA_PruneDFSonarContacts
-_G.TA_TriggerDFSonarPing = TA_TriggerDFSonarPing
-_G.TA_ClearDFSonar = TA_ClearDFSonar
-
 _G.GRID_SIZE_STANDARD = GRID_SIZE_STANDARD
+_G.TA_BuildWeaponDanceReport = TA_BuildWeaponDanceReport
+_G.TA_SetSwingDanceHint = TA_SetSwingDanceHint
 
 

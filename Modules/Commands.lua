@@ -216,6 +216,16 @@ function TA_ProcessInputCommand(msg)
     return
   end
 
+  local mSrcBag, mSrcSlot, mDstBag, mDstSlot = lower:match("^moveitem%s+(-?%d+)%s+(%d+)%s+(-?%d+)%s+(%d+)$")
+  if mSrcBag and mSrcSlot and mDstBag and mDstSlot then
+    TA_MoveBagItem(tonumber(mSrcBag), tonumber(mSrcSlot), tonumber(mDstBag), tonumber(mDstSlot))
+    return
+  elseif lower == "moveitem" or lower == "swap" then
+    AddLine("system", "Usage: moveitem <srcBag> <srcSlot> <dstBag> <dstSlot>")
+    AddLine("system", "  Bags: 0=backpack, 1-4=bag slots. Example: moveitem 0 3 1 1")
+    return
+  end
+
   if TA_HandleSettingsInputCommand and TA_HandleSettingsInputCommand(lower, msg) then
     return
   end

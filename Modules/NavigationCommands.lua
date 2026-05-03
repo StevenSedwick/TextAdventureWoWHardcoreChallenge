@@ -432,58 +432,6 @@ function TA_HandleNavigationInputCommand(lower, msg)
     return true
   end
 
-  if lower == "df sonar" or lower == "dfmode sonar" or lower == "df sonar status" or lower == "dfmode sonar status" then
-    local mapID = nil
-    if C_Map and C_Map.GetBestMapForUnit then
-      mapID = C_Map.GetBestMapForUnit("player")
-    end
-    local contacts = TA_PruneDFSonarContacts(mapID)
-    local ttl = math.floor(tonumber(TA.dfModeSonarTTL) or 8)
-    local pulseRemaining = math.max(0, (tonumber(TA.dfModeSonarPulseUntil) or 0) - GetTime())
-    AddLine("system", string.format("DF sonar: %d active contact(s), TTL %ds, pulse remaining %.1fs.", contacts, ttl, pulseRemaining))
-    AddLine("system", "Usage: /ta df sonar ping [seconds] | /ta df sonar ttl <seconds> | /ta df sonar clear")
-    return true
-  end
-
-  local sonarPingSeconds = lower:match("^df%s+sonar%s+ping%s*(%d*)$")
-  if sonarPingSeconds == nil then
-    sonarPingSeconds = lower:match("^dfmode%s+sonar%s+ping%s*(%d*)$")
-  end
-  if sonarPingSeconds ~= nil then
-    local duration = TA_TriggerDFSonarPing(tonumber(sonarPingSeconds))
-    AddLine("system", string.format("DF sonar ping active for %d second(s).", duration))
-    return true
-  end
-
-  local sonarTTLSeconds = lower:match("^df%s+sonar%s+ttl%s+(%d+)$")
-  if not sonarTTLSeconds then
-    sonarTTLSeconds = lower:match("^dfmode%s+sonar%s+ttl%s+(%d+)$")
-  end
-  if sonarTTLSeconds then
-    local ttl = math.floor(tonumber(sonarTTLSeconds) or 8)
-    if ttl < 1 then ttl = 1 end
-    if ttl > 60 then ttl = 60 end
-    TA.dfModeSonarTTL = ttl
-    TextAdventurerDB = TextAdventurerDB or {}
-    TextAdventurerDB.dfModeSonarTTL = ttl
-    AddLine("system", string.format("DF sonar TTL set to %d second(s).", ttl))
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return true
-  end
-
-  if lower == "df sonar clear" or lower == "dfmode sonar clear" then
-    TA_ClearDFSonar()
-    AddLine("system", "DF sonar contacts cleared.")
-    if TA.dfModeEnabled then
-      TA.dfModeLastUpdate = 0
-      TA_UpdateDFMode()
-    end
-    return true
-  end
-
   if lower == "route" then
     AddLine("system", "Usage: route start <name> | route stop | route list | route show <name> | route clear <name> | route follow <name> | route follow off")
     return true
