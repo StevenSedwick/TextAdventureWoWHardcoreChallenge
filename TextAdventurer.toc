@@ -20,6 +20,7 @@ Modules\MarkedCells.lua
 Modules\Terrain.lua
 Modules\DFMode.lua
 Modules\QuestRouter.lua
+Modules\Awareness.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
 Modules\QuestCommands.lua
