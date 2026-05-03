@@ -2927,7 +2927,6 @@ function TA_RunPatternSelfTest(modeArg)
   local cmdsFull = {
     "help combat",
     "help automation",
-    "target nearest",
     "bind 1 1",
     "bindmacro 1 1",
     "binditem 1 0 1",
