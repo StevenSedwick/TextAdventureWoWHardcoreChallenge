@@ -11372,8 +11372,13 @@ local function BuildDFModeDisplay()
     end
   end
 
-  -- Build output: grid rows only, no header or footer
-  local lines = {}
+  -- Build output: grid rows only, no header or footer.
+  -- Reuse scratch buffers across ticks to avoid per-tick table allocations for
+  -- the row cell array, the row pieces assembly, and the final lines array.
+  local rowBuf    = scratch.rowBuf    or {}; scratch.rowBuf    = rowBuf
+  local piecesBuf = scratch.piecesBuf or {}; scratch.piecesBuf = piecesBuf
+  local linesBuf  = scratch.linesBuf  or {}; scratch.linesBuf  = linesBuf
+  local linesN    = 0
   local navRotationAngle = facing
   if rotationMode == "octant" then
     local step = math.pi / 4
@@ -11607,14 +11612,20 @@ local function BuildDFModeDisplay()
   local showTerrain = showTerrainView
 
   for y = radius, -radius, -1 do
-    local row = {}
+    local rowN = 0
     for x = -radius, radius do
       -- Rotate viewport with heading: screen coords -> world coords.
       local wx = dfCtx.roundNearest((x * displayCosA) - (y * displaySinA))
       local wy = dfCtx.roundNearest((x * displaySinA) + (y * displayCosA))
 
+      -- Hoist bounds check: used by grid, threat, and exploration lookups.
+      local inBounds = math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius
+      -- Hoist per-wy row lookups used by two separate branches below.
+      local threatRow  = inBounds and threatHeat[wy]
+      local recentRow  = inBounds and TA.dfModeRecentCells[wy]
+
       local cell = "."
-      if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
+      if inBounds and grid[wy] and grid[wy][wx] then
         cell = grid[wy][wx]
       end
 
@@ -11642,17 +11653,14 @@ local function BuildDFModeDisplay()
         and cell ~= "P" and cell ~= "@" and cell ~= "T" and cell ~= "t"
         and cell ~= "Q" and cell ~= "*" and cell ~= "M"))
 
-      local threatVal = 0
-      if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and threatHeat[wy] and threatHeat[wy][wx] then
-        threatVal = threatHeat[wy][wx] or 0
-      end
-      if showThreat and adornable and threatVal > 0 then
+      if showThreat and adornable then
+        local threatVal = threatRow and (threatRow[wx] or 0) or 0
         if threatVal >= 3 then cell = "!" .. cell
         elseif threatVal >= 2 then cell = "~" .. cell
         end
       end
 
-      if showExploration and adornable and math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and TA.dfModeRecentCells[wy] and TA.dfModeRecentCells[wy][wx] then
+      if showExploration and adornable and recentRow and recentRow[wx] then
         cell = "+" .. cell
       end
 
@@ -11666,41 +11674,43 @@ local function BuildDFModeDisplay()
         end
       end
 
-      table.insert(row, cell)
+      rowN = rowN + 1
+      rowBuf[rowN] = cell
     end
 
     -- Horizontal mark-edge rows: when 3+ consecutive cells are the (unadorned)
     -- mark edge glyph, drop the spaces between just those cells so they read as a
     -- continuous "ooooo" segment instead of "o o o o o" (which over-stretches
     -- the rectangle horizontally relative to its vertical sides).
-    local pieces = {}
+    local piecesN = 0
     local i = 1
-    while i <= #row do
-      local cell = row[i]
+    while i <= rowN do
+      local cell = rowBuf[i]
       if cell == markEdgeGlyph then
         local j = i
-        while j <= #row and row[j] == markEdgeGlyph do j = j + 1 end
+        while j <= rowN and rowBuf[j] == markEdgeGlyph do j = j + 1 end
         local runLen = j - i
         if runLen >= 3 then
-          if #pieces > 0 then table.insert(pieces, " ") end
-          for k = i, j - 1 do table.insert(pieces, row[k]) end
+          if piecesN > 0 then piecesN = piecesN + 1; piecesBuf[piecesN] = " " end
+          for k = i, j - 1 do piecesN = piecesN + 1; piecesBuf[piecesN] = rowBuf[k] end
           i = j
         else
-          if #pieces > 0 then table.insert(pieces, " ") end
-          table.insert(pieces, cell)
+          if piecesN > 0 then piecesN = piecesN + 1; piecesBuf[piecesN] = " " end
+          piecesN = piecesN + 1; piecesBuf[piecesN] = cell
           i = i + 1
         end
       else
-        if #pieces > 0 then table.insert(pieces, " ") end
-        table.insert(pieces, cell)
+        if piecesN > 0 then piecesN = piecesN + 1; piecesBuf[piecesN] = " " end
+        piecesN = piecesN + 1; piecesBuf[piecesN] = cell
         i = i + 1
       end
     end
-    table.insert(lines, table.concat(pieces, ""))
+    linesN = linesN + 1
+    linesBuf[linesN] = table.concat(piecesBuf, "", 1, piecesN)
   end
 
   TA.dfModeTerrainRenderStats = terrainStats
-  local display = table.concat(lines, "\n")
+  local display = table.concat(linesBuf, "\n", 1, linesN)
   -- Stash the raw rendered grid (no color codes stripped) so /ta df copy
   -- can show it in a copyable popup for debugging perimeter rendering.
   TA.dfModeLastRawDisplay = display
