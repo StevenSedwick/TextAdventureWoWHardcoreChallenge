@@ -9675,7 +9675,12 @@ local PERFORMANCE_FRAME_NAMES = {
 }
 
 local function TA_SetTickerProfile(profile)
-  if profile == "performance" then
+  -- "responsive" runs the awareness/DF tickers at higher frequency than the
+  -- "normal" baseline. Despite the legacy name on the public "performance"
+  -- command (TA_EnablePerformanceMode), this branch increases CPU work in
+  -- exchange for snappier updates. Rename was deliberate so the branch label
+  -- reflects what the values actually do.
+  if profile == "responsive" then
     TA.tickerIntervals.move = 0.05
     TA.tickerIntervals.nearby = 0.10
     TA.tickerIntervals.memory = 0.10
@@ -9766,10 +9771,10 @@ function TA_EnablePerformanceMode()
   TA.performanceModeEnabled = true
   TextAdventurerDB = TextAdventurerDB or {}
   TextAdventurerDB.performanceModeEnabled = true
-  TA_SetTickerProfile("performance")
+  TA_SetTickerProfile("responsive")
   if TA_RestartRuntimeTickers then TA_RestartRuntimeTickers() end
   TA_ApplyPerformanceFrameSuppression()
-  AddLine("system", "Performance mode enabled: suppressed Blizzard frames and reduced ticker rates.")
+  AddLine("system", "Performance mode enabled: suppressed Blizzard frames and switched to responsive (higher-frequency) ticker profile.")
 end
 
 function TA_DisablePerformanceMode()
@@ -9780,7 +9785,7 @@ function TA_DisablePerformanceMode()
   TA_SetTickerProfile("normal")
   if TA_RestartRuntimeTickers then TA_RestartRuntimeTickers() end
   TA_RestoreSuppressedFrames()
-  AddLine("system", "Performance mode disabled: restored frame visibility and high-frequency ticker rates.")
+  AddLine("system", "Performance mode disabled: restored frame visibility and normal ticker profile.")
 end
 
 function TA_HandleSettingCommand(settingName, rawValue)
@@ -10646,7 +10651,314 @@ function TA_TerrainHeatFromContext(terrain, slopeRelief, heightRelief)
   return TA_Clamp01(heat)
 end
 
+-- Shared DF render context. Populated by BuildDFModeDisplay each tick and
+-- read by the file-scope helpers below. Kept at file scope so the helpers do
+-- not have to be re-created (with fresh upvalues) on every tick. Stored on
+-- TA (rather than as a separate file-scope local) to avoid bloating the
+-- chunk's local-variable count past Lua 5.1's 200-local limit. The helpers
+-- use the local alias only for the duration of this declaration block; at
+-- runtime the helpers look up their context as TA._dfCtx via upvalue.
+TA._dfCtx = TA._dfCtx or {}
+do
+local dfCtx = TA._dfCtx
+
+function dfCtx.roundNearest(n)
+  if n >= 0 then
+    return math.floor(n + 0.5)
+  end
+  return math.ceil(n - 0.5)
+end
+
+function dfCtx.octantAngle(angle)
+  local step = math.pi / 4
+  return math.floor((angle / step) + 0.5) * step
+end
+
+function dfCtx.distanceBucket(d)
+  if d <= 8 then return 2 end
+  if d <= 18 then return 4 end
+  if d <= 30 then return 6 end
+  return math.min(dfCtx.radius or 8, 8)
+end
+
+function dfCtx.isSameTerrainChunk(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then
+    return false
+  end
+  return (a.tileX == b.tileX) and (a.tileY == b.tileY) and (a.chunkX == b.chunkX) and (a.chunkY == b.chunkY)
+end
+
+function dfCtx.getGridDistance(x, y)
+  local cache = dfCtx.gridDistanceCache
+  local row = cache[y]
+  if not row then
+    row = {}
+    cache[y] = row
+  end
+  local d = row[x]
+  if not d then
+    d = math.sqrt((x * x) + (y * y))
+    row[x] = d
+  end
+  return d
+end
+
+function dfCtx.getTerrainCellAtOffset(wx, wy)
+  local px = dfCtx.playerWorldX
+  local py = dfCtx.playerWorldY
+  if not px or not py then
+    return nil
+  end
+  local terrainCache = dfCtx.terrainCache
+  local key = tostring(wx) .. ":" .. tostring(wy)
+  local cached = terrainCache[key]
+  if cached ~= nil then
+    return cached ~= false and cached or nil
+  end
+
+  local stats = dfCtx.terrainStats
+  if stats then stats.lookups = (stats.lookups or 0) + 1 end
+  local yardsPerCell = dfCtx.yardsPerCell or 3
+  local sampleX = px + (wx * yardsPerCell)
+  local sampleY = py + (wy * yardsPerCell)
+  local terrainCell = TA_GetTerrainContextAtWorldPos(sampleX, sampleY, dfCtx.terrainLookupMode)
+  terrainCache[key] = terrainCell or false
+  return terrainCell
+end
+
+function dfCtx.getLocalTerrainBaselines(wx, wy, anchorTerrainCell)
+  local slopeSum = 0
+  local heightSum = 0
+  local count = 0
+  local slopeMin, slopeMax = nil, nil
+  local heightMin, heightMax = nil, nil
+  for oy = -1, 1 do
+    for ox = -1, 1 do
+      if not (ox == 0 and oy == 0) then
+        local n = dfCtx.getTerrainCellAtOffset(wx + ox, wy + oy)
+        if n and n.resolved then
+          if anchorTerrainCell and not dfCtx.isSameTerrainChunk(anchorTerrainCell, n) then
+            -- Keep the baseline local to the same ADT chunk so nearby chunk
+            -- transitions do not flatten or overstate local slope cues.
+            n = nil
+          end
+        end
+        if n and n.resolved then
+          local nSlope = tonumber(n.avgSlope)
+          local nHeight = tonumber(n.avgHeight)
+          if nSlope ~= nil and nHeight ~= nil then
+            count = count + 1
+            slopeSum = slopeSum + nSlope
+            heightSum = heightSum + nHeight
+            if slopeMin == nil or nSlope < slopeMin then slopeMin = nSlope end
+            if slopeMax == nil or nSlope > slopeMax then slopeMax = nSlope end
+            if heightMin == nil or nHeight < heightMin then heightMin = nHeight end
+            if heightMax == nil or nHeight > heightMax then heightMax = nHeight end
+          end
+        end
+      end
+    end
+  end
+
+  if count >= 3 then
+    local slopeRelief = (slopeMax and slopeMin) and (slopeMax - slopeMin) or 0
+    local heightRelief = (heightMax and heightMin) and (heightMax - heightMin) or 0
+    return (heightSum / count), (slopeSum / count), slopeRelief, heightRelief
+  end
+
+  if anchorTerrainCell and anchorTerrainCell.resolved then
+    -- Fallback: if there are too few same-chunk neighbors, use the anchor
+    -- cell sample itself instead of averaging across other chunks.
+    local aHeight = tonumber(anchorTerrainCell.avgHeight)
+    local aSlope = tonumber(anchorTerrainCell.avgSlope)
+    return aHeight, aSlope, 0, 0
+  end
+
+  return nil, nil, 0, 0
+end
+
+function dfCtx.getSmoothedTerrainGlyph(x, y)
+  local terrainLayer = dfCtx.terrainLayer
+  local raw = terrainLayer[y] and terrainLayer[y][x] or "."
+  if raw ~= "A" and raw ~= "V" and raw ~= "/" and raw ~= "^" then
+    return raw
+  end
+
+  local counts = { ["A"] = 0, ["V"] = 0, ["/"] = 0, ["^"] = 0 }
+  for oy = -1, 1 do
+    for ox = -1, 1 do
+      if not (ox == 0 and oy == 0) then
+        local ny = y + oy
+        local nx = x + ox
+        local g = terrainLayer[ny] and terrainLayer[ny][nx] or nil
+        if counts[g] ~= nil then
+          counts[g] = counts[g] + 1
+        end
+      end
+    end
+  end
+
+  -- Cliff-only mode: require stronger local consensus and never propagate
+  -- A/V into neighbors (prevents wave-like advancing vertical bands).
+  if raw == "V" then
+    if counts[raw] < 3 then
+      return "."
+    end
+    return raw
+  end
+  if raw == "^" and counts["^"] < 2 and counts["/"] >= 2 then
+    return "/"
+  end
+
+  local bestGlyph = raw
+  local bestCount = counts[raw] or 0
+  local candidates = { "^", "/" }
+  for i = 1, #candidates do
+    local g = candidates[i]
+    local c = counts[g] or 0
+    if c > bestCount then
+      bestCount = c
+      bestGlyph = g
+    end
+  end
+
+  if bestGlyph ~= raw and bestCount >= 3 then
+    return bestGlyph
+  end
+  return raw
+end
+
+function dfCtx.placeUnitByDistance(unit, symbol, unitType)
+  if not unit or not unit.distance then return end
+
+  local targetGUID = dfCtx.targetGUID
+  local targetGlyphNear = dfCtx.targetGlyphNear
+  local targetGlyphMid = dfCtx.targetGlyphMid
+  local balanced = dfCtx.balanced
+  local yardsPerCell = dfCtx.yardsPerCell
+  local innerRadius = dfCtx.innerRadius
+  local playerWorldX = dfCtx.playerWorldX
+  local playerWorldY = dfCtx.playerWorldY
+  local grid = dfCtx.grid
+  local threatHeat = dfCtx.threatHeat
+
+  -- Reconciliation: if this unit IS the current target, render as target glyph
+  -- so a single entity does not appear as both E and T in different cells.
+  local isTarget = (targetGUID and unit.guid and unit.guid == targetGUID) and true or false
+  if isTarget then
+    symbol = targetGlyphNear
+    if balanced and unit.distance and unit.distance > 14 then
+      symbol = targetGlyphMid
+    end
+    -- Refresh the target's world position from the live API. The unit pool
+    -- is cached for ~150ms; right after Charge/Intercept/teleport this
+    -- caches stale coords and renders the target at the wrong cell. The
+    -- player's current target is the one cell users notice, so refresh it.
+    if UnitPosition then
+      local lx, ly = UnitPosition("target")
+      if lx and ly then
+        unit.worldX = lx
+        unit.worldY = ly
+        unit.hasExactPos = true
+        local dxLive = lx - (playerWorldX or 0)
+        local dyLive = ly - (playerWorldY or 0)
+        unit.distance = math.sqrt(dxLive * dxLive + dyLive * dyLive)
+      end
+    end
+  end
+
+  local dist = math.floor(unit.distance / yardsPerCell)
+  if dist <= 0 then dist = 1 end
+  if dist <= 0 then dist = 1 end
+  if dist > innerRadius then dist = innerRadius end
+
+  local x, y
+  if unit.hasExactPos and unit.worldX and unit.worldY and playerWorldX and playerWorldY then
+    -- WoW Classic UnitPosition returns (posY, posX) -- the first return is
+    -- NORTH and the second is EAST. CollectNearbyUnitsWithPositions stores
+    -- those into worldX/worldY without renaming, so the field "worldX" is
+    -- actually NORTH and "worldY" is actually EAST. Map them to the grid
+    -- correctly here.
+    local north = unit.worldX - playerWorldX
+    local east  = -(unit.worldY - playerWorldY)  -- WoW Classic east axis is negated relative to grid +x
+    x = east  >= 0 and math.floor((east  / yardsPerCell) + 0.5) or math.ceil((east  / yardsPerCell) - 0.5)
+    y = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+    if isTarget and TA.dfModeDebugTarget then
+      local lpx, lpy = UnitPosition("player")
+      local ltx, lty = UnitPosition("target")
+      DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cffff8800[TA-DBG]|r tgt=%s player(p)=(%.1f,%.1f) live(p)=(%.1f,%.1f) tgt(u)=(%.1f,%.1f) live(t)=(%.1f,%.1f) N=%.1f E=%.1f -> cell(%d,%d) ypc=%d",
+        tostring(unit.name), playerWorldX, playerWorldY, lpx or 0, lpy or 0,
+        unit.worldX, unit.worldY, ltx or 0, lty or 0, north, east, x, y, yardsPerCell))
+    end
+    if x > innerRadius then x = innerRadius end
+    if x < -innerRadius then x = -innerRadius end
+    if y > innerRadius then y = innerRadius end
+    if y < -innerRadius then y = -innerRadius end
+  else
+    local nameHash = 0
+    for i = 1, #(unit.name or "") do
+      nameHash = nameHash + string.byte(unit.name, i)
+    end
+    local angle = math.rad(nameHash % 360)
+
+    -- For the player's current target specifically, the hash angle gives a
+    -- random direction that often disagrees with where the player is looking.
+    -- Override with the facing vector so the target glyph appears in front of
+    -- the player rather than scattered (e.g. NW when facing E).
+    local facing = dfCtx.facing
+    if isTarget and facing then
+      angle = math.atan2(math.cos(facing), -math.sin(facing))
+    end
+
+    if balanced then
+      -- Coarsen to broad sectors and distance buckets to keep awareness, not precision.
+      dist = dfCtx.distanceBucket(unit.distance)
+      angle = dfCtx.octantAngle(angle)
+      if unitType ~= "hostile" then
+        symbol = "?"
+      end
+    end
+
+    x = math.floor(math.cos(angle) * dist)
+    y = math.floor(math.sin(angle) * dist)
+  end
+
+  if balanced then
+    if unitType ~= "hostile" then
+      symbol = "?"
+    end
+  end
+
+  if math.abs(x) <= innerRadius and math.abs(y) <= innerRadius and grid[y] then
+    if isTarget then
+      -- Target glyph always wins; record placement so standalone target
+      -- block can skip and we never render duplicate E/T cells.
+      if grid[y][x] ~= "P" then
+        grid[y][x] = symbol
+      end
+      dfCtx.targetPlaced = true
+      dfCtx.targetDistance = unit.distance
+      dfCtx.targetDistanceExact = unit.hasExactPos and unit.distance or nil
+      dfCtx.targetDistanceApprox = (not unit.hasExactPos) and unit.distance or nil
+      dfCtx.targetRenderedCellDist = math.sqrt((x * x) + (y * y))
+      if unitType == "hostile" then
+        threatHeat[y][x] = (threatHeat[y][x] or 0) + 1
+      end
+    elseif grid[y][x] == "." then
+      grid[y][x] = symbol
+    elseif grid[y][x] ~= "P" and grid[y][x] ~= symbol then
+      grid[y][x] = "*"
+    end
+    if (not isTarget) and unitType == "hostile" then
+      threatHeat[y][x] = (threatHeat[y][x] or 0) + 1
+    end
+  end
+end
+end -- close `do` block that scoped the dfCtx alias
+
 local function BuildDFModeDisplay()
+  local dfCtx = TA._dfCtx
   local mapID, _, _, x, y, continentX, continentY, continentID = GetPlayerMapCell()
   if not mapID then
     return "ERROR: Could not determine map position."
@@ -10729,144 +11041,45 @@ local function BuildDFModeDisplay()
     targetGlyphMid = "|cffff4040t|r"
   end
 
-  local function OctantAngle(angle)
-    local step = math.pi / 4
-    return math.floor((angle / step) + 0.5) * step
-  end
-
-  local function DistanceBucket(d)
-    if d <= 8 then return 2 end
-    if d <= 18 then return 4 end
-    if d <= 30 then return 6 end
-    return math.min(radius, 8)
-  end
-
-  local function PlaceUnitByDistance(unit, symbol, unitType)
-    if not unit or not unit.distance then return end
-
-    -- Reconciliation: if this unit IS the current target, render as target glyph
-    -- so a single entity does not appear as both E and T in different cells.
-    local isTarget = (targetGUID and unit.guid and unit.guid == targetGUID) and true or false
-    if isTarget then
-      symbol = targetGlyphNear
-      if balanced and unit.distance and unit.distance > 14 then
-        symbol = targetGlyphMid
-      end
-      -- Refresh the target's world position from the live API. The unit pool
-      -- is cached for ~150ms; right after Charge/Intercept/teleport this
-      -- caches stale coords and renders the target at the wrong cell. The
-      -- player's current target is the one cell users notice, so refresh it.
-      if UnitPosition then
-        local lx, ly = UnitPosition("target")
-        if lx and ly then
-          unit.worldX = lx
-          unit.worldY = ly
-          unit.hasExactPos = true
-          local dxLive = lx - (playerWorldX or 0)
-          local dyLive = ly - (playerWorldY or 0)
-          unit.distance = math.sqrt(dxLive * dxLive + dyLive * dyLive)
-        end
-      end
-    end
-
-    local dist = math.floor(unit.distance / yardsPerCell)
-    if dist <= 0 then dist = 1 end
-    if dist <= 0 then dist = 1 end
-    if dist > innerRadius then dist = innerRadius end
-
-    local x, y
-    if unit.hasExactPos and unit.worldX and unit.worldY and playerWorldX and playerWorldY then
-      -- WoW Classic UnitPosition returns (posY, posX) -- the first return is
-      -- NORTH and the second is EAST. CollectNearbyUnitsWithPositions stores
-      -- those into worldX/worldY without renaming, so the field "worldX" is
-      -- actually NORTH and "worldY" is actually EAST. Map them to the grid
-      -- correctly here.
-      local north = unit.worldX - playerWorldX
-      local east  = -(unit.worldY - playerWorldY)  -- WoW Classic east axis is negated relative to grid +x
-      x = east  >= 0 and math.floor((east  / yardsPerCell) + 0.5) or math.ceil((east  / yardsPerCell) - 0.5)
-      y = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
-      if isTarget and TA.dfModeDebugTarget then
-        local lpx, lpy = UnitPosition("player")
-        local ltx, lty = UnitPosition("target")
-        DEFAULT_CHAT_FRAME:AddMessage(string.format(
-          "|cffff8800[TA-DBG]|r tgt=%s player(p)=(%.1f,%.1f) live(p)=(%.1f,%.1f) tgt(u)=(%.1f,%.1f) live(t)=(%.1f,%.1f) N=%.1f E=%.1f -> cell(%d,%d) ypc=%d",
-          tostring(unit.name), playerWorldX, playerWorldY, lpx or 0, lpy or 0,
-          unit.worldX, unit.worldY, ltx or 0, lty or 0, north, east, x, y, yardsPerCell))
-      end
-      if x > innerRadius then x = innerRadius end
-      if x < -innerRadius then x = -innerRadius end
-      if y > innerRadius then y = innerRadius end
-      if y < -innerRadius then y = -innerRadius end
-    else
-      local nameHash = 0
-      for i = 1, #(unit.name or "") do
-        nameHash = nameHash + string.byte(unit.name, i)
-      end
-      local angle = math.rad(nameHash % 360)
-
-      -- For the player's current target specifically, the hash angle gives a
-      -- random direction that often disagrees with where the player is looking.
-      -- Override with the facing vector so the target glyph appears in front of
-      -- the player rather than scattered (e.g. NW when facing E).
-      if isTarget and facing then
-        angle = math.atan2(math.cos(facing), -math.sin(facing))
-      end
-
-      if balanced then
-        -- Coarsen to broad sectors and distance buckets to keep awareness, not precision.
-        dist = DistanceBucket(unit.distance)
-        angle = OctantAngle(angle)
-        if unitType ~= "hostile" then
-          symbol = "?"
-        end
-      end
-
-      x = math.floor(math.cos(angle) * dist)
-      y = math.floor(math.sin(angle) * dist)
-    end
-
-    if balanced then
-      if unitType ~= "hostile" then
-        symbol = "?"
-      end
-    end
-
-    if math.abs(x) <= innerRadius and math.abs(y) <= innerRadius and grid[y] then
-      if isTarget then
-        -- Target glyph always wins; record placement so standalone target
-        -- block can skip and we never render duplicate E/T cells.
-        if grid[y][x] ~= "P" then
-          grid[y][x] = symbol
-        end
-        targetPlaced = true
-        targetDistance = unit.distance
-        targetDistanceExact = unit.hasExactPos and unit.distance or nil
-        targetDistanceApprox = (not unit.hasExactPos) and unit.distance or nil
-        targetRenderedCellDist = math.sqrt((x * x) + (y * y))
-        if unitType == "hostile" then
-          threatHeat[y][x] = (threatHeat[y][x] or 0) + 1
-        end
-      elseif grid[y][x] == "." then
-        grid[y][x] = symbol
-      elseif grid[y][x] ~= "P" and grid[y][x] ~= symbol then
-        grid[y][x] = "*"
-      end
-      if (not isTarget) and unitType == "hostile" then
-        threatHeat[y][x] = (threatHeat[y][x] or 0) + 1
-      end
-    end
-  end
+  -- Populate the file-scope DF context for the helpers hoisted out of this
+  -- function. Keeping the helpers at file scope avoids re-creating closures
+  -- (and their upvalue tables) on every DF tick.
+  dfCtx.yardsPerCell = yardsPerCell
+  dfCtx.innerRadius = innerRadius
+  dfCtx.radius = radius
+  dfCtx.balanced = balanced
+  dfCtx.facing = facing
+  dfCtx.playerWorldX = playerWorldX
+  dfCtx.playerWorldY = playerWorldY
+  dfCtx.grid = grid
+  dfCtx.threatHeat = threatHeat
+  dfCtx.targetGUID = targetGUID
+  dfCtx.targetGlyphNear = targetGlyphNear
+  dfCtx.targetGlyphMid = targetGlyphMid
+  dfCtx.targetPlaced = false
+  dfCtx.targetDistance = nil
+  dfCtx.targetDistanceExact = nil
+  dfCtx.targetDistanceApprox = nil
+  dfCtx.targetRenderedCellDist = nil
 
   -- Place units
   for _, unit in ipairs(units.hostile or {}) do
-    PlaceUnitByDistance(unit, glyphEnemy, "hostile")
+    dfCtx.placeUnitByDistance(unit, glyphEnemy, "hostile")
   end
   for _, unit in ipairs(units.neutral or {}) do
-    PlaceUnitByDistance(unit, "N", "neutral")
+    dfCtx.placeUnitByDistance(unit, "N", "neutral")
   end
   for _, unit in ipairs(units.friendly or {}) do
-    PlaceUnitByDistance(unit, glyphFriendly, "friendly")
+    dfCtx.placeUnitByDistance(unit, glyphFriendly, "friendly")
   end
+
+  -- Copy back the placement results that the standalone target block
+  -- (and downstream telemetry) read as plain locals.
+  targetPlaced = dfCtx.targetPlaced
+  targetDistance = dfCtx.targetDistance
+  targetDistanceExact = dfCtx.targetDistanceExact
+  targetDistanceApprox = dfCtx.targetDistanceApprox
+  targetRenderedCellDist = dfCtx.targetRenderedCellDist
 
   -- Place target with near-visual emphasis in balanced mode.
   -- Skip when PlaceUnitByDistance already handled it (GUID-matched against nameplate pool).
@@ -11180,17 +11393,11 @@ local function BuildDFModeDisplay()
   local centerTerrainHeight = TA.dfModeTerrainContext and TA.dfModeTerrainContext.avgHeight or nil
   local centerTerrainSlope = TA.dfModeTerrainContext and TA.dfModeTerrainContext.avgSlope or nil
   local terrainLookupMode = TA.dfModeTerrainContext and TA.dfModeTerrainContext.lookupMode or nil
-
-  local function RoundNearest(n)
-    if n >= 0 then
-      return math.floor(n + 0.5)
-    end
-    return math.ceil(n - 0.5)
-  end
+  dfCtx.terrainLookupMode = terrainLookupMode
 
   if nearestMarkDist and nearestMarkMX and nearestMarkMY then
-    local sx = RoundNearest((nearestMarkMX * navCosA) + (nearestMarkMY * navSinA))
-    local sy = RoundNearest((-nearestMarkMX * navSinA) + (nearestMarkMY * navCosA))
+    local sx = dfCtx.roundNearest((nearestMarkMX * navCosA) + (nearestMarkMY * navSinA))
+    local sy = dfCtx.roundNearest((-nearestMarkMX * navSinA) + (nearestMarkMY * navCosA))
     local vertical = ""
     local horizontal = ""
     if sy > 0 then
@@ -11258,95 +11465,11 @@ local function BuildDFModeDisplay()
   end
   local terrainCache = TA._dfTerrainCache
   local gridDistanceCache = {}
-
-  local function TA_GetGridDistance(x, y)
-    local row = gridDistanceCache[y]
-    if not row then
-      row = {}
-      gridDistanceCache[y] = row
-    end
-    local d = row[x]
-    if not d then
-      d = math.sqrt((x * x) + (y * y))
-      row[x] = d
-    end
-    return d
-  end
-
-  local function TA_GetTerrainCellAtOffset(wx, wy)
-    if not playerWorldX or not playerWorldY then
-      return nil
-    end
-    local key = tostring(wx) .. ":" .. tostring(wy)
-    if terrainCache[key] ~= nil then
-      return terrainCache[key] ~= false and terrainCache[key] or nil
-    end
-
-    terrainStats.lookups = terrainStats.lookups + 1
-    local sampleX = playerWorldX + (wx * yardsPerCell)
-    local sampleY = playerWorldY + (wy * yardsPerCell)
-    local terrainCell = TA_GetTerrainContextAtWorldPos(sampleX, sampleY, terrainLookupMode)
-    terrainCache[key] = terrainCell or false
-    return terrainCell
-  end
-
-  local function TA_IsSameTerrainChunk(a, b)
-    if type(a) ~= "table" or type(b) ~= "table" then
-      return false
-    end
-    return (a.tileX == b.tileX) and (a.tileY == b.tileY) and (a.chunkX == b.chunkX) and (a.chunkY == b.chunkY)
-  end
-
-  local function TA_GetLocalTerrainBaselines(wx, wy, anchorTerrainCell)
-    local slopeSum = 0
-    local heightSum = 0
-    local count = 0
-    local slopeMin, slopeMax = nil, nil
-    local heightMin, heightMax = nil, nil
-    for oy = -1, 1 do
-      for ox = -1, 1 do
-        if not (ox == 0 and oy == 0) then
-          local n = TA_GetTerrainCellAtOffset(wx + ox, wy + oy)
-          if n and n.resolved then
-            if anchorTerrainCell and not TA_IsSameTerrainChunk(anchorTerrainCell, n) then
-              -- Keep the baseline local to the same ADT chunk so nearby chunk
-              -- transitions do not flatten or overstate local slope cues.
-              n = nil
-            end
-          end
-          if n and n.resolved then
-            local nSlope = tonumber(n.avgSlope)
-            local nHeight = tonumber(n.avgHeight)
-            if nSlope ~= nil and nHeight ~= nil then
-              count = count + 1
-              slopeSum = slopeSum + nSlope
-              heightSum = heightSum + nHeight
-              if slopeMin == nil or nSlope < slopeMin then slopeMin = nSlope end
-              if slopeMax == nil or nSlope > slopeMax then slopeMax = nSlope end
-              if heightMin == nil or nHeight < heightMin then heightMin = nHeight end
-              if heightMax == nil or nHeight > heightMax then heightMax = nHeight end
-            end
-          end
-        end
-      end
-    end
-
-    if count >= 3 then
-      local slopeRelief = (slopeMax and slopeMin) and (slopeMax - slopeMin) or 0
-      local heightRelief = (heightMax and heightMin) and (heightMax - heightMin) or 0
-      return (heightSum / count), (slopeSum / count), slopeRelief, heightRelief
-    end
-
-    if anchorTerrainCell and anchorTerrainCell.resolved then
-      -- Fallback: if there are too few same-chunk neighbors, use the anchor
-      -- cell sample itself instead of averaging across other chunks.
-      local aHeight = tonumber(anchorTerrainCell.avgHeight)
-      local aSlope = tonumber(anchorTerrainCell.avgSlope)
-      return aHeight, aSlope, 0, 0
-    end
-
-    return nil, nil, 0, 0
-  end
+  dfCtx.terrainCache = terrainCache
+  dfCtx.gridDistanceCache = gridDistanceCache
+  dfCtx.terrainStats = terrainStats
+  -- (terrainLookupMode populated above; playerWorldX/Y/yardsPerCell already
+  -- set when the unit-placement context was prepared.)
 
   -- Keep terrain warnings closer to the player in threat mode.
   local terrainRenderRadius = radius
@@ -11359,6 +11482,7 @@ local function BuildDFModeDisplay()
   scratch.terrainHeatLayer = scratch.terrainHeatLayer or {}
   local terrainLayer = scratch.terrainLayer
   local terrainHeatLayer = scratch.terrainHeatLayer
+  dfCtx.terrainLayer = terrainLayer
 
   -- Pass 1: sample terrain glyphs for each display cell so we can smooth noisy
   -- one-off spikes without requerying terrain on the render pass.
@@ -11368,9 +11492,9 @@ local function BuildDFModeDisplay()
     for x = -radius, radius do
       terrainStats.samples = terrainStats.samples + 1
 
-      local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
-      local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
-      local dist = TA_GetGridDistance(x, y)
+      local wx = dfCtx.roundNearest((x * displayCosA) - (y * displaySinA))
+      local wy = dfCtx.roundNearest((x * displaySinA) + (y * displayCosA))
+      local dist = dfCtx.getGridDistance(x, y)
 
       local baseCell = "."
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
@@ -11386,7 +11510,7 @@ local function BuildDFModeDisplay()
           -- Intentionally skip far-edge terrain in threat mode to avoid
           -- warnings appearing only at the outer border.
         elseif playerWorldX and playerWorldY then
-          local terrainCell = TA_GetTerrainCellAtOffset(wx, wy)
+          local terrainCell = dfCtx.getTerrainCellAtOffset(wx, wy)
           if terrainCell and terrainCell.resolved then
             terrainStats.resolved = terrainStats.resolved + 1
           else
@@ -11397,7 +11521,7 @@ local function BuildDFModeDisplay()
           if dist > 0 then
             forwardBias = ((wx * forwardX) + (wy * forwardY)) / dist
           end
-          local localHeightBaseline, localSlopeBaseline, localSlopeRelief, localHeightRelief = TA_GetLocalTerrainBaselines(wx, wy, terrainCell)
+          local localHeightBaseline, localSlopeBaseline, localSlopeRelief, localHeightRelief = dfCtx.getLocalTerrainBaselines(wx, wy, terrainCell)
           heat = TA_TerrainHeatFromContext(terrainCell, localSlopeRelief, localHeightRelief)
           if terrainStats.heatMin == nil or heat < terrainStats.heatMin then terrainStats.heatMin = heat end
           if terrainStats.heatMax == nil or heat > terrainStats.heatMax then terrainStats.heatMax = heat end
@@ -11458,70 +11582,20 @@ local function BuildDFModeDisplay()
 
   local centerLocalSlope = nil
   if playerWorldX and playerWorldY then
-    local centerTerrainCell = TA_GetTerrainCellAtOffset(0, 0)
-    local _, localSlope = TA_GetLocalTerrainBaselines(0, 0, centerTerrainCell)
+    local centerTerrainCell = dfCtx.getTerrainCellAtOffset(0, 0)
+    local _, localSlope = dfCtx.getLocalTerrainBaselines(0, 0, centerTerrainCell)
     centerLocalSlope = localSlope
   end
   local standingLabel, standingShort = TA_ClassifyStandingTerrain(TA.dfModeTerrainContext, centerLocalSlope)
   TA.dfModeTerrainStandingLabel = standingLabel
   TA.dfModeTerrainStandingShort = standingShort
 
-  local function TA_GetSmoothedTerrainGlyph(x, y)
-    local raw = terrainLayer[y] and terrainLayer[y][x] or "."
-    if raw ~= "A" and raw ~= "V" and raw ~= "/" and raw ~= "^" then
-      return raw
-    end
-
-    local counts = { ["A"] = 0, ["V"] = 0, ["/"] = 0, ["^"] = 0 }
-    for oy = -1, 1 do
-      for ox = -1, 1 do
-        if not (ox == 0 and oy == 0) then
-          local ny = y + oy
-          local nx = x + ox
-          local g = terrainLayer[ny] and terrainLayer[ny][nx] or nil
-          if counts[g] ~= nil then
-            counts[g] = counts[g] + 1
-          end
-        end
-      end
-    end
-
-    -- Cliff-only mode: require stronger local consensus and never propagate
-    -- A/V into neighbors (prevents wave-like advancing vertical bands).
-    if raw == "V" then
-      if counts[raw] < 3 then
-        return "."
-      end
-      return raw
-    end
-    if raw == "^" and counts["^"] < 2 and counts["/"] >= 2 then
-      return "/"
-    end
-
-    local bestGlyph = raw
-    local bestCount = counts[raw] or 0
-    local candidates = { "^", "/" }
-    for i = 1, #candidates do
-      local g = candidates[i]
-      local c = counts[g] or 0
-      if c > bestCount then
-        bestCount = c
-        bestGlyph = g
-      end
-    end
-
-    if bestGlyph ~= raw and bestCount >= 3 then
-      return bestGlyph
-    end
-    return raw
-  end
-
   for y = radius, -radius, -1 do
     local row = {}
     for x = -radius, radius do
       -- Rotate viewport with heading: screen coords -> world coords.
-      local wx = RoundNearest((x * displayCosA) - (y * displaySinA))
-      local wy = RoundNearest((x * displaySinA) + (y * displayCosA))
+      local wx = dfCtx.roundNearest((x * displayCosA) - (y * displaySinA))
+      local wy = dfCtx.roundNearest((x * displaySinA) + (y * displayCosA))
 
       local cell = "."
       if math.abs(wx) <= innerRadius and math.abs(wy) <= innerRadius and grid[wy] and grid[wy][wx] then
@@ -11534,7 +11608,7 @@ local function BuildDFModeDisplay()
       local showTerrain = showTerrainView
 
       if showTerrain and cell == "." then
-        local glyph = TA_GetSmoothedTerrainGlyph(x, y)
+        local glyph = dfCtx.getSmoothedTerrainGlyph(x, y)
         if glyph and glyph ~= "." then
           if TA.dfModeHueEnabled then
             if glyph == "V" or glyph == "A" then
@@ -14152,7 +14226,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA.performanceModeEnabled = TextAdventurerDB.performanceModeEnabled and true or false
     if TA.performanceModeEnabled then
-      TA_SetTickerProfile("performance")
+      TA_SetTickerProfile("responsive")
     else
       TA_SetTickerProfile("normal")
     end
