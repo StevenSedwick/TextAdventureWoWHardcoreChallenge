@@ -14182,6 +14182,62 @@ TA:SetScript("OnEvent", function(self, event, ...)
     end
     TA.vendorOpen = false
     AddLine("loot", "The merchant closes their wares.")
+  elseif event == "MAIL_SHOW" then
+    AddLine("loot", "You open the mailbox.")
+    if TA_ReportMailInbox then
+      if C_Timer and C_Timer.After then
+        C_Timer.After(0.4, function() TA_ReportMailInbox() end)
+      else
+        TA_ReportMailInbox()
+      end
+    end
+  elseif event == "MAIL_INBOX_UPDATE" then
+    if TA.mailInboxAutoRefresh and TA_ReportMailInbox then
+      TA_ReportMailInbox()
+    end
+  elseif event == "MAIL_CLOSED" then
+    AddLine("loot", "You close the mailbox.")
+  elseif event == "MAIL_SEND_SUCCESS" then
+    AddLine("loot", "Your letter is on its way.")
+  elseif event == "MAIL_FAILED" then
+    AddLine("system", "Mail failed to send.")
+  elseif event == "PLAYER_DEAD" then
+    AddLine("status", "Your spirit drifts free of your body. Type 'release' to wake at the graveyard.")
+  elseif event == "PLAYER_UNGHOST" or event == "PLAYER_ALIVE" then
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost("player") then
+      -- still ghost, ignore
+    else
+      AddLine("status", "Life returns to you. You stand once more.")
+    end
+  elseif event == "RESURRECT_REQUEST" then
+    local sender = ...
+    AddLine("status", string.format("%s offers to bring you back. Type 'accept rez' or 'decline rez'.", tostring(sender or "Someone")))
+  elseif event == "CORPSE_IN_RANGE" then
+    AddLine("status", "Your corpse lies within reach. Type 'retrieve' to reclaim your body.")
+  elseif event == "CORPSE_IN_INSTANCE" then
+    AddLine("status", "Your corpse rests inside an instance. Type 'retrieve' to enter and reclaim it.")
+  elseif event == "CONFIRM_XP_LOSS" then
+    AddLine("status", "The spirit healer offers swift resurrection at a cost. Type 'accept rez' to accept the durability and XP loss.")
+  elseif event == "CONFIRM_BINDER" then
+    local name = ...
+    AddLine("quest", string.format("The innkeeper%s offers to make this your home. Type 'bind' to accept.", name and (" "..name) or ""))
+  elseif event == "DUEL_REQUESTED" then
+    local challenger = ...
+    AddLine("playerCombat", string.format("%s challenges you to a duel! Type 'accept duel' or 'decline duel'.", tostring(challenger or "Someone")))
+  elseif event == "DUEL_FINISHED" then
+    AddLine("playerCombat", "The duel ends.")
+  elseif event == "PARTY_INVITE_REQUEST" then
+    local inviter = ...
+    AddLine("chat", string.format("%s invites you to a party. Type 'accept group' or 'decline group'.", tostring(inviter or "Someone")))
+  elseif event == "READY_CHECK" then
+    local initiator, duration = ...
+    AddLine("chat", string.format("%s calls a ready check (%ds). Type 'ready' or 'notready'.", tostring(initiator or "The leader"), tonumber(duration) or 0))
+  elseif event == "TIME_PLAYED_MSG" then
+    local total, level = ...
+    if total then
+      local h = math.floor(total / 3600)
+      AddLine("status", string.format("Time played: %dh on this character.", h))
+    end
   elseif event == "GOSSIP_SHOW" then
     TA_NarrateGossipText()
     TryAutoQuestFromGossip()
@@ -14343,6 +14399,24 @@ TA:RegisterEvent("CHAT_MSG_SYSTEM")
 TA:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN")
 TA:RegisterEvent("MERCHANT_SHOW")
 TA:RegisterEvent("MERCHANT_CLOSED")
+TA:RegisterEvent("MAIL_SHOW")
+TA:RegisterEvent("MAIL_CLOSED")
+TA:RegisterEvent("MAIL_INBOX_UPDATE")
+TA:RegisterEvent("MAIL_SEND_SUCCESS")
+TA:RegisterEvent("MAIL_FAILED")
+TA:RegisterEvent("PLAYER_DEAD")
+TA:RegisterEvent("PLAYER_UNGHOST")
+TA:RegisterEvent("PLAYER_ALIVE")
+TA:RegisterEvent("RESURRECT_REQUEST")
+TA:RegisterEvent("CORPSE_IN_RANGE")
+TA:RegisterEvent("CORPSE_IN_INSTANCE")
+TA:RegisterEvent("CONFIRM_XP_LOSS")
+TA:RegisterEvent("CONFIRM_BINDER")
+TA:RegisterEvent("DUEL_REQUESTED")
+TA:RegisterEvent("DUEL_FINISHED")
+TA:RegisterEvent("PARTY_INVITE_REQUEST")
+TA:RegisterEvent("READY_CHECK")
+TA:RegisterEvent("TIME_PLAYED_MSG")
 TA:RegisterEvent("WHO_LIST_UPDATE")
 
 TA.chatKeepAlive = C_Timer.NewTicker(2, function()
