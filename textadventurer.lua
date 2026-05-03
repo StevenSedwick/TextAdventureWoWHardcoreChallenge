@@ -9878,7 +9878,7 @@ function TA_TryInteractDistance(unit, checkType)
   return ok and result or false
 end
 
-local function CollectNearbyUnitsWithPositions()
+function CollectNearbyUnitsWithPositions()
   local units = { hostile = {}, neutral = {}, friendly = {} }
   local nameplates = C_NamePlate.GetNamePlates()
   if not nameplates then return units end
@@ -9943,7 +9943,7 @@ local function CollectNearbyUnitsWithPositions()
   return units
 end
 
-  local function GetNearbyUnitsWithPositions(forceRefresh)
+  function GetNearbyUnitsWithPositions(forceRefresh)
     if not GetTime then
       return CollectNearbyUnitsWithPositions()
     end
