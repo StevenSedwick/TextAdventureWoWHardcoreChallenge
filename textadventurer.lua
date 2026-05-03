@@ -16,7 +16,7 @@
 BOOKTYPE_SPELL = BOOKTYPE_SPELL or "spell"
 BOOKTYPE_PET = BOOKTYPE_PET or "pet"
 
-local function TA_IsSpellKnownCompat(spellID)
+function TA_IsSpellKnownCompat(spellID)
   if not IsSpellKnown or not spellID then
     return false
   end
@@ -1322,7 +1322,7 @@ local function CheckLandmarkEntry()
   end
 end
 
-local function ReportLocation(force)
+function ReportLocation(force)
   local zone = GetZoneText() or "Unknown zone"
   local subzone = GetSubZoneText() or ""
   local facingLabel = FacingToCardinal(GetPlayerFacing()) or "unknown direction"
@@ -1338,7 +1338,7 @@ local function ReportLocation(force)
   end
 end
 
-local function ReportStatus(force)
+function ReportStatus(force)
   local hp = UnitHealth("player") or 0
   local hpMax = UnitHealthMax("player") or 1
   local hpPct = hpMax > 0 and (hp / hpMax * 100) or 0
@@ -1376,7 +1376,7 @@ local function ReportStatus(force)
   end
 end
 
-local function ReportXP()
+function ReportXP()
   local level = UnitLevel("player") or 0
   local xp = UnitXP("player") or 0
   local xpMax = UnitXPMax("player") or 0
@@ -1385,7 +1385,7 @@ local function ReportXP()
   AddLine("status", string.format("Level %d. XP %d/%d (%.1f%%). %d to next level.", level, xp, xpMax, pct, remaining))
 end
 
-local function ReportTracking()
+function ReportTracking()
   if not GetNumTrackingTypes or not GetTrackingInfo then
     AddLine("system", "Tracking API unavailable.")
     return
@@ -1409,7 +1409,7 @@ local function ReportTracking()
   end
 end
 
-local function ReportQuestLog()
+function ReportQuestLog()
   if not GetNumQuestLogEntries or not GetQuestLogTitle then
     AddLine("system", "Quest log API unavailable.")
     return
@@ -1527,7 +1527,7 @@ local function ReportQuestInfoByIndex(index)
   end
 end
 
-local function ReportQuestInfo(arg)
+function ReportQuestInfo(arg)
   if not GetNumQuestLogEntries or not GetQuestLogTitle then
     AddLine("system", "Quest log API unavailable.")
     return
@@ -1874,7 +1874,7 @@ local function SnapshotBuffs()
   return snapshot
 end
 
-local function ReportBuffs()
+function ReportBuffs()
   local found = 0
   for i = 1, 40 do
     local name, icon, count, debuffType, duration, expirationTime = UnitBuff("player", i)
@@ -2033,7 +2033,7 @@ function TA_SetSwingDanceHint(args)
   end
 end
 
-local function ReportMoney()
+function ReportMoney()
   local copper = GetMoney() or 0
   AddLine("status", "You have " .. FormatMoney(copper) .. ".")
 end
@@ -2051,7 +2051,7 @@ RecordOutgoingDamage = function(amount)
   end
 end
 
-local function ResetDPSStats()
+function ResetDPSStats()
   TA.dpsSessionStart = GetTime()
   TA.dpsTotalDamage = 0
   TA.dpsCombatStart = 0
@@ -2061,7 +2061,7 @@ local function ResetDPSStats()
   AddLine("playerCombat", "DPS stats reset.")
 end
 
-local function ReportWeaponDPS()
+function ReportWeaponDPS()
   if not UnitDamage or not UnitAttackSpeed then
     AddLine("playerCombat", "Weapon DPS is unavailable on this client.")
     return
@@ -2089,7 +2089,7 @@ local function ReportWeaponDPS()
   AddLine("playerCombat", string.format("Total weapon DPS (auto-attacks): %.1f", totalWeaponDPS))
 end
 
-local function ReportDPS()
+function ReportDPS()
   local now = GetTime()
   local inCombat = UnitAffectingCombat and UnitAffectingCombat("player")
   local sessionStart = TA.dpsSessionStart or 0
@@ -2301,7 +2301,7 @@ end
 
 
 
-local function DoTargetCommand(arg)
+function DoTargetCommand(arg)
   if not arg or arg == "" then
     AddLine("system", "Usage: target nearest, target next, target corpse, or target <name>")
     return
@@ -2533,7 +2533,7 @@ function TA_ReadBagItemText(bag, slot)
   end
 end
 
-local function ReportTrainerServices()
+function ReportTrainerServices()
   local function TA_GetTrainerServiceNumAbilityReqCompat(serviceIndex)
     if not GetTrainerServiceNumAbilityReq then
       return 0
@@ -2602,7 +2602,7 @@ local function ReportTrainerServices()
   if shown == 0 then AddLine("system", "Trainer window is open, but no skills were found.") end
 end
 
-local function TrainServiceByIndex(index)
+function TrainServiceByIndex(index)
   if not index or index < 1 then
     AddLine("system", "Invalid trainer index.")
     return
@@ -2620,7 +2620,7 @@ local function TrainServiceByIndex(index)
   AddLine("quest", string.format("Attempted to train [%d] %s.", index, name))
 end
 
-local function TrainAllAvailableServices()
+function TrainAllAvailableServices()
   if not GetNumTrainerServices or not GetTrainerServiceInfo or not BuyTrainerService then
     AddLine("system", "Trainer API unavailable.")
     return
@@ -2638,7 +2638,7 @@ local function TrainAllAvailableServices()
   if bought == 0 then AddLine("system", "No currently available trainer skills to buy.") end
 end
 
-local function TA_ReportRecipeDetails(index)
+function TA_ReportRecipeDetails(index)
   index = tonumber(index)
   if not index or index < 1 then
     AddLine("system", "Usage: recipeinfo <index>")
@@ -2739,7 +2739,7 @@ local function TA_ReportRecipeDetails(index)
   AddLine("system", "Recipe API unavailable on this client.")
 end
 
-local function TA_ReportProfessionRecipes()
+function TA_ReportProfessionRecipes()
   if GetNumTradeSkills and GetTradeSkillInfo then
     local total = tonumber(GetNumTradeSkills()) or 0
     if total <= 0 then
@@ -2801,7 +2801,7 @@ local function TA_ReportProfessionRecipes()
   AddLine("system", "Recipe API unavailable. Open a profession window and try again.")
 end
 
-local function ReportRange()
+function ReportRange()
   if not UnitExists("target") then
     AddLine("system", "You have no target.")
     return
