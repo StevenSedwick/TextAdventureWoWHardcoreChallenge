@@ -2696,6 +2696,132 @@ local function ReportQuestInfo(arg)
   ReportQuestInfoByIndex(index)
 end
 
+function TA_ResolveQuestIndex(arg)
+  local total = GetNumQuestLogEntries and GetNumQuestLogEntries() or 0
+  if total <= 0 then return nil, "Your quest log is empty." end
+  if arg and arg ~= "" then
+    local n = tonumber(arg)
+    if n then
+      local title, _, _, isHeader = GetQuestLogTitle(n)
+      if not title or isHeader then return nil, string.format("No quest at index %d.", n) end
+      return n
+    end
+    local idx = FindQuestIndexByName(arg)
+    if not idx then return nil, string.format("No quest matched '%s'.", arg) end
+    return idx
+  end
+  local idx = GetFallbackQuestIndex()
+  if not idx then return nil, "No quest selected. Use the index or quest name." end
+  return idx
+end
+
+function TA_ReportActiveQuestRewards(arg)
+  if not SelectQuestLogEntry or not GetNumQuestLogRewards then
+    AddLine("system", "Quest reward API unavailable.")
+    return
+  end
+  local index, err = TA_ResolveQuestIndex(arg)
+  if not index then AddLine("system", err); return end
+  local title = GetQuestLogTitle(index)
+  local prevSel = GetQuestLogSelection and GetQuestLogSelection() or 0
+  SelectQuestLogEntry(index)
+
+  AddLine("quest", string.format("Rewards for [%d] %s:", index, title or "?"))
+
+  local money = GetQuestLogRewardMoney and GetQuestLogRewardMoney() or 0
+  if money and money > 0 then
+    if TA_FormatMoneyString then
+      AddLine("quest", "  Money: " .. TA_FormatMoneyString(money))
+    else
+      AddLine("quest", string.format("  Money: %d copper", money))
+    end
+  end
+
+  local xp = GetQuestLogRewardXP and GetQuestLogRewardXP() or 0
+  if xp and xp > 0 then
+    AddLine("quest", string.format("  XP: %d", xp))
+  end
+
+  local numChoices = GetNumQuestLogChoices and GetNumQuestLogChoices() or 0
+  if numChoices > 0 then
+    AddLine("quest", string.format("  Choose 1 of %d:", numChoices))
+    for i = 1, numChoices do
+      local name, _, num, quality = GetQuestLogChoiceInfo(i)
+      AddLine("quest", string.format("    [%d] %s x%d", i, name or "?", num or 1))
+    end
+  end
+
+  local numRewards = GetNumQuestLogRewards() or 0
+  if numRewards > 0 then
+    AddLine("quest", "  Guaranteed:")
+    for i = 1, numRewards do
+      local name, _, num, quality = GetQuestLogRewardInfo(i)
+      AddLine("quest", string.format("    - %s x%d", name or "?", num or 1))
+    end
+  end
+
+  local spell = GetQuestLogRewardSpell and (GetQuestLogRewardSpell()) or nil
+  if spell and spell ~= "" then
+    AddLine("quest", "  Spell: " .. tostring(spell))
+  end
+
+  if money == 0 and (xp or 0) == 0 and numChoices == 0 and numRewards == 0 and not spell then
+    AddLine("quest", "  (no rewards listed)")
+  end
+
+  if prevSel and prevSel > 0 and prevSel ~= index then
+    SelectQuestLogEntry(prevSel)
+  end
+end
+
+TA.pendingAbandon = TA.pendingAbandon or nil
+
+function TA_AbandonQuestFromTerminal(arg)
+  if not SelectQuestLogEntry or not SetAbandonQuest or not AbandonQuest then
+    AddLine("system", "Abandon API unavailable.")
+    return
+  end
+  local index, err = TA_ResolveQuestIndex(arg)
+  if not index then AddLine("system", err); return end
+  local title = GetQuestLogTitle(index)
+  SelectQuestLogEntry(index)
+  TA.pendingAbandon = { index = index, title = title, at = GetTime() }
+  AddLine("system", string.format("Abandon [%d] '%s' ? Type 'abandon confirm' within 15s to proceed, or 'abandon cancel'.", index, title or "?"))
+end
+
+function TA_ConfirmAbandonQuest()
+  local p = TA.pendingAbandon
+  if not p then
+    AddLine("system", "No quest pending abandon. Use: abandon <index|name>")
+    return
+  end
+  if GetTime() - (p.at or 0) > 15 then
+    TA.pendingAbandon = nil
+    AddLine("system", "Abandon request timed out. Try again.")
+    return
+  end
+  if not SelectQuestLogEntry or not SetAbandonQuest or not AbandonQuest then
+    AddLine("system", "Abandon API unavailable.")
+    TA.pendingAbandon = nil
+    return
+  end
+  SelectQuestLogEntry(p.index)
+  SetAbandonQuest()
+  local confirmName = GetAbandonQuestName and GetAbandonQuestName() or p.title
+  AbandonQuest()
+  AddLine("system", string.format("Abandoned: %s.", confirmName or p.title or "?"))
+  TA.pendingAbandon = nil
+end
+
+function TA_CancelAbandonQuest()
+  if TA.pendingAbandon then
+    AddLine("system", string.format("Abandon of '%s' cancelled.", TA.pendingAbandon.title or "?"))
+    TA.pendingAbandon = nil
+  else
+    AddLine("system", "No abandon pending.")
+  end
+end
+
 local function BuildQuestObjectiveSnapshot()
   local snapshot = {}
   local total = GetNumQuestLogEntries and GetNumQuestLogEntries() or 0
