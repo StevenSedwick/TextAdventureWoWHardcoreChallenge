@@ -159,7 +159,7 @@ local PERFORMANCE_FRAME_NAMES = {
   "BuffFrame", "CastingBarFrame", "DurabilityFrame", "ObjectiveTrackerFrame", "QuestWatchFrame",
 }
 
-local function TA_SetTickerProfile(profile)
+function TA_SetTickerProfile(profile)
   -- "responsive" runs the awareness/DF tickers at higher frequency than the
   -- "normal" baseline. Despite the legacy name on the public "performance"
   -- command (TA_EnablePerformanceMode), this branch increases CPU work in
