@@ -15,6 +15,7 @@ Libs\LibRangeCheck-3.0\LibRangeCheck-3.0.lua
 WarlockSheetData.lua
 TerrainData_Azeroth.lua
 textadventurer.lua
+Modules\DFMode.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
 Modules\QuestCommands.lua
