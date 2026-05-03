@@ -90,6 +90,9 @@ TA.lastQuestNarration = { kind = nil, title = nil, body = nil, npc = nil }
 TA.captureChat = true
 TA.lastBuffSnapshot = {}
 TA.swingReadyAt = 0
+TA.swingDanceLog = {}
+TA.swingDanceLogMax = 20
+TA.lastSwingHintAt = nil
 TA.lastSwingState = nil
 TA.inputHistory = {}
 TA.inputHistoryMax = 50
@@ -1392,6 +1395,9 @@ function HandleCombatLog()
     if IsSourcePlayerOrPet(sourceFlags) then
       ResetSwingTimer()
     end
+    if CombatLog_Object_IsA and COMBATLOG_FILTER_ME and CombatLog_Object_IsA(sourceFlags, COMBATLOG_FILTER_ME) then
+      TA_RecordSwingReaction()
+    end
   elseif subevent == "SPELL_DAMAGE" or subevent == "SPELL_PERIODIC_DAMAGE" or subevent == "RANGE_DAMAGE" then
     if IsSourcePlayerOrPet(sourceFlags) or IsDestPlayerOrPet(destFlags) then
       local color = IsSourcePlayerOrPet(sourceFlags) and "playerCombat" or "enemyCombat"
@@ -1407,6 +1413,9 @@ function HandleCombatLog()
     end
     if IsSourcePlayerOrPet(sourceFlags) then
       ResetSwingTimer()
+    end
+    if CombatLog_Object_IsA and COMBATLOG_FILTER_ME and CombatLog_Object_IsA(sourceFlags, COMBATLOG_FILTER_ME) then
+      TA_RecordSwingReaction()
     end
   elseif subevent == "SPELL_MISSED" or subevent == "RANGE_MISSED" then
     if IsSourcePlayerOrPet(sourceFlags) or IsDestPlayerOrPet(destFlags) then
@@ -3502,6 +3511,7 @@ local function CheckSwingTimer()
     if remain > -0.1 and remain <= hintThreshold and TA.lastSwingState ~= "hintnow" then
       AddLine("swingDance", "Your hands glow bright. SWING YOUR WEAPON NOW!")
       TA.lastSwingState = "hintnow"
+      TA.lastSwingHintAt = GetTime()
       return
     end
   end
@@ -3512,6 +3522,57 @@ local function CheckSwingTimer()
     AddLine("playerCombat", "Your strike is about to land again.")
     TA.lastSwingState = "soon"
   end
+end
+
+function TA_RecordSwingReaction()
+  local hintAt = TA.lastSwingHintAt
+  if not hintAt then return end
+  local now = GetTime()
+  local delta = now - hintAt
+  TA.lastSwingHintAt = nil
+  if delta < 0 or delta > 5 then return end
+  TA.swingDanceLog = TA.swingDanceLog or {}
+  table.insert(TA.swingDanceLog, 1, { delta = delta, at = now })
+  local maxN = tonumber(TA.swingDanceLogMax) or 20
+  while #TA.swingDanceLog > maxN do
+    table.remove(TA.swingDanceLog)
+  end
+end
+
+function TA_ReportSwingDanceLog(n)
+  n = tonumber(n) or 5
+  if n < 1 then n = 1 end
+  if n > 20 then n = 20 end
+  local log = TA.swingDanceLog
+  if not log or #log == 0 then
+    AddLine("system", "No swing reaction samples yet. Enable 'swingtimer on' and weapon-swap to collect data.")
+    return
+  end
+  local count = math.min(n, #log)
+  local sum, best, worst = 0, math.huge, -math.huge
+  AddLine("swingDance", string.format("Last %d swing reaction(s) (time from SWING NOW prompt to actual swing):", count))
+  for i = 1, count do
+    local entry = log[i]
+    local ms = entry.delta * 1000
+    local ago = GetTime() - entry.at
+    sum = sum + ms
+    if ms < best then best = ms end
+    if ms > worst then worst = ms end
+    AddLine("swingDance", string.format("  %d. %.0f ms  (%.0fs ago)", i, ms, ago))
+  end
+  local avg = sum / count
+  AddLine("swingDance", string.format("Avg: %.0f ms | Best: %.0f ms | Worst: %.0f ms", avg, best, worst))
+  if GetNetStats then
+    local lagMs = tonumber(select(4, GetNetStats())) or 0
+    local buf = (tonumber(TA.swingDanceReactionBuffer) or 0.05) * 1000
+    AddLine("system", string.format("Lead time given: latency %d ms + buffer %.0f ms = %.0f ms before swing.", lagMs, buf, lagMs + buf))
+  end
+end
+
+function TA_ResetSwingDanceLog()
+  TA.swingDanceLog = {}
+  TA.lastSwingHintAt = nil
+  AddLine("system", "Swing reaction log cleared.")
 end
 
 function TA_SetSwingDanceHint(args)
@@ -3544,8 +3605,16 @@ function TA_SetSwingDanceHint(args)
     end
     TA.swingDanceReactionBuffer = ms / 1000
     AddLine("system", string.format("Reaction buffer set to %d ms.", ms))
+  elseif cmd == "log" then
+    local sub = (args:match("^%S+%s+(%S+)") or ""):lower()
+    if sub == "reset" or sub == "clear" then
+      TA_ResetSwingDanceLog()
+    else
+      local n = tonumber(args:match("%S+%s+(%d+)"))
+      TA_ReportSwingDanceLog(n or 5)
+    end
   else
-    AddLine("system", "Usage: swingtimer on|off|status|reaction <ms>")
+    AddLine("system", "Usage: swingtimer on|off|status|reaction <ms>|log [n]|log reset")
   end
 end
 
