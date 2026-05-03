@@ -2869,7 +2869,7 @@ local function ReportRange()
   AddLine("target", string.format("%s is approximately %.0f yards away (%s).", name, yardDist, rangeDesc))
 end
 
-local function GetExplorationData(mapID)
+function GetExplorationData(mapID)
   TextAdventurerDB = TextAdventurerDB or {}
   TextAdventurerDB.exploration = TextAdventurerDB.exploration or {}
   if not TextAdventurerDB.exploration[mapID] then
