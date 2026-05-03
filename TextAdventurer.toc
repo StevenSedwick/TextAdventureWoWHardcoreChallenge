@@ -15,6 +15,7 @@ Libs\LibRangeCheck-3.0\LibRangeCheck-3.0.lua
 WarlockSheetData.lua
 TerrainData_Azeroth.lua
 textadventurer.lua
+Modules\CombatNarration.lua
 Modules\CellMath.lua
 Modules\MarkedCells.lua
 Modules\Terrain.lua
