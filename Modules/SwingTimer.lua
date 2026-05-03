@@ -20,8 +20,8 @@
 -- GetNetStats.
 --
 
-local ResetSwingTimer
-local CheckSwingTimer
+
+
 function ResetSwingTimer()
   local mainSpeed = UnitAttackSpeed("player")
   if not mainSpeed or mainSpeed <= 0 then return end

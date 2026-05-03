@@ -381,7 +381,6 @@ overlay:SetScript("OnUpdate", function(self, elapsed)
 end)
 overlay.__taOnUpdateScript = nil
 
-local RecordOutgoingDamage
 local SyncTextModeOverlay
 TA.chatEditBoxLayerState = TA.chatEditBoxLayerState or {}
 
