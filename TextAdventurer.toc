@@ -26,6 +26,7 @@ Modules\PaladinSealDPS.lua
 Modules\MLXPTracker.lua
 Modules\QuestNarration.lua
 Modules\MacrosAndBindings.lua
+Modules\CharacterReports.lua
 Modules\VendorInventory.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
