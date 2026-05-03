@@ -23,6 +23,7 @@ Modules\Terrain.lua
 Modules\DFMode.lua
 Modules\QuestRouter.lua
 Modules\Routing.lua
+Modules\SettingsAndPerformance.lua
 Modules\Awareness.lua
 Modules\WarlockDPS.lua
 Modules\PaladinSealDPS.lua
