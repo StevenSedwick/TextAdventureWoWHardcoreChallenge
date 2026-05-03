@@ -5,7 +5,7 @@
 -- Extracted from textadventurer.lua. Owns:
 --   * Chat-event router: HandleChatEvent (was local, now global so the
 --     main event frame at the bottom of textadventurer.lua keeps working),
---     CleanSenderName (kept module-local), CHAT_EVENT_INFO table.
+--     CleanSenderName (kept module-local), CHAT_EVENT_INFO global table.
 --   * TA_GetNpcName and TA_WrapAndPrintQuestText helpers.
 --   * Quest-text narrators: TA_NarrateQuestDetail, TA_NarrateQuestProgress,
 --     TA_NarrateQuestReward, TA_NarrateQuestGreeting, TA_NarrateGossipText,
@@ -47,7 +47,7 @@ if not TA then
 end
 
 -- ---- moved from textadventurer.lua lines 5285-6092 ----
-local CHAT_EVENT_INFO = {
+CHAT_EVENT_INFO = {
   CHAT_MSG_SAY={label="Say",kind="chat"}, CHAT_MSG_YELL={label="Yell",kind="chat"}, CHAT_MSG_EMOTE={label="Emote",kind="chat"}, CHAT_MSG_TEXT_EMOTE={label="TextEmote",kind="chat"}, CHAT_MSG_PARTY={label="Party",kind="chat"}, CHAT_MSG_PARTY_LEADER={label="PartyLead",kind="chat"}, CHAT_MSG_RAID={label="Raid",kind="chat"}, CHAT_MSG_RAID_LEADER={label="RaidLead",kind="chat"}, CHAT_MSG_RAID_WARNING={label="Warning",kind="chat"}, CHAT_MSG_GUILD={label="Guild",kind="chat"}, CHAT_MSG_OFFICER={label="Officer",kind="chat"}, CHAT_MSG_WHISPER={label="Whisper",kind="whisper"}, CHAT_MSG_WHISPER_INFORM={label="To",kind="whisper"}, CHAT_MSG_MONSTER_SAY={label="NPC",kind="chat"}, CHAT_MSG_MONSTER_YELL={label="NPC",kind="chat"}, CHAT_MSG_MONSTER_WHISPER={label="NPC",kind="chat"}, CHAT_MSG_CHANNEL={label="Channel",kind="chat"}, CHAT_MSG_SYSTEM={label="System",kind="system"}
 }
 
