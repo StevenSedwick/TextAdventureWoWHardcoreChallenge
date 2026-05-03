@@ -19,6 +19,7 @@ Modules\CellMath.lua
 Modules\MarkedCells.lua
 Modules\Terrain.lua
 Modules\DFMode.lua
+Modules\QuestRouter.lua
 Modules\HelpTopics.lua
 Modules\Commands.lua
 Modules\QuestCommands.lua
