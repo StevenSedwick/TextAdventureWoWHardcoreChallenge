@@ -5,6 +5,8 @@
 -- StatusReports call it. The initial layout pass uses _G.TextAdventurerPanel.inputBox
 -- since this module loads after main.
 
+local panel = _G.TextAdventurerPanel
+
 local warningFrame = CreateFrame("Frame", "TextAdventurerWarningFrame", _G.TextAdventurerPanel, "BackdropTemplate")
 warningFrame:SetSize(860, 50)
 warningFrame:SetPoint("TOP", _G.TextAdventurerPanel, "TOP", 0, -40)
@@ -148,3 +150,180 @@ end
 if _G.TextAdventurerPanel and _G.TextAdventurerPanel.inputBox then
   TA_UpdateInputBoxLayout(_G.TextAdventurerPanel.inputBox)
 end
+
+-- Input-box behavior bindings (moved from main file at file scope so they
+-- run after inputBox creation above).
+panel.inputBox:EnableKeyboard(true)
+panel.inputBox:SetScript("OnEditFocusGained", function(self)
+  self:SetCursorPosition((self:GetText() and #self:GetText()) or 0)
+  if self.customCaret then
+    self.customCaret:Show()
+    if self.customCaretFlash and not self.customCaretFlash:IsPlaying() then
+      self.customCaretFlash:Play()
+    end
+  end
+end)
+panel.inputBox:SetScript("OnEditFocusLost", function(self)
+  if self.customCaretFlash and self.customCaretFlash:IsPlaying() then
+    self.customCaretFlash:Stop()
+  end
+  if self.customCaret then
+    self.customCaret:Hide()
+  end
+end)
+panel.inputBox:SetScript("OnCursorChanged", function(self, x, y, w, h)
+  if not self.customCaret then
+    return
+  end
+  self.customCaret:ClearAllPoints()
+  self.customCaret:SetPoint("TOPLEFT", self, "TOPLEFT", (x or 0) + (TA.INPUTBOX_LAYOUT.insetLeft or 8), (y or 0) - (TA.INPUTBOX_LAYOUT.insetTop or 6))
+  if h and h > 0 then
+    self.customCaret:SetHeight(h)
+  end
+end)
+panel.inputBox:SetScript("OnTextChanged", function(self)
+  TA_UpdateInputBoxLayout(self)
+end)
+panel.inputBox:SetScript("OnEnterPressed", function(self)
+  if IsShiftKeyDown and IsShiftKeyDown() then
+    local text = self:GetText() or ""
+    local cursor = self:GetCursorPosition() or #text
+    local before = text:sub(1, cursor)
+    local after = text:sub(cursor + 1)
+    local combined = before .. "\n" .. after
+    self:SetText(combined)
+    self:SetCursorPosition(cursor + 1)
+    return
+  end
+
+  local msg = self:GetText()
+  local lines = {}
+  if msg and msg ~= "" then
+    for line in msg:gmatch("[^\r\n]+") do
+      local trimmed = line:match("^%s*(.-)%s*$")
+      if trimmed ~= "" and not trimmed:match("^#") then
+        table.insert(lines, trimmed)
+      end
+    end
+    if #lines == 0 then
+      local trimmed = msg:match("^%s*(.-)%s*$")
+      if trimmed ~= "" and not trimmed:match("^#") then
+        table.insert(lines, trimmed)
+      end
+    end
+  end
+
+  self:SetText("")
+  local shouldBlur = TA_ExecuteTerminalInputLines(lines, { recordLastBlock = true })
+  if TA.deferTerminalRefocus then
+    self:ClearFocus()
+    return
+  end
+  if shouldBlur then
+    self:ClearFocus()
+    return
+  end
+  self:SetFocus()
+end)
+panel.inputBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+panel.inputBox:SetScript("OnKeyDown", function(self, key)
+  if key == "UP" then
+    if TA.inputHistoryPos == 0 then
+      TA.inputDraft = self:GetText()
+    end
+    local newPos = math.min(TA.inputHistoryPos + 1, #TA.inputHistory)
+    if newPos ~= TA.inputHistoryPos and #TA.inputHistory > 0 then
+      TA.inputHistoryPos = newPos
+      self:SetText(TA.inputHistory[#TA.inputHistory - newPos + 1])
+      self:SetCursorPosition(#self:GetText())
+    end
+  elseif key == "DOWN" then
+    if TA.inputHistoryPos > 0 then
+      TA.inputHistoryPos = TA.inputHistoryPos - 1
+      if TA.inputHistoryPos == 0 then
+        self:SetText(TA.inputDraft or "")
+      else
+        self:SetText(TA.inputHistory[#TA.inputHistory - TA.inputHistoryPos + 1])
+      end
+      self:SetCursorPosition(#self:GetText())
+    end
+  elseif key == "TAB" then
+    local partial = (self:GetText() or ""):match("^%s*(.-)%s*$")
+    if partial == "" then return end
+    local partialLower = partial:lower()
+
+    -- Collect candidates from exact handlers + a static prefix list
+    local candidates = {}
+    local seen = {}
+    if TA.EXACT_INPUT_HANDLERS then
+      for cmd in pairs(TA.EXACT_INPUT_HANDLERS) do
+        if not seen[cmd] and cmd:sub(1, #partialLower) == partialLower then
+          seen[cmd] = true
+          table.insert(candidates, cmd)
+        end
+      end
+    end
+    -- Also include known prefix commands not fully in EXACT_INPUT_HANDLERS
+    local prefixCmds = {
+      "equip ", "binditem ", "moveitem ", "bind ", "bindmacro ",
+      "actions ", "bars ", "sell ", "destroy ", "use ",
+      "mark ", "unmark ", "renamemark ", "goto ", "route ",
+      "ml xp ", "ml xp warrior ", "ml xp set ", "ml xp mode ",
+      "recipes ", "recipes search", "recipes makeable",
+      "bug show ", "bug copy ",
+      "df ", "df size ", "df grid ", "df cell ", "df markradius ",
+      "df rotation ", "df orientation ", "df square ",
+      "df profile ", "df view ", "df hue ", "df legend ", "df calibrate ",
+      "memory ", "focus ", "castfocus ", "macro ", "macroinfo ",
+      "skills weapons", "skills professions", "skills defense",
+      "help ", "help advanced", "help combat", "help economy",
+      "help navigation", "help social", "help quests",
+      "swingtimer ",
+    }
+    for _, cmd in ipairs(prefixCmds) do
+      local cmdLower = cmd:lower()
+      if not seen[cmdLower] and cmdLower:sub(1, #partialLower) == partialLower then
+        seen[cmdLower] = true
+        table.insert(candidates, cmd)
+      end
+    end
+
+    if #candidates == 0 then return end
+
+    table.sort(candidates)
+
+    if #candidates == 1 then
+      -- Unique match: complete it
+      self:SetText(candidates[1])
+      self:SetCursorPosition(#candidates[1])
+    else
+      -- Multiple matches: find longest common prefix then show list
+      local common = candidates[1]
+      for i = 2, #candidates do
+        local c = candidates[i]
+        local newCommon = ""
+        for j = 1, math.min(#common, #c) do
+          if common:sub(j, j):lower() == c:sub(j, j):lower() then
+            newCommon = newCommon .. common:sub(j, j)
+          else
+            break
+          end
+        end
+        common = newCommon
+      end
+      if #common > #partial then
+        self:SetText(common)
+        self:SetCursorPosition(#common)
+      end
+      -- Print candidates to terminal
+      local MAX_SHOW = 12
+      local display = {}
+      for i = 1, math.min(#candidates, MAX_SHOW) do
+        table.insert(display, candidates[i])
+      end
+      local suffix = #candidates > MAX_SHOW and string.format(" (+%d more)", #candidates - MAX_SHOW) or ""
+      AddLine("system", "  " .. table.concat(display, "  |  ") .. suffix)
+    end
+  end
+end)
+
