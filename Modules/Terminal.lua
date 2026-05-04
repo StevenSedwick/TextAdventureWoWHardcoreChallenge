@@ -97,7 +97,7 @@ function TA_FocusTerminalInput(deferFocus)
   AddLine("system", "Terminal input ready.")
 end
 
-local function TA_ExecuteTerminalInputLines(lines, opts)
+function TA_ExecuteTerminalInputLines(lines, opts)
   opts = opts or {}
   if type(lines) ~= "table" or #lines == 0 then
     return false
