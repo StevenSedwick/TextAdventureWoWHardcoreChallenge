@@ -34,3 +34,11 @@ release/
 *_backuponemore*.lua
 *_PREMERGE*.lua
 *_BACKUPRECENT*.lua
+
+# Python build / cache (tools/)
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Tools runtime scratch
+tools/look_accessibility/temp/

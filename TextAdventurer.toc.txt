@@ -1,7 +1,0 @@
--- TextAdventurer.toc
--- ## Interface: 11507
--- ## Title: Text Adventurer
--- ## Notes: Outputs clean text events for combat, targeting, and movement.
--- ## Author: OpenAI
--- ## Version: 0.1.0
--- TextAdventurer.lua
