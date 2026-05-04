@@ -161,6 +161,10 @@ if TA_RegisterDFDangerCommandHandlers then
   TA_RegisterDFDangerCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end
 
+if TA_RegisterOreNodeCommandHandlers then
+  TA_RegisterOreNodeCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
+end
+
 if TA_RegisterWarlockMLCommandHandlers then
   TA_RegisterWarlockMLCommandHandlers(TA.EXACT_INPUT_HANDLERS, TA_AddPatternInputHandler)
 end

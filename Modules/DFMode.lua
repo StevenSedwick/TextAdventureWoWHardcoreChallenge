@@ -600,7 +600,7 @@ local function BuildDFModeDisplay()
   end
 
   local markedCellSig = tostring(TA.lastMarkedCellNotification or "")
-  local dfSig = string.format("%s|%s|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%s|%s|%d",
+  local dfSig = string.format("%s|%s|%s|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%s|%s|%d|%d",
     tostring(mapID or ""), viewMode, profile,
     gridSize, math.floor(yardsPerCell or 0),
     facingBucket, snappedPX, snappedPY,
@@ -608,7 +608,7 @@ local function BuildDFModeDisplay()
     tgSigX, tgSigY, (targetGUID and 1 or 0),
     tostring(targetGUID or ""), terrainCtxKey,
     tostring(TA.dfModeHueEnabled), tostring(TA.dfModeLegendEnabled ~= false),
-    markedCellSig, (TA.dfModeRenderRadiusOverride or -1)
+    markedCellSig, (TA.dfModeRenderRadiusOverride or -1), (TA.oreNodesVersion or 0)
   )
   if scratch.dfSig == dfSig and scratch.dfSigDisplay then
     return scratch.dfSigDisplay
@@ -624,6 +624,26 @@ local function BuildDFModeDisplay()
     for x = -innerRadius, innerRadius do
       row[x] = "."
       hrow[x] = 0
+    end
+  end
+
+  -- Place ore nodes first (lowest priority — overwritten by all entities).
+  if TA.dfModeOreEnabled ~= false and playerWorldX and playerWorldY then
+    local oreByMap = TextAdventurerDB and TextAdventurerDB.oreNodes and TextAdventurerDB.oreNodes[mapID]
+    if oreByMap then
+      for _, node in ipairs(oreByMap) do
+        if node.wx and node.wy then
+          local north = node.wx - playerWorldX
+          local east  = -(node.wy - playerWorldY)
+          local gx = east  >= 0 and math.floor((east  / yardsPerCell) + 0.5) or math.ceil((east  / yardsPerCell) - 0.5)
+          local gy = north >= 0 and math.floor((north / yardsPerCell) + 0.5) or math.ceil((north / yardsPerCell) - 0.5)
+          if math.abs(gx) <= innerRadius and math.abs(gy) <= innerRadius and grid[gy] then
+            if grid[gy][gx] == "." then
+              grid[gy][gx] = (TA_GetOreNodeGlyph and TA_GetOreNodeGlyph(node.n)) or "$"
+            end
+          end
+        end
+      end
     end
   end
 
@@ -1348,7 +1368,7 @@ local function BuildDFModeDisplay()
     local legendEnabled = (TA.dfModeLegendEnabled ~= false)
     local legend = {
       "",
-      "Legend: P player  E enemy  T/t target  M mark  * contested",
+      "Legend: P player  E enemy  T/t target  M mark  * contested  $ ore node",
       "Threat: ! high  ~ medium  . empty  x corpse",
       "Terrain: V drop hazard  X/# obstacles",
     }

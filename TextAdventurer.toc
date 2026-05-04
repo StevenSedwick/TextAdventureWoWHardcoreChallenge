@@ -25,6 +25,7 @@ Modules\CellMath.lua
 Modules\MarkedCells.lua
 Modules\Terrain.lua
 Modules\DFMode.lua
+Modules\OreNodes.lua
 Modules\QuestRouter.lua
 Modules\Routing.lua
 Modules\SettingsAndPerformance.lua

@@ -690,6 +690,8 @@ TA:SetScript("OnEvent", function(_, event, ...)
     TextAdventurerDB.ml = type(TextAdventurerDB.ml) == "table" and TextAdventurerDB.ml or {}
     TA_GetMLStore()
     TextAdventurerDB.markedCells = TextAdventurerDB.markedCells or {}
+    TextAdventurerDB.oreNodes = type(TextAdventurerDB.oreNodes) == "table" and TextAdventurerDB.oreNodes or {}
+    TA.oreNodesVersion = 0
     if type(TextAdventurerDB.questNarration) == "string" then
       local m = TextAdventurerDB.questNarration:lower()
       if m == "cinematic" or m == "instant" or m == "manual" then
