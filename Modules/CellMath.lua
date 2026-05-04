@@ -78,7 +78,7 @@ function GetMapWorldDimensions(mapID)
   local cached = TA._mapYardsCache[mapID]
   if cached then return cached.width, cached.height end
 
-  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
+  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID) --[[@as {width:number, height:number}?]]
   if mapInfo and tonumber(mapInfo.width) and tonumber(mapInfo.height) and mapInfo.width > 0 and mapInfo.height > 0 then
     TA._mapYardsCache[mapID] = { width = mapInfo.width, height = mapInfo.height }
     return mapInfo.width, mapInfo.height
@@ -88,10 +88,10 @@ function GetMapWorldDimensions(mapID)
     local makeVec = CreateVector2D or function(vx, vy) return { x = vx, y = vy } end
     -- C_Map.GetWorldPosFromMapPos returns (continentID, worldPos) -- the
     -- vector is the SECOND return value.
-    local ok1, _c1, p1 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.0, 0.5))
-    local ok2, _c2, p2 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(1.0, 0.5))
-    local ok3, _c3, p3 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.5, 0.0))
-    local ok4, _c4, p4 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.5, 1.0))
+    local ok1, _, p1 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.0, 0.5))
+    local ok2, _, p2 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(1.0, 0.5))
+    local ok3, _, p3 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.5, 0.0))
+    local ok4, _, p4 = pcall(C_Map.GetWorldPosFromMapPos, mapID, makeVec(0.5, 1.0))
     if ok1 and ok2 and ok3 and ok4
         and type(p1) == "table" and type(p2) == "table"
         and type(p3) == "table" and type(p4) == "table" then
@@ -173,8 +173,8 @@ function RecenterCurrentCellAnchor(silent)
     if pos then
       x, y = pos:GetXY()
     end
-  elseif GetPlayerMapPosition then
-    x, y = GetPlayerMapPosition("player")
+  elseif _G.GetPlayerMapPosition then
+    x, y = _G.GetPlayerMapPosition("player")
   end
   if not x or not y then
     if not silent then AddLine("system", "Could not center grid: player position unavailable.") end
@@ -208,13 +208,13 @@ function RecenterCurrentCellAnchor(silent)
 end
 
 function ReportCurrentCell(force)
-  local mapID, cellX, cellY, x, y, _, _, _, gridX, gridY, offsetX, offsetY, inCellX, inCellY = GetPlayerMapCell()
+  local mapID, cellX, cellY, _, _, _, _, _, gridX, gridY, offsetX, offsetY, inCellX, inCellY = GetPlayerMapCell()
   if not mapID then
     if force then AddLine("system", "Could not determine current cell.") end
     return
   end
   local minX, maxX, minY, maxY = GetCellBounds(cellX, cellY, gridX, gridY, offsetX, offsetY)
-  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
+  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID) --[[@as {width:number, height:number}?]]
   local sizeText = "size unknown"
   if mapInfo and mapInfo.width and mapInfo.height and mapInfo.width > 0 and mapInfo.height > 0 then
     sizeText = string.format("~%.1f x %.1f yards", mapInfo.width / gridX, mapInfo.height / gridY)
@@ -328,7 +328,7 @@ function TA_ReportCellYardsCalibration(arg)
     return
   end
 
-  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
+  local mapInfo = C_Map and C_Map.GetMapInfo and C_Map.GetMapInfo(mapID) --[[@as {width:number, height:number}?]]
   if not mapInfo or not mapInfo.width or not mapInfo.height or mapInfo.width <= 0 or mapInfo.height <= 0 then
     AddLine("system", "Could not calibrate cell size: map dimensions are unavailable.")
     return
