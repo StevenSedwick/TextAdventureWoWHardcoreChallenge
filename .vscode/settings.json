@@ -49,7 +49,8 @@
         "GetNumTradeSkills",
         "GetTradeSkillInfo",
         "GetNumCrafts",
-        "GetCraftInfo"
+        "GetCraftInfo",
+        "TA_RecordGuideXPSample"
     ],
     "Lua.type.weakUnionCheck": true,
     "wowAPI.luals.frameXML": true,

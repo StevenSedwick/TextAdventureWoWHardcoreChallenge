@@ -202,8 +202,7 @@ local CELL_YARDS_MAX = 500
 _G.CELL_YARDS_MIN = CELL_YARDS_MIN
 _G.CELL_YARDS_MAX = CELL_YARDS_MAX
 CELL_YARDS_CANDIDATES = { 12, 15, 18, 20, 24, 30, 36, 40, 45, 50, 60 }
-local WALL_WARNING_COOLDOWN = 2.5
-local MAX_RECENT_CELLS = 12
+
 
 local COLORS = {
   system   = { 0.85, 0.85, 0.85 },
@@ -681,7 +680,7 @@ rawset(SlashCmdList, "TEXTADVENTURER", function(msg)
   end
 end)
 
-TA:SetScript("OnEvent", function(self, event, ...)
+TA:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     TextAdventurerDB = TextAdventurerDB or {}
     TextAdventurerDB.exploration = TextAdventurerDB.exploration or {}
@@ -793,9 +792,9 @@ TA:SetScript("OnEvent", function(self, event, ...)
       TA.dfModeGridSize = savedGrid
     end
     if type(TextAdventurerDB.dfModeYardsPerCell) == "number" then
-      local savedCellYards = math.floor(TextAdventurerDB.dfModeYardsPerCell + 0.5)
-      if savedCellYards >= 3 and savedCellYards <= 100 then
-        TA.dfModeYardsPerCell = savedCellYards
+      local savedDFCellYards = math.floor(TextAdventurerDB.dfModeYardsPerCell + 0.5)
+      if savedDFCellYards >= 3 and savedDFCellYards <= 100 then
+        TA.dfModeYardsPerCell = savedDFCellYards
       else
         TA.dfModeYardsPerCell = nil
         TextAdventurerDB.dfModeYardsPerCell = nil
@@ -1148,7 +1147,7 @@ TA:SetScript("OnEvent", function(self, event, ...)
     local initiator, duration = ...
     AddLine("chat", string.format("%s calls a ready check (%ds). Type 'ready' or 'notready'.", tostring(initiator or "The leader"), tonumber(duration) or 0))
   elseif event == "TIME_PLAYED_MSG" then
-    local total, level = ...
+    local total = ...
     if total then
       local h = math.floor(total / 3600)
       AddLine("status", string.format("Time played: %dh on this character.", h))
