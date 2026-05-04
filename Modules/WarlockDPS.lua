@@ -269,7 +269,8 @@ local function TA_UnitHasPlayerDebuff(unit, spellName)
     return false
   end
   for i = 1, 40 do
-    local name, _, _, _, _, _, _, caster = UnitDebuff(unit, i)
+    -- Classic Era signature: name, icon, count, dispelType, duration, expirationTime, source, isStealable, ...
+    local name, _, _, _, _, _, caster = UnitDebuff(unit, i)
     if not name then break end
     local isMine = caster == "player"
     if not isMine and caster and UnitIsUnit then
@@ -508,7 +509,8 @@ function TA_GetPlayerDebuffRemaining(unit, spellName)
     return 0, false
   end
   for i = 1, 40 do
-    local name, _, _, _, _, duration, expirationTime, caster = UnitDebuff(unit, i)
+    -- Classic Era signature: name, icon, count, dispelType, duration, expirationTime, source, isStealable, ...
+    local name, _, _, _, duration, expirationTime, caster = UnitDebuff(unit, i)
     if not name then break end
     local isMine = caster == "player"
     if not isMine and caster and UnitIsUnit then
