@@ -150,11 +150,8 @@ function ReportEquipment()
       if typeStr ~= "" then table.insert(headerParts, typeStr) end
       AddLine("target", string.format("%s: %s [%s]", label, link, table.concat(headerParts, ", ")))
 
-      -- Stats via GetItemStats
-      local statsTable = {}
-      if GetItemStats and link then
-        GetItemStats(link, statsTable)
-      end
+      -- Stats via GetItemStats. Classic API: GetItemStats(link) -> table.
+      local statsTable = (GetItemStats and link and GetItemStats(link)) or {}
       local statLines = {}
       for k, v in pairs(statsTable) do
         local friendlyName = (TA.STAT_LABELS and TA.STAT_LABELS[k]) or k
