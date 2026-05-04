@@ -378,6 +378,7 @@ function TA_RunCommandSelfTest(modeArg)
 
   local okCount = 0
   local failCount = 0
+  local failures = {}
   for i = 1, #cmds do
     local cmd = cmds[i]
     local ok, err = pcall(function()
@@ -387,11 +388,19 @@ function TA_RunCommandSelfTest(modeArg)
       okCount = okCount + 1
     else
       failCount = failCount + 1
+      table.insert(failures, { cmd = cmd, err = tostring(err) })
       AddLine("system", string.format("[FAIL] %s -> %s", cmd, tostring(err)))
     end
   end
 
   AddLine("system", string.format("Self-test complete: ok=%d fail=%d", okCount, failCount))
+  if failCount > 0 then
+    AddLine("system", string.format("--- %d failure(s) recap ---", failCount))
+    for i = 1, #failures do
+      AddLine("system", string.format("  [%d] %s", i, failures[i].cmd))
+      AddLine("system", string.format("       %s", failures[i].err))
+    end
+  end
   if mode ~= "full" then
     AddLine("system", "Tip: run 'selftest full' for broader non-destructive exact-handler coverage.")
   end
@@ -518,6 +527,7 @@ function TA_RunPatternSelfTest(modeArg)
 
   local okCount = 0
   local failCount = 0
+  local failures = {}
   for i = 1, #cmds do
     local cmd = cmds[i]
     local ok, err = pcall(function()
@@ -527,11 +537,19 @@ function TA_RunPatternSelfTest(modeArg)
       okCount = okCount + 1
     else
       failCount = failCount + 1
+      table.insert(failures, { cmd = cmd, err = tostring(err) })
       AddLine("system", string.format("[FAIL] %s -> %s", cmd, tostring(err)))
     end
   end
 
   AddLine("system", string.format("Pattern self-test complete: ok=%d fail=%d", okCount, failCount))
+  if failCount > 0 then
+    AddLine("system", string.format("--- %d failure(s) recap ---", failCount))
+    for i = 1, #failures do
+      AddLine("system", string.format("  [%d] %s", i, failures[i].cmd))
+      AddLine("system", string.format("       %s", failures[i].err))
+    end
+  end
   if mode ~= "full" then
     AddLine("system", "Tip: run 'selftest patterns full' for broader curated pattern coverage.")
   end

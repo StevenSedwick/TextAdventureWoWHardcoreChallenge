@@ -571,7 +571,7 @@ end
 
 
 
-local LANDMARK_FLAVOR = {
+LANDMARK_FLAVOR = {
   -- Dungeons / instances
   ["Deadmines"]             = "The smell of sea-salt and rust fills the air. You have entered the Deadmines.",
   ["Wailing Caverns"]       = "Twisted green light filters through the stone. You descend into the Wailing Caverns.",

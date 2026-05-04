@@ -70,6 +70,26 @@ TA.EXACT_INPUT_HANDLERS = {
   ["selftest full"] = function() TA_RunCommandSelfTest("full") end,
   ["selftest patterns"] = function() TA_RunPatternSelfTest("safe") end,
   ["selftest patterns full"] = function() TA_RunPatternSelfTest("full") end,
+  ["reset defaults"] = function()
+    AddLine("system", "This will WIPE TextAdventurerDB (all settings, marked cells, learned models, exploration memory, routes) for THIS character and reload the UI.")
+    AddLine("system", "Type 'reset defaults confirm' within 30 seconds to proceed, or 'reset defaults cancel' to abort.")
+    TA._resetDefaultsArmedAt = GetTime()
+  end,
+  ["reset defaults confirm"] = function()
+    local armed = TA._resetDefaultsArmedAt
+    if not armed or (GetTime() - armed) > 30 then
+      AddLine("system", "Reset not armed. Type 'reset defaults' first.")
+      return
+    end
+    TA._resetDefaultsArmedAt = nil
+    TextAdventurerDB = {}
+    AddLine("system", "TextAdventurerDB wiped. Reloading UI...")
+    C_Timer.After(0.5, function() ReloadUI() end)
+  end,
+  ["reset defaults cancel"] = function()
+    TA._resetDefaultsArmedAt = nil
+    AddLine("system", "Reset cancelled.")
+  end,
   ["performance"] = function() TA_ReportPerformanceStatus() end,
   ["performance status"] = function() TA_ReportPerformanceStatus() end,
   ["performance on"] = function() TA_EnablePerformanceMode() end,

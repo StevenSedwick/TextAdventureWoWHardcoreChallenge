@@ -259,7 +259,8 @@ function TA_Help_ShowTopic(topicArg)
     AddLine("system", "  selftest full - run broader non-destructive exact command coverage.")
     AddLine("system", "  selftest patterns - run safe curated sample tests for pattern handlers.")
     AddLine("system", "  selftest patterns full - run broader curated pattern coverage.")
-    AddLine("system", "Self-test output appears as [FAIL] lines plus a final ok/fail summary.")
+    AddLine("system", "Self-test output appears as [FAIL] lines plus a final ok/fail summary and a recap of failures.")
+    AddLine("system", "  reset defaults - wipe all saved settings (this character) and reload UI. Requires confirm.")
     return
   end
 
