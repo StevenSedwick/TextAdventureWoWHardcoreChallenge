@@ -152,10 +152,12 @@ local minimapInset = { active = false, saved = nil }
 local function captureMinimapState()
   if minimapInset.saved then return end
   local s = {}
+  s.parent = Minimap:GetParent()
   s.strata = Minimap:GetFrameStrata()
   s.level  = Minimap:GetFrameLevel()
   s.scale  = Minimap:GetScale()
   s.alpha  = Minimap:GetAlpha()
+  s.shown  = Minimap:IsShown()
   s.numPoints = Minimap:GetNumPoints()
   s.points = {}
   for i = 1, s.numPoints do
@@ -166,12 +168,16 @@ end
 
 local function applyMinimapInset()
   captureMinimapState()
+  -- Reparent off MinimapCluster so the performance-mode auto-hide on the
+  -- cluster (and its hidden state) doesn't suppress us.
+  Minimap:SetParent(UIParent)
   Minimap:SetFrameStrata("TOOLTIP")
   Minimap:SetFrameLevel(20000)
   Minimap:SetScale(0.7)
   Minimap:SetAlpha(0.55)
   Minimap:ClearAllPoints()
   Minimap:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -16, -16)
+  Minimap:Show()
   minimapInset.active = true
 end
 
@@ -181,6 +187,7 @@ local function restoreMinimap()
     minimapInset.active = false
     return
   end
+  if s.parent then Minimap:SetParent(s.parent) end
   Minimap:SetFrameStrata(s.strata or "BACKGROUND")
   Minimap:SetFrameLevel(s.level or 1)
   Minimap:SetScale(s.scale or 1)
@@ -191,6 +198,8 @@ local function restoreMinimap()
       Minimap:SetPoint(unpack(p))
     end
   end
+  if s.shown then Minimap:Show() else Minimap:Hide() end
+  minimapInset.saved = nil
   minimapInset.active = false
 end
 
