@@ -33,6 +33,11 @@ This addon is intentionally extreme for Hardcore challenge play.
 - Macro and recipe command helpers.
 - Help system with topic-based command discovery (`/ta help <topic>`).
 
+## Tutorial
+
+For a guided walkthrough of the terminal, command groups, and a
+suggested first session, see [`TUTORIAL.md`](TUTORIAL.md).
+
 ## Install
 
 1. Copy this folder into your AddOns directory:
