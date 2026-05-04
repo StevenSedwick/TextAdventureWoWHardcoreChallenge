@@ -149,6 +149,27 @@ end)
 
 local minimapInset = { active = false, saved = nil }
 
+local DEFAULT_MINIMAP_INSET_ALPHA = 0.25
+local DEFAULT_MINIMAP_INSET_SCALE = 0.7
+
+local function clamp(v, lo, hi)
+  if v < lo then return lo end
+  if v > hi then return hi end
+  return v
+end
+
+local function getInsetAlpha()
+  local v = tonumber(TextAdventurerDB and TextAdventurerDB.minimapInsetAlpha)
+  if not v then return DEFAULT_MINIMAP_INSET_ALPHA end
+  return clamp(v, 0.05, 1)
+end
+
+local function getInsetScale()
+  local v = tonumber(TextAdventurerDB and TextAdventurerDB.minimapInsetScale)
+  if not v then return DEFAULT_MINIMAP_INSET_SCALE end
+  return clamp(v, 0.3, 1.5)
+end
+
 local function captureMinimapState()
   if minimapInset.saved then return end
   local s = {}
@@ -173,8 +194,8 @@ local function applyMinimapInset()
   Minimap:SetParent(UIParent)
   Minimap:SetFrameStrata("TOOLTIP")
   Minimap:SetFrameLevel(20000)
-  Minimap:SetScale(0.7)
-  Minimap:SetAlpha(0.55)
+  Minimap:SetScale(getInsetScale())
+  Minimap:SetAlpha(getInsetAlpha())
   Minimap:ClearAllPoints()
   Minimap:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -16, -16)
   Minimap:Show()
@@ -210,6 +231,26 @@ function TA_ToggleMinimapInset(force)
   else target = not minimapInset.active end
   if target then applyMinimapInset() else restoreMinimap() end
   return minimapInset.active
+end
+
+function TA_SetMinimapInsetAlpha(value)
+  local v = tonumber(value)
+  if not v then return nil end
+  v = clamp(v, 0.05, 1)
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.minimapInsetAlpha = v
+  if minimapInset.active then Minimap:SetAlpha(v) end
+  return v
+end
+
+function TA_SetMinimapInsetScale(value)
+  local v = tonumber(value)
+  if not v then return nil end
+  v = clamp(v, 0.3, 1.5)
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.minimapInsetScale = v
+  if minimapInset.active then Minimap:SetScale(v) end
+  return v
 end
 
 -- ---- Command handler ----
@@ -273,4 +314,20 @@ function TA_RegisterOreNodeCommandHandlers(exactHandlers, addPattern)
   end
   exactHandlers["minimap on"]  = function() TA_ToggleMinimapInset("on");  AddLine("system", "Minimap inset ON.")  end
   exactHandlers["minimap off"] = function() TA_ToggleMinimapInset("off"); AddLine("system", "Minimap inset OFF.") end
+  addPattern("^minimap%s+alpha%s+([%d%.]+)$", function(arg)
+    local v = TA_SetMinimapInsetAlpha(arg)
+    if v then
+      AddLine("system", string.format("Minimap inset alpha set to %.2f.", v))
+    else
+      AddLine("system", "Usage: minimap alpha <0.05..1> (e.g. 0.25)")
+    end
+  end)
+  addPattern("^minimap%s+scale%s+([%d%.]+)$", function(arg)
+    local v = TA_SetMinimapInsetScale(arg)
+    if v then
+      AddLine("system", string.format("Minimap inset scale set to %.2f.", v))
+    else
+      AddLine("system", "Usage: minimap scale <0.3..1.5> (e.g. 0.7)")
+    end
+  end)
 end
