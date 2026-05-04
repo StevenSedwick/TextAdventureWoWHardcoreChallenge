@@ -56,6 +56,7 @@ Modules\IntegrationAPI.lua
 Modules\ItemTextAndExploration.lua
 Modules\Tickers.lua
 Modules\InputBoxLayout.lua
+Modules\MLXPRecommend.lua
 Modules\TalentCommands.lua
 Modules\LootRollCommands.lua
 Modules\SpellbookCommands.lua
