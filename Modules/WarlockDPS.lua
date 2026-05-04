@@ -275,6 +275,10 @@ local function TA_UnitHasPlayerDebuff(unit, spellName)
     if not isMine and caster and UnitIsUnit then
       isMine = UnitIsUnit(caster, "player")
     end
+    -- Classic Era returns caster as the character name string, not a unit token
+    if not isMine and caster and UnitName then
+      isMine = caster == UnitName("player")
+    end
     if isMine and name == spellName then
       return true
     end
@@ -509,6 +513,10 @@ function TA_GetPlayerDebuffRemaining(unit, spellName)
     local isMine = caster == "player"
     if not isMine and caster and UnitIsUnit then
       isMine = UnitIsUnit(caster, "player")
+    end
+    -- Classic Era returns caster as the character name string, not a unit token
+    if not isMine and caster and UnitName then
+      isMine = caster == UnitName("player")
     end
     if isMine and name == spellName then
       if tonumber(expirationTime) and tonumber(duration) and expirationTime > 0 and duration > 0 then
