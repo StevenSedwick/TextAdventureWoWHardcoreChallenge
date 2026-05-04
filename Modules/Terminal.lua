@@ -325,6 +325,7 @@ function TA_RunCommandSelfTest(modeArg)
     "macrorename",
     "autostart",
     "textmode",
+    "reset defaults",
   }
 
   local safeAllow = {

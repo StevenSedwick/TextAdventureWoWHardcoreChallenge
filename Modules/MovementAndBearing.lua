@@ -40,6 +40,8 @@ if not TA then
   _G.TA = TA
 end
 
+local WALL_WARNING_COOLDOWN = 2.5
+
 -- ---- moved from textadventurer.lua lines 2952-3166 ----
 
 function CheckFallState()
