@@ -899,7 +899,7 @@ end
 local function LoadFlags()
   TextAdventurerDB = TextAdventurerDB or {}
   if TextAdventurerDB.dfDangerEnabled == nil then
-    TextAdventurerDB.dfDangerEnabled = true
+    TextAdventurerDB.dfDangerEnabled = false
   end
   D.enabled = TextAdventurerDB.dfDangerEnabled and true or false
   D.debug = TextAdventurerDB.dfDangerDebug and true or false
