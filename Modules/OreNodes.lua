@@ -142,6 +142,67 @@ GameTooltip:HookScript("OnShow", function()
   recordOreNode(text)
 end)
 
+-- ---- Minimap inset toggle ----
+-- The black overlay covers the minimap, so blip tooltips can't fire while DF
+-- mode is up. /ta minimap raises the minimap above the overlay (and dims +
+-- shrinks it) so the player can hover blips, then restores it on toggle off.
+
+local minimapInset = { active = false, saved = nil }
+
+local function captureMinimapState()
+  if minimapInset.saved then return end
+  local s = {}
+  s.strata = Minimap:GetFrameStrata()
+  s.level  = Minimap:GetFrameLevel()
+  s.scale  = Minimap:GetScale()
+  s.alpha  = Minimap:GetAlpha()
+  s.numPoints = Minimap:GetNumPoints()
+  s.points = {}
+  for i = 1, s.numPoints do
+    s.points[i] = { Minimap:GetPoint(i) }
+  end
+  minimapInset.saved = s
+end
+
+local function applyMinimapInset()
+  captureMinimapState()
+  Minimap:SetFrameStrata("TOOLTIP")
+  Minimap:SetFrameLevel(20000)
+  Minimap:SetScale(0.7)
+  Minimap:SetAlpha(0.55)
+  Minimap:ClearAllPoints()
+  Minimap:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -16, -16)
+  minimapInset.active = true
+end
+
+local function restoreMinimap()
+  local s = minimapInset.saved
+  if not s then
+    minimapInset.active = false
+    return
+  end
+  Minimap:SetFrameStrata(s.strata or "BACKGROUND")
+  Minimap:SetFrameLevel(s.level or 1)
+  Minimap:SetScale(s.scale or 1)
+  Minimap:SetAlpha(s.alpha or 1)
+  if s.points and #s.points > 0 then
+    Minimap:ClearAllPoints()
+    for _, p in ipairs(s.points) do
+      Minimap:SetPoint(unpack(p))
+    end
+  end
+  minimapInset.active = false
+end
+
+function TA_ToggleMinimapInset(force)
+  local target
+  if force == "on" then target = true
+  elseif force == "off" then target = false
+  else target = not minimapInset.active end
+  if target then applyMinimapInset() else restoreMinimap() end
+  return minimapInset.active
+end
+
 -- ---- Command handler ----
 
 function TA_OreNodeCommand(args)
@@ -194,4 +255,13 @@ end
 function TA_RegisterOreNodeCommandHandlers(exactHandlers, addPattern)
   exactHandlers["ore"] = function() TA_OreNodeCommand("") end
   addPattern("^ore%s+(.+)$", function(args) TA_OreNodeCommand(args) end)
+
+  exactHandlers["minimap"] = function()
+    local on = TA_ToggleMinimapInset()
+    AddLine("system", on
+      and "Minimap inset ON. Hover ore blips to record them. /ta minimap to hide."
+      or  "Minimap inset OFF.")
+  end
+  exactHandlers["minimap on"]  = function() TA_ToggleMinimapInset("on");  AddLine("system", "Minimap inset ON.")  end
+  exactHandlers["minimap off"] = function() TA_ToggleMinimapInset("off"); AddLine("system", "Minimap inset OFF.") end
 end
