@@ -859,65 +859,73 @@ local function BuildDFModeDisplay()
         nearestMarkMY = my
       end
 
-      if math.abs(mx) <= innerRadius and math.abs(my) <= innerRadius then
-        local exMin, exMax, eyMin, eyMax
-        if orientation == "fixed" then
-          -- Fixed orientation: marked cell is axis-aligned with the DF grid.
-          -- The DF renderer prints each column as 2 chars (glyph + space) but
-          -- each row as 1 char tall, so a visually-square rectangle needs
-          -- ~half as many columns as rows. We force ODD counts so the M is
-          -- perfectly centered with equal cells on each side.
-          local rowsPerSide = math.max(1, math.floor((markCellYards / yardsPerCell) + 0.5))
-          local extra = markRadius or 0
-          rowsPerSide = rowsPerSide + (extra * 2)
-          if rowsPerSide % 2 == 0 then rowsPerSide = rowsPerSide + 1 end
-          local colsPerSide = math.max(1, math.floor((rowsPerSide / 2) + 0.5))
-          if colsPerSide % 2 == 0 then colsPerSide = colsPerSide + 1 end
-          local halfRow = (rowsPerSide - 1) / 2
-          local halfCol = (colsPerSide - 1) / 2
-          exMin = mx - halfCol
-          exMax = mx + halfCol
-          eyMin = my - halfRow + 2  -- shift south edge up by 2 cells to match in-game yard scale
-          eyMax = my + halfRow - 2  -- shift north edge down by 2 cells to match in-game yard scale
-        elseif markCellYardsX > 0 and markCellYardsY > 0 then
-          -- Rotating orientation: the marked cell is no longer aligned with
-          -- the screen, so we have to project from yard-space and snap each
-          -- edge independently to the rotated DF grid.
-          local halfYardsX = (markCellYardsX * 0.5) + (markRadius * yardsPerCell)
-          local halfYardsY = (markCellYardsY * 0.5) + (markRadius * yardsPerCell)
-          local halfYardsLeft  = halfYardsX
-          local halfYardsRight = halfYardsX
-          local halfYardsSouth = halfYardsY
-          local halfYardsNorth = halfYardsY
-          local function SnapToCell(yards)
-            if yards >= 0 then return math.floor((yards / yardsPerCell) + 0.5) end
-            return math.ceil((yards / yardsPerCell) - 0.5)
-          end
-          exMin = SnapToCell(east  - halfYardsLeft)
-          exMax = SnapToCell(east  + halfYardsRight)
-          eyMin = SnapToCell(north - halfYardsSouth)
-          eyMax = SnapToCell(north + halfYardsNorth)
+      local exMin, exMax, eyMin, eyMax
+      if orientation == "fixed" then
+        -- Fixed orientation: marked cell is axis-aligned with the DF grid.
+        -- The DF renderer prints each column as 2 chars (glyph + space) but
+        -- each row as 1 char tall, so a visually-square rectangle needs
+        -- ~half as many columns as rows. We force ODD counts so the M is
+        -- perfectly centered with equal cells on each side.
+        local rowsPerSide = math.max(1, math.floor((markCellYards / yardsPerCell) + 0.5))
+        local extra = markRadius or 0
+        rowsPerSide = rowsPerSide + (extra * 2)
+        if rowsPerSide % 2 == 0 then rowsPerSide = rowsPerSide + 1 end
+        local colsPerSide = math.max(1, math.floor((rowsPerSide / 2) + 0.5))
+        if colsPerSide % 2 == 0 then colsPerSide = colsPerSide + 1 end
+        local halfRow = (rowsPerSide - 1) / 2
+        local halfCol = (colsPerSide - 1) / 2
+        exMin = mx - halfCol
+        exMax = mx + halfCol
+        eyMin = my - halfRow + 2  -- shift south edge up by 2 cells to match in-game yard scale
+        eyMax = my + halfRow - 2  -- shift north edge down by 2 cells to match in-game yard scale
+      elseif markCellYardsX > 0 and markCellYardsY > 0 then
+        -- Rotating orientation: the marked cell is no longer aligned with
+        -- the screen, so we have to project from yard-space and snap each
+        -- edge independently to the rotated DF grid.
+        local halfYardsX = (markCellYardsX * 0.5) + (markRadius * yardsPerCell)
+        local halfYardsY = (markCellYardsY * 0.5) + (markRadius * yardsPerCell)
+        local halfYardsLeft  = halfYardsX
+        local halfYardsRight = halfYardsX
+        local halfYardsSouth = halfYardsY
+        local halfYardsNorth = halfYardsY
+        local function SnapToCell(yards)
+          if yards >= 0 then return math.floor((yards / yardsPerCell) + 0.5) end
+          return math.ceil((yards / yardsPerCell) - 0.5)
         end
-        if exMin and exMax and eyMin and eyMax then
-          for ey = eyMin, eyMax do
-            for ex = exMin, exMax do
-              if ex == exMin or ex == exMax or ey == eyMin or ey == eyMax then
-                if math.abs(ex) <= innerRadius and math.abs(ey) <= innerRadius and grid[ey] and grid[ey][ex] then
-                  -- Only draw edge on empty cells so entities are never overwritten.
-                  if grid[ey][ex] == "." then
-                    grid[ey][ex] = markEdgeGlyph
-                  end
-                end
+        exMin = SnapToCell(east  - halfYardsLeft)
+        exMax = SnapToCell(east  + halfYardsRight)
+        eyMin = SnapToCell(north - halfYardsSouth)
+        eyMax = SnapToCell(north + halfYardsNorth)
+      end
+      -- Render perimeter whenever the mark's bounding box overlaps the viewport
+      -- (not just when the center is in view). Loop bounds are clamped so a
+      -- giant offscreen mark never iterates over invisible cells.
+      if exMin and exMax and eyMin and eyMax
+          and exMin <= innerRadius and exMax >= -innerRadius
+          and eyMin <= innerRadius and eyMax >= -innerRadius then
+        local clampedExMin = exMin < -innerRadius and -innerRadius or exMin
+        local clampedExMax = exMax >  innerRadius and  innerRadius or exMax
+        local clampedEyMin = eyMin < -innerRadius and -innerRadius or eyMin
+        local clampedEyMax = eyMax >  innerRadius and  innerRadius or eyMax
+        for ey = clampedEyMin, clampedEyMax do
+          local row = grid[ey]
+          if row then
+            for ex = clampedExMin, clampedExMax do
+              if (ex == exMin or ex == exMax or ey == eyMin or ey == eyMax)
+                  and row[ex] == "." then
+                row[ex] = markEdgeGlyph
               end
             end
           end
         end
+      end
 
-        if grid[my] and grid[my][mx] then
-          local current = grid[my][mx]
-          if current ~= "P" and current ~= "@" and current ~= "T" and current ~= "t" and current ~= targetGlyphNear and current ~= targetGlyphMid then
-            grid[my][mx] = markCenterGlyph
-          end
+      -- Center glyph only renders if the mark's center cell is on screen.
+      if math.abs(mx) <= innerRadius and math.abs(my) <= innerRadius
+          and grid[my] and grid[my][mx] then
+        local current = grid[my][mx]
+        if current ~= "P" and current ~= "@" and current ~= "T" and current ~= "t" and current ~= targetGlyphNear and current ~= targetGlyphMid then
+          grid[my][mx] = markCenterGlyph
         end
       end
     end
