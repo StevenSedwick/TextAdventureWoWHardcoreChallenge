@@ -34,8 +34,10 @@ function TA_GetOreNodeGlyph(nodeType)
   return ORE_GLYPH
 end
 
-local function recordOreNode(nodeType)
-  local wx, wy = UnitPosition("player")
+local function recordOreNode(nodeType, wx, wy)
+  if not wx or not wy then
+    wx, wy = UnitPosition("player")
+  end
   if not wx or not wy then return end
   local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
   if not mapID then return end
@@ -48,7 +50,6 @@ local function recordOreNode(nodeType)
     TextAdventurerDB.oreNodes[mapID] = byMap
   end
 
-  -- Skip if same node type already recorded within DEDUP_YARDS.
   for _, node in ipairs(byMap) do
     if node.n == nodeType then
       local dx = node.wx - wx
@@ -67,14 +68,78 @@ local function recordOreNode(nodeType)
   TA.oreNodesVersion = (TA.oreNodesVersion or 0) + 1
 end
 
+-- Classic Era minimap zoom radii in yards (zoom level 0..5).
+local MINIMAP_RADIUS_OUTDOOR = { [0] = 233.3, [1] = 200, [2] = 166.6, [3] = 133.3, [4] = 100, [5] = 66.6 }
+local MINIMAP_RADIUS_INDOOR  = { [0] = 150,   [1] = 120, [2] = 90,    [3] = 75,    [4] = 60,  [5] = 45 }
+
+-- Compute the world position of whatever the cursor is pointing at on the minimap.
+-- Returns (worldX, worldY) or nil if computation fails.
+local function ComputeMinimapCursorWorldPosition()
+  local mcx, mcy = Minimap:GetCenter()
+  if not mcx then return nil end
+  local cx, cy = GetCursorPosition()
+  if not cx then return nil end
+  local scale = Minimap:GetEffectiveScale()
+  if scale and scale > 0 then
+    cx = cx / scale
+    cy = cy / scale
+  end
+
+  local dxPx = cx - mcx  -- east+
+  local dyPx = cy - mcy  -- north+
+  local mw = Minimap:GetWidth()
+  if not mw or mw <= 0 then return nil end
+  local radiusPx = mw * 0.5
+
+  local zoom = Minimap:GetZoom() or 0
+  local _, instType = IsInInstance()
+  local radii = (instType == "none") and MINIMAP_RADIUS_OUTDOOR or MINIMAP_RADIUS_INDOOR
+  local yardsRadius = radii[zoom] or 100
+  local yardsPerPx = yardsRadius / radiusPx
+
+  local east  = dxPx * yardsPerPx
+  local north = dyPx * yardsPerPx
+
+  -- If the minimap rotates with the player (CVar rotateMinimap=1), our minimap
+  -- offsets are in player-facing space, not north-up. Rotate them by player
+  -- facing so they become world-axis offsets.
+  local rotateOn = GetCVar and GetCVar("rotateMinimap") == "1"
+  if rotateOn then
+    local facing = GetPlayerFacing and GetPlayerFacing() or 0
+    local cosF = math.cos(facing)
+    local sinF = math.sin(facing)
+    local east2  = east * cosF + north * sinF
+    local north2 = -east * sinF + north * cosF
+    east, north = east2, north2
+  end
+
+  local px, py = UnitPosition("player")
+  if not px or not py then return nil end
+  -- Player worldX is NORTH, worldY is EAST-negated (see DFMode.lua axis notes).
+  local nodeWX = px + north
+  local nodeWY = py - east
+  return nodeWX, nodeWY
+end
+
 -- Hook GameTooltip to detect when the player mouses over an ore node.
 GameTooltip:HookScript("OnShow", function()
   local textFrame = _G["GameTooltipTextLeft1"]
   local text = textFrame and textFrame:GetText()
   if not text then return end
-  if ORE_NODE_COLORS[text] then
-    recordOreNode(text)
+  if not ORE_NODE_COLORS[text] then return end
+
+  -- If the tooltip owner is the Minimap, the cursor is on a minimap blip;
+  -- compute the blip's world position from the cursor offset rather than
+  -- recording the player's own position.
+  local owner = GameTooltip:GetOwner()
+  if owner == Minimap then
+    local wx, wy = ComputeMinimapCursorWorldPosition()
+    if wx and wy then
+      recordOreNode(text, wx, wy)
+      return
+    end
   end
+  recordOreNode(text)
 end)
 
 -- ---- Command handler ----
