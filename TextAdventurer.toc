@@ -53,6 +53,7 @@ Modules\Skills.lua
 Modules\ScreenshotFilter.lua
 Modules\TargetingAndWho.lua
 Modules\IntegrationAPI.lua
+Modules\ItemTextAndExploration.lua
 Modules\TalentCommands.lua
 Modules\LootRollCommands.lua
 Modules\SpellbookCommands.lua
