@@ -49,6 +49,7 @@ Modules\MacroRecipeCommands.lua
 Modules\TrainerAndRecipes.lua
 Modules\Terminal.lua
 Modules\Profiler.lua
+Modules\Skills.lua
 Modules\TalentCommands.lua
 Modules\LootRollCommands.lua
 Modules\SpellbookCommands.lua
