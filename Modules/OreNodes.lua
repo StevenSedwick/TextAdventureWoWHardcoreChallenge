@@ -105,11 +105,15 @@ local function ComputeMinimapCursorWorldPosition()
   -- facing so they become world-axis offsets.
   local rotateOn = GetCVar and GetCVar("rotateMinimap") == "1"
   if rotateOn then
+    -- When the minimap rotates, screen-up = player forward direction.
+    -- WoW facing F: 0=north, pi/2=west (CCW). Forward in (north,east) is
+    -- (cos F, -sin F); right (90 CW of forward) is (sin F, cos F).
+    -- World offset = dyPx*forward + dxPx*right, using east=dxPx north=dyPx.
     local facing = GetPlayerFacing and GetPlayerFacing() or 0
     local cosF = math.cos(facing)
     local sinF = math.sin(facing)
-    local east2  = east * cosF + north * sinF
-    local north2 = -east * sinF + north * cosF
+    local north2 = north * cosF + east * sinF
+    local east2  = east  * cosF - north * sinF
     east, north = east2, north2
   end
 
@@ -177,8 +181,9 @@ local MINIMAP_CHROME_FRAMES = {
   "MiniMapPing",
 }
 
-local DEFAULT_MINIMAP_INSET_ALPHA = 0.25
-local DEFAULT_MINIMAP_INSET_SCALE = 0.7
+local DEFAULT_MINIMAP_INSET_ALPHA = 0.10
+local DEFAULT_MINIMAP_INSET_SCALE = 1.0
+local LOCKED_MINIMAP_ZOOM = 0  -- furthest out (largest yard radius)
 
 local function clamp(v, lo, hi)
   if v < lo then return lo end
@@ -187,15 +192,13 @@ local function clamp(v, lo, hi)
 end
 
 local function getInsetAlpha()
-  local v = tonumber(TextAdventurerDB and TextAdventurerDB.minimapInsetAlpha)
-  if not v then return DEFAULT_MINIMAP_INSET_ALPHA end
-  return clamp(v, 0.05, 1)
+  -- Locked: players cannot change this (would let them see the world).
+  return DEFAULT_MINIMAP_INSET_ALPHA
 end
 
 local function getInsetScale()
-  local v = tonumber(TextAdventurerDB and TextAdventurerDB.minimapInsetScale)
-  if not v then return DEFAULT_MINIMAP_INSET_SCALE end
-  return clamp(v, 0.3, 1.5)
+  -- Locked: scale is fixed at 1.0 so blip-to-yard math stays predictable.
+  return DEFAULT_MINIMAP_INSET_SCALE
 end
 
 local PLAYER_ARROW_BLANK = "Interface\\AddOns\\TextAdventurer\\Textures\\Blank"
@@ -232,6 +235,7 @@ local function captureMinimapState()
   s.scale  = Minimap:GetScale()
   s.alpha  = Minimap:GetAlpha()
   s.shown  = Minimap:IsShown()
+  s.zoom   = Minimap:GetZoom and Minimap:GetZoom() or nil
   s.numPoints = Minimap:GetNumPoints()
   s.points = {}
   for i = 1, s.numPoints do
@@ -324,9 +328,49 @@ local function restoreMinimapChildren()
   minimapInset.savedChildren = nil
 end
 
+local function lockMinimapZoom()
+  if Minimap.SetZoom then pcall(Minimap.SetZoom, Minimap, LOCKED_MINIMAP_ZOOM) end
+end
+
+-- Re-blank the player arrow texture (other addons or events can reset it).
+local function reblankPlayerArrow()
+  if Minimap.SetPlayerTexture then
+    local ok = pcall(Minimap.SetPlayerTexture, Minimap, "")
+    if not ok then
+      pcall(Minimap.SetPlayerTexture, Minimap, PLAYER_ARROW_BLANK)
+    end
+  end
+end
+
+local lockWatchdog
+local function ensureLockWatchdog()
+  if lockWatchdog then return end
+  lockWatchdog = CreateFrame("Frame")
+  lockWatchdog:RegisterEvent("MINIMAP_UPDATE_ZOOM")
+  lockWatchdog:RegisterEvent("MINIMAP_UPDATE_TRACKING")
+  lockWatchdog:RegisterEvent("CVAR_UPDATE")
+  lockWatchdog:SetScript("OnEvent", function()
+    if minimapInset.active then
+      lockMinimapZoom()
+      reblankPlayerArrow()
+    end
+  end)
+  -- Throttled OnUpdate as belt-and-suspenders against silent overrides.
+  local accum = 0
+  lockWatchdog:SetScript("OnUpdate", function(self, elapsed)
+    if not minimapInset.active then return end
+    accum = accum + elapsed
+    if accum < 1 then return end
+    accum = 0
+    if (Minimap:GetZoom() or 0) ~= LOCKED_MINIMAP_ZOOM then lockMinimapZoom() end
+    reblankPlayerArrow()
+  end)
+end
+
 local function applyMinimapInset()
   captureMinimapState()
   ensureDragHooked()
+  ensureLockWatchdog()
   -- Reparent off MinimapCluster so the performance-mode auto-hide on the
   -- cluster (and its hidden state) doesn't suppress us.
   Minimap:SetParent(UIParent)
@@ -340,6 +384,7 @@ local function applyMinimapInset()
   hideMinimapChrome()
   hideMinimapChildren()
   hidePlayerArrow()
+  lockMinimapZoom()
   Minimap:Show()
   minimapInset.active = true
 end
@@ -362,6 +407,7 @@ local function restoreMinimap()
     end
   end
   if s.shown then Minimap:Show() else Minimap:Hide() end
+  if s.zoom and Minimap.SetZoom then pcall(Minimap.SetZoom, Minimap, s.zoom) end
   restoreMinimapChrome()
   restoreMinimapChildren()
   restorePlayerArrow()
@@ -408,7 +454,7 @@ function TA_OreNodeCommand(args)
   local cmd = (args or ""):match("^%s*(%S*)%s*$") or ""
   cmd = cmd:lower()
 
-  if cmd == "clear" then
+  if cmd == "clear" or cmd == "reset" then
     local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
     if TextAdventurerDB and TextAdventurerDB.oreNodes and mapID then
       local removed = TextAdventurerDB.oreNodes[mapID] and #TextAdventurerDB.oreNodes[mapID] or 0
@@ -443,10 +489,11 @@ function TA_OreNodeCommand(args)
     end
 
   else
-    AddLine("system", "Usage: ore [list|clear|clearall]")
-    AddLine("system", "  ore list    - show recorded nodes on current map")
-    AddLine("system", "  ore clear   - clear nodes for current map")
-    AddLine("system", "  ore clearall - clear all saved nodes")
+    AddLine("system", "Usage: ore [list|clear|reset|clearall]")
+    AddLine("system", "  ore list       - show recorded nodes on current map")
+    AddLine("system", "  ore clear      - clear nodes for current map")
+    AddLine("system", "  ore reset      - alias for ore clear")
+    AddLine("system", "  ore clearall   - clear all saved nodes")
   end
 end
 
@@ -469,19 +516,9 @@ function TA_RegisterOreNodeCommandHandlers(exactHandlers, addPattern)
     AddLine("system", "Minimap inset position reset to top-right.")
   end
   addPattern("^minimap%s+alpha%s+([%d%.]+)$", function(arg)
-    local v = TA_SetMinimapInsetAlpha(arg)
-    if v then
-      AddLine("system", string.format("Minimap inset alpha set to %.2f.", v))
-    else
-      AddLine("system", "Usage: minimap alpha <0.05..1> (e.g. 0.25)")
-    end
+    AddLine("system", string.format("Minimap inset alpha is locked at %.2f for the challenge.", DEFAULT_MINIMAP_INSET_ALPHA))
   end)
   addPattern("^minimap%s+scale%s+([%d%.]+)$", function(arg)
-    local v = TA_SetMinimapInsetScale(arg)
-    if v then
-      AddLine("system", string.format("Minimap inset scale set to %.2f.", v))
-    else
-      AddLine("system", "Usage: minimap scale <0.3..1.5> (e.g. 0.7)")
-    end
+    AddLine("system", string.format("Minimap inset scale is locked at %.2f for the challenge.", DEFAULT_MINIMAP_INSET_SCALE))
   end)
 end
