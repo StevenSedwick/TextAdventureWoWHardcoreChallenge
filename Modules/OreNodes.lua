@@ -195,6 +195,31 @@ local function getInsetScale()
   return clamp(v, 0.3, 1.5)
 end
 
+local PLAYER_ARROW_BLANK = "Interface\\AddOns\\TextAdventurer\\Textures\\Blank"
+local PLAYER_ARROW_DEFAULT = "Interface\\Minimap\\MinimapArrow"
+
+local function hidePlayerArrow()
+  if minimapInset.savedPlayerTexture == nil then
+    minimapInset.savedPlayerTexture = PLAYER_ARROW_DEFAULT
+  end
+  if Minimap.SetPlayerTexture then
+    -- Empty string blanks the texture on Era; fall back to a blank file
+    -- if the API rejects empty strings on this client.
+    local ok = pcall(Minimap.SetPlayerTexture, Minimap, "")
+    if not ok then
+      pcall(Minimap.SetPlayerTexture, Minimap, PLAYER_ARROW_BLANK)
+    end
+  end
+end
+
+local function restorePlayerArrow()
+  if Minimap.SetPlayerTexture then
+    pcall(Minimap.SetPlayerTexture, Minimap,
+      minimapInset.savedPlayerTexture or PLAYER_ARROW_DEFAULT)
+  end
+  minimapInset.savedPlayerTexture = nil
+end
+
 local function captureMinimapState()
   if minimapInset.saved then return end
   local s = {}
@@ -288,6 +313,7 @@ local function applyMinimapInset()
   Minimap:SetClampedToScreen(true)
   applyInsetPosition()
   hideMinimapChrome()
+  hidePlayerArrow()
   Minimap:Show()
   minimapInset.active = true
 end
@@ -311,6 +337,7 @@ local function restoreMinimap()
   end
   if s.shown then Minimap:Show() else Minimap:Hide() end
   restoreMinimapChrome()
+  restorePlayerArrow()
   minimapInset.saved = nil
   minimapInset.active = false
 end
