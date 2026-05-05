@@ -229,6 +229,20 @@ function TA_SendFromTerminal(msg)
     cancelaura = true,
     cancelform = true,
     click = true,
+    -- Targeting (calls protected TargetUnit/AssistUnit/FocusUnit):
+    target = true,
+    targetexact = true,
+    targetenemy = true,
+    targetfriend = true,
+    targetparty = true,
+    targetraid = true,
+    targetlasttarget = true,
+    targetlastenemy = true,
+    targetlastfriend = true,
+    assist = true,
+    focus = true,
+    clearfocus = true,
+    cleartarget = true,
   }
   if cmd == "s" or cmd == "say" then
     SendChatMessage(rest, "SAY")
