@@ -153,6 +153,7 @@ local minimapInset = { active = false, saved = nil }
 -- inset is active so only the round map face shows, then restore them on
 -- toggle off. Names that don't exist on this client are silently skipped.
 local MINIMAP_CHROME_FRAMES = {
+  "MinimapCluster",
   "MinimapBorder",
   "MinimapBorderTop",
   "MinimapZoomIn",
@@ -171,6 +172,8 @@ local MINIMAP_CHROME_FRAMES = {
   "MiniMapInstanceDifficulty",
   "TimeManagerClockButton",
   "MiniMapLFGFrame",
+  "LFGMinimapFrame",
+  "LFGMinimapFrameButton",
   "MiniMapPing",
 }
 
@@ -299,6 +302,28 @@ local function restoreMinimapChrome()
   minimapInset.savedChrome = nil
 end
 
+-- Hide all child frames of Minimap (addon icons like BugSack, LibDBIcon
+-- buttons, etc.). We snapshot their shown state and restore on toggle off.
+local function hideMinimapChildren()
+  local savedChildren = {}
+  for _, child in ipairs({ Minimap:GetChildren() }) do
+    if child and child.IsShown and child:IsShown() then
+      child:Hide()
+      savedChildren[#savedChildren + 1] = child
+    end
+  end
+  minimapInset.savedChildren = savedChildren
+end
+
+local function restoreMinimapChildren()
+  local saved = minimapInset.savedChildren
+  if not saved then return end
+  for _, child in ipairs(saved) do
+    if child and child.Show then child:Show() end
+  end
+  minimapInset.savedChildren = nil
+end
+
 local function applyMinimapInset()
   captureMinimapState()
   ensureDragHooked()
@@ -313,6 +338,7 @@ local function applyMinimapInset()
   Minimap:SetClampedToScreen(true)
   applyInsetPosition()
   hideMinimapChrome()
+  hideMinimapChildren()
   hidePlayerArrow()
   Minimap:Show()
   minimapInset.active = true
@@ -337,6 +363,7 @@ local function restoreMinimap()
   end
   if s.shown then Minimap:Show() else Minimap:Hide() end
   restoreMinimapChrome()
+  restoreMinimapChildren()
   restorePlayerArrow()
   minimapInset.saved = nil
   minimapInset.active = false
