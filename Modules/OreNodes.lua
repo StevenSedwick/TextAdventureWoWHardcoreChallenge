@@ -181,7 +181,7 @@ local MINIMAP_CHROME_FRAMES = {
   "MiniMapPing",
 }
 
-local DEFAULT_MINIMAP_INSET_ALPHA = 0.10
+local DEFAULT_MINIMAP_INSET_ALPHA = 0
 local DEFAULT_MINIMAP_INSET_SCALE = 1.0
 local LOCKED_MINIMAP_ZOOM = 0  -- furthest out (largest yard radius)
 
