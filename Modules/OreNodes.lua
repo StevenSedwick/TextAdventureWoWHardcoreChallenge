@@ -26,6 +26,17 @@ local ORE_GLYPH = "$"
 local MAX_NODES_PER_MAP = 200
 local DEDUP_YARDS = 20  -- skip recording if same type exists within this range
 
+-- Runtime debug flag (off by default). When on, recordOreNode and the minimap
+-- cursor math print verbose diagnostics so we can verify that the coordinates
+-- recorded from minimap blips line up with what DFMode renders.
+local oreDebug = false
+local function dprint(fmt, ...)
+  if not oreDebug then return end
+  local msg = (select("#", ...) > 0) and string.format(fmt, ...) or fmt
+  if AddLine then AddLine("system", "[ore] " .. msg) end
+end
+function TA_OreDebugEnabled() return oreDebug end
+
 function TA_GetOreNodeGlyph(nodeType)
   local color = ORE_NODE_COLORS[nodeType]
   if color then
@@ -35,6 +46,7 @@ function TA_GetOreNodeGlyph(nodeType)
 end
 
 local function recordOreNode(nodeType, wx, wy)
+  local fromCursor = (wx ~= nil and wy ~= nil)
   if not wx or not wy then
     wx, wy = UnitPosition("player")
   end
@@ -55,6 +67,11 @@ local function recordOreNode(nodeType, wx, wy)
       local dx = node.wx - wx
       local dy = node.wy - wy
       if (dx * dx + dy * dy) <= (DEDUP_YARDS * DEDUP_YARDS) then
+        if oreDebug then
+          local dist = math.sqrt(dx * dx + dy * dy)
+          dprint("dedup %s @(%.1f,%.1f) - existing within %.1f yd of (%.1f,%.1f)",
+            nodeType, wx, wy, dist, node.wx, node.wy)
+        end
         return
       end
     end
@@ -66,6 +83,20 @@ local function recordOreNode(nodeType, wx, wy)
 
   table.insert(byMap, { n = nodeType, wx = wx, wy = wy })
   TA.oreNodesVersion = (TA.oreNodesVersion or 0) + 1
+  if oreDebug then
+    local px, py = UnitPosition("player")
+    if px and py then
+      local north = wx - px
+      local east  = -(wy - py)
+      local dist  = math.sqrt(north * north + east * east)
+      dprint("REC %s src=%s map=%s node=(%.1f,%.1f) player=(%.1f,%.1f) delta(N=%.1f,E=%.1f) dist=%.1f yd",
+        nodeType, fromCursor and "cursor" or "self", tostring(mapID),
+        wx, wy, px, py, north, east, dist)
+    else
+      dprint("REC %s src=%s map=%s node=(%.1f,%.1f) (no player pos)",
+        nodeType, fromCursor and "cursor" or "self", tostring(mapID), wx, wy)
+    end
+  end
 end
 
 -- Classic Era minimap zoom radii in yards (zoom level 0..5).
@@ -122,6 +153,12 @@ local function ComputeMinimapCursorWorldPosition()
   -- Player worldX is NORTH, worldY is EAST-negated (see DFMode.lua axis notes).
   local nodeWX = px + north
   local nodeWY = py - east
+  if oreDebug then
+    dprint("cursor: dPx=(%.1f,%.1f) mw=%.1f r=%.1f zoom=%d yd/px=%.3f rot(N=%.1f,E=%.1f) rotOn=%s facing=%.2f -> world(%.1f,%.1f) player=(%.1f,%.1f)",
+      dxPx, dyPx, mw, radiusPx, zoom, yardsPerPx, north, east,
+      tostring(rotateOn), (GetPlayerFacing and GetPlayerFacing() or 0),
+      nodeWX, nodeWY, px, py)
+  end
   return nodeWX, nodeWY
 end
 
@@ -476,6 +513,21 @@ function TA_OreNodeCommand(args)
     end
     AddLine("system", string.format("Cleared all ore nodes (%d total).", total))
 
+  elseif cmd == "debug" then
+    oreDebug = not oreDebug
+    AddLine("system", "Ore debug " .. (oreDebug and "ON" or "OFF") .. ". Hover blips and watch chat.")
+    if oreDebug then
+      local px, py = UnitPosition("player")
+      local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+      local facing = GetPlayerFacing and GetPlayerFacing() or 0
+      local rotOn = GetCVar and GetCVar("rotateMinimap") == "1"
+      AddLine("system", string.format("[ore] state: player=(%s,%s) map=%s facing=%.2f rad rotateMinimap=%s zoom=%s",
+        px and string.format("%.1f", px) or "?",
+        py and string.format("%.1f", py) or "?",
+        tostring(mapID), facing, tostring(rotOn),
+        tostring(Minimap:GetZoom())))
+    end
+
   elseif cmd == "list" or cmd == "" then
     local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
     local nodes = TextAdventurerDB and TextAdventurerDB.oreNodes and mapID and TextAdventurerDB.oreNodes[mapID]
@@ -489,11 +541,12 @@ function TA_OreNodeCommand(args)
     end
 
   else
-    AddLine("system", "Usage: ore [list|clear|reset|clearall]")
+    AddLine("system", "Usage: ore [list|clear|reset|clearall|debug]")
     AddLine("system", "  ore list       - show recorded nodes on current map")
     AddLine("system", "  ore clear      - clear nodes for current map")
     AddLine("system", "  ore reset      - alias for ore clear")
     AddLine("system", "  ore clearall   - clear all saved nodes")
+    AddLine("system", "  ore debug      - toggle verbose coord logging on hover")
   end
 end
 
