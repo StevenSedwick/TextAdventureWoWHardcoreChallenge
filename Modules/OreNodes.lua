@@ -187,8 +187,49 @@ local function captureMinimapState()
   minimapInset.saved = s
 end
 
+local function applyInsetPosition()
+  Minimap:ClearAllPoints()
+  local pos = TextAdventurerDB and TextAdventurerDB.minimapInsetPos
+  if type(pos) == "table" and pos.point then
+    Minimap:SetPoint(pos.point, UIParent, pos.relPoint or pos.point,
+      tonumber(pos.x) or 0, tonumber(pos.y) or 0)
+  else
+    Minimap:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -16, -16)
+  end
+end
+
+local function persistInsetPosition()
+  local point, _, relPoint, x, y = Minimap:GetPoint(1)
+  if not point then return end
+  TextAdventurerDB = TextAdventurerDB or {}
+  TextAdventurerDB.minimapInsetPos = {
+    point = point, relPoint = relPoint, x = x, y = y,
+  }
+end
+
+local dragHooked = false
+local function ensureDragHooked()
+  if dragHooked then return end
+  dragHooked = true
+  Minimap:SetMovable(true)
+  Minimap:HookScript("OnMouseDown", function(self, button)
+    if button == "LeftButton" and IsShiftKeyDown() and minimapInset.active then
+      self:StartMoving()
+      self.taIsDragging = true
+    end
+  end)
+  Minimap:HookScript("OnMouseUp", function(self, button)
+    if self.taIsDragging then
+      self:StopMovingOrSizing()
+      self.taIsDragging = false
+      persistInsetPosition()
+    end
+  end)
+end
+
 local function applyMinimapInset()
   captureMinimapState()
+  ensureDragHooked()
   -- Reparent off MinimapCluster so the performance-mode auto-hide on the
   -- cluster (and its hidden state) doesn't suppress us.
   Minimap:SetParent(UIParent)
@@ -196,8 +237,9 @@ local function applyMinimapInset()
   Minimap:SetFrameLevel(20000)
   Minimap:SetScale(getInsetScale())
   Minimap:SetAlpha(getInsetAlpha())
-  Minimap:ClearAllPoints()
-  Minimap:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -16, -16)
+  Minimap:SetMovable(true)
+  Minimap:SetClampedToScreen(true)
+  applyInsetPosition()
   Minimap:Show()
   minimapInset.active = true
 end
@@ -251,6 +293,10 @@ function TA_SetMinimapInsetScale(value)
   TextAdventurerDB.minimapInsetScale = v
   if minimapInset.active then Minimap:SetScale(v) end
   return v
+end
+
+function TA_MinimapInsetReapplyPosition()
+  if minimapInset.active then applyInsetPosition() end
 end
 
 -- ---- Command handler ----
@@ -309,11 +355,16 @@ function TA_RegisterOreNodeCommandHandlers(exactHandlers, addPattern)
   exactHandlers["minimap"] = function()
     local on = TA_ToggleMinimapInset()
     AddLine("system", on
-      and "Minimap inset ON. Hover ore blips to record them. /ta minimap to hide."
+      and "Minimap inset ON. Shift+drag to move. Hover ore blips to record. /ta minimap to hide."
       or  "Minimap inset OFF.")
   end
-  exactHandlers["minimap on"]  = function() TA_ToggleMinimapInset("on");  AddLine("system", "Minimap inset ON.")  end
+  exactHandlers["minimap on"]  = function() TA_ToggleMinimapInset("on");  AddLine("system", "Minimap inset ON. Shift+drag to move.") end
   exactHandlers["minimap off"] = function() TA_ToggleMinimapInset("off"); AddLine("system", "Minimap inset OFF.") end
+  exactHandlers["minimap reset"] = function()
+    if TextAdventurerDB then TextAdventurerDB.minimapInsetPos = nil end
+    if TA_MinimapInsetReapplyPosition then TA_MinimapInsetReapplyPosition() end
+    AddLine("system", "Minimap inset position reset to top-right.")
+  end
   addPattern("^minimap%s+alpha%s+([%d%.]+)$", function(arg)
     local v = TA_SetMinimapInsetAlpha(arg)
     if v then
