@@ -149,6 +149,31 @@ end)
 
 local minimapInset = { active = false, saved = nil }
 
+-- Standard minimap chrome frames in Classic Era. We hide these when the
+-- inset is active so only the round map face shows, then restore them on
+-- toggle off. Names that don't exist on this client are silently skipped.
+local MINIMAP_CHROME_FRAMES = {
+  "MinimapBorder",
+  "MinimapBorderTop",
+  "MinimapZoomIn",
+  "MinimapZoomOut",
+  "MinimapNorthTag",
+  "MinimapToggleButton",
+  "MiniMapWorldMapButton",
+  "GameTimeFrame",
+  "MiniMapTracking",
+  "MiniMapTrackingFrame",
+  "MiniMapTrackingButton",
+  "MiniMapMailFrame",
+  "MiniMapMailIcon",
+  "MiniMapBattlefieldFrame",
+  "MiniMapVoiceChatFrame",
+  "MiniMapInstanceDifficulty",
+  "TimeManagerClockButton",
+  "MiniMapLFGFrame",
+  "MiniMapPing",
+}
+
 local DEFAULT_MINIMAP_INSET_ALPHA = 0.25
 local DEFAULT_MINIMAP_INSET_SCALE = 0.7
 
@@ -227,6 +252,28 @@ local function ensureDragHooked()
   end)
 end
 
+local function hideMinimapChrome()
+  local saved = {}
+  for _, name in ipairs(MINIMAP_CHROME_FRAMES) do
+    local f = _G[name]
+    if f and f.IsShown and f.Hide then
+      saved[name] = f:IsShown()
+      f:Hide()
+    end
+  end
+  minimapInset.savedChrome = saved
+end
+
+local function restoreMinimapChrome()
+  local saved = minimapInset.savedChrome
+  if not saved then return end
+  for name, wasShown in pairs(saved) do
+    local f = _G[name]
+    if f and wasShown and f.Show then f:Show() end
+  end
+  minimapInset.savedChrome = nil
+end
+
 local function applyMinimapInset()
   captureMinimapState()
   ensureDragHooked()
@@ -240,6 +287,7 @@ local function applyMinimapInset()
   Minimap:SetMovable(true)
   Minimap:SetClampedToScreen(true)
   applyInsetPosition()
+  hideMinimapChrome()
   Minimap:Show()
   minimapInset.active = true
 end
@@ -262,6 +310,7 @@ local function restoreMinimap()
     end
   end
   if s.shown then Minimap:Show() else Minimap:Hide() end
+  restoreMinimapChrome()
   minimapInset.saved = nil
   minimapInset.active = false
 end
