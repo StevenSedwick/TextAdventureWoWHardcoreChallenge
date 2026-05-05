@@ -235,7 +235,7 @@ local function captureMinimapState()
   s.scale  = Minimap:GetScale()
   s.alpha  = Minimap:GetAlpha()
   s.shown  = Minimap:IsShown()
-  s.zoom   = Minimap:GetZoom and Minimap:GetZoom() or nil
+  s.zoom   = Minimap.GetZoom and Minimap:GetZoom() or nil
   s.numPoints = Minimap:GetNumPoints()
   s.points = {}
   for i = 1, s.numPoints do
