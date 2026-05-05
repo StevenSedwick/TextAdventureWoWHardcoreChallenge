@@ -27,6 +27,7 @@ Modules\Terrain.lua
 Modules\DFMode.lua
 Modules\OreNodes.lua
 Modules\QuestRouter.lua
+Modules\GuidelimeRoute.lua
 Modules\Routing.lua
 Modules\SettingsAndPerformance.lua
 Modules\Awareness.lua

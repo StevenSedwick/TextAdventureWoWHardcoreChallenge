@@ -42,6 +42,17 @@
   exactHandlers["abandon confirm"] = function() TA_ConfirmAbandonQuest() end
   exactHandlers["abandon cancel"] = function() TA_CancelAbandonQuest() end
 
+  -- Guidelime route bridge (next 3 steps + advance/back).
+  -- Falls back to in-house questroute if Guidelime is not connected.
+  exactHandlers["route"]            = function() TA_ReportGuidelimeRoute(3) end
+  exactHandlers["route next"]       = function() TA_ReportGuidelimeRoute(3) end
+  exactHandlers["route skip"]       = function() TA_GuidelimeRouteAdvance() end
+  exactHandlers["route advance"]    = function() TA_GuidelimeRouteAdvance() end
+  exactHandlers["route back"]       = function() TA_GuidelimeRouteBack() end
+  exactHandlers["route undo"]       = function() TA_GuidelimeRouteBack() end
+  exactHandlers["route status"]     = function() AddLine("quest", TA_GuidelimeStatusLine()) end
+  addPatternHandler("^route%s+(%d+)$", function(n) TA_ReportGuidelimeRoute(tonumber(n)) end)
+
   addPatternHandler("^questroute%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end)
   addPatternHandler("^quest%s+route%s+top%s+(%d+)$", function(n) TA_ReportQuestRouteSuggestions(false, tonumber(n)) end)
   addPatternHandler("^questroute%s+weight%s+([%a]+)%s+([%-]?[%d%.]+)$", function(k, v) TA_SetQuestRouteWeight(k, v) end)
