@@ -100,10 +100,11 @@ dfMapContainer:SetPoint("TOPLEFT", 18, -42)
 dfMapContainer:SetPoint("BOTTOMRIGHT", -18, 18)
 
 local DF_MAX_ROWS = 50
-local DF_LINE_HEIGHT = 15
+local DF_LINE_HEIGHT = 12
 dfModeFrame.mapLines = {}
 for i = 1, DF_MAX_ROWS do
-  local fs = dfMapContainer:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  local fs = dfMapContainer:CreateFontString(nil, "OVERLAY")
+  fs:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
   fs:SetPoint("TOPLEFT", 0, -(i - 1) * DF_LINE_HEIGHT)
   fs:SetJustifyH("LEFT")
   fs:SetTextColor(0.6, 1.0, 0.9)
