@@ -276,6 +276,17 @@ function TA_HandleNavigationInputCommand(lower, msg)
     return true
   end
 
+  if lower == "df reset" or lower == "dfmode reset" then
+    TextAdventurerDB.dfModeWidth = nil
+    TextAdventurerDB.dfModeHeight = nil
+    TextAdventurerDB.dfModeGridSize = nil
+    TextAdventurerDB.dfModePosition = nil
+    TextAdventurerDB.dfModeWidthExpandedMigration = nil
+    AddLine("system", "DF mode layout reset to defaults. Reloading UI...")
+    ReloadUI()
+    return true
+  end
+
   if lower == "df copy" or lower == "dfmode copy" then
     local raw = TA and TA.dfModeLastRawDisplay
     if not raw or raw == "" then

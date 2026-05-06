@@ -281,8 +281,21 @@ local function captureMinimapState()
   minimapInset.saved = s
 end
 
+-- Pixel offset to apply when centering the minimap over the DF mode P glyph.
+-- Derived from visual calibration: measured dx=-86, dy=+39 on the reference UI layout.
+local MINIMAP_P_OFFSET_X = -22
+local MINIMAP_P_OFFSET_Y = 37
+
 local function applyInsetPosition()
   Minimap:ClearAllPoints()
+  -- If DF mode is active, center the minimap over the P (player) glyph.
+  if TA.dfModeEnabled and TA.GetDFPlayerScreenCenter then
+    local sx, sy = TA.GetDFPlayerScreenCenter()
+    if sx and sy then
+      Minimap:SetPoint("CENTER", UIParent, "BOTTOMLEFT", sx + MINIMAP_P_OFFSET_X, sy + MINIMAP_P_OFFSET_Y)
+      return
+    end
+  end
   local pos = TextAdventurerDB and TextAdventurerDB.minimapInsetPos
   if type(pos) == "table" and pos.point then
     Minimap:SetPoint(pos.point, UIParent, pos.relPoint or pos.point,

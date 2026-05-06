@@ -115,6 +115,23 @@ end
 -- textadventurer.lua) can show it after load.
 TA._dfModeFrame = dfModeFrame
 
+-- Returns the screen-space (x, y) of the P glyph (player center) in the DF map.
+-- Uses dfMapContainer geometry: P is at horizontal center, vertically at the
+-- center row (row radius+1 from the top, where radius = floor(gridSize/2)).
+-- Returns nil if the frame isn't visible or positioned yet.
+function TA.GetDFPlayerScreenCenter()
+  if not dfModeFrame:IsShown() then return nil end
+  local left  = dfMapContainer:GetLeft()
+  local top   = dfMapContainer:GetTop()
+  local width = dfMapContainer:GetWidth()
+  if not left or not top or not width then return nil end
+  local gridSize = TA.dfModeGridSize or 35
+  local radius   = math.floor(gridSize / 2)
+  local screenX  = left + width * 0.5
+  local screenY  = top - radius * DF_LINE_HEIGHT - DF_LINE_HEIGHT * 0.5
+  return screenX, screenY
+end
+
 -- ---- moved from textadventurer.lua lines 10046-10112 ----
 local function TA_RecordDFLastKnownUnits(units, mapID)
   if not units or not mapID then return end
@@ -510,7 +527,7 @@ local function BuildDFModeDisplay()
 
   TA.dfModeTerrainContext = TA_GetTerrainContextAtMapPos()
 
-  local gridSize = TA.dfModeGridSize or 21
+  local gridSize = TA.dfModeGridSize or 35
   local radius = TA.dfModeRenderRadiusOverride or math.floor(gridSize / 2)
   -- innerRadius covers all display cells after rotation. In fixed orientation no rotation
   -- happens so we can save grid allocation by using radius directly.
