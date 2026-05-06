@@ -229,6 +229,38 @@
             ],
             "isBackground": false,
             "problemMatcher": []
+        },
+        {
+            "label": "Wipe WoW Screenshots (Once)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}\\tools\\look_accessibility\\screenshot_janitor.py",
+                "--once"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Wipe WoW Screenshots (Watch)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}\\tools\\look_accessibility\\screenshot_janitor.py",
+                "--interval",
+                "0.25",
+                "--quiet"
+            ],
+            "isBackground": true,
+            "presentation": {
+                "reveal": "silent",
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "runOptions": {
+                "runOn": "folderOpen"
+            },
+            "problemMatcher": []
         }
     ]
 }

@@ -451,7 +451,51 @@ def build_command_text(description: str) -> str:
     return f"/look set {clean}"
 
 
+def delete_capture_image(image_path: Path) -> bool:
+    try:
+        image_path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        print(f"[LOOK] Warning: failed to delete temporary image {image_path}: {exc}", file=sys.stderr)
+        return False
+
+
+def default_wow_screenshots_dir() -> Optional[Path]:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "Screenshots"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def delete_fresh_wow_screenshots(args, since_ts: float) -> int:
+    # Note: since_ts/grace are ignored unless --wow-screenshot-only-fresh is set.
+    # Default behavior is to wipe ALL WoWScrnShot_*.jpg/.jpeg in the Screenshots
+    # directory so the folder doesn't accumulate stream artifacts.
+    screenshots_dir = Path(args.wow_screenshots_dir) if args.wow_screenshots_dir else default_wow_screenshots_dir()
+    if screenshots_dir is None or not screenshots_dir.is_dir():
+        return 0
+
+    only_fresh = getattr(args, "wow_screenshot_only_fresh", False)
+    cutoff = since_ts - max(0.0, getattr(args, "wow_screenshot_grace_seconds", 0.0))
+    deleted = 0
+    for pattern in ("WoWScrnShot_*.jpg", "WoWScrnShot_*.jpeg"):
+        for screenshot_path in screenshots_dir.glob(pattern):
+            if only_fresh:
+                try:
+                    if screenshot_path.stat().st_mtime < cutoff:
+                        continue
+                except FileNotFoundError:
+                    continue
+            if delete_capture_image(screenshot_path):
+                deleted += 1
+    return deleted
+
+
 def run_once(args) -> int:
+    started_at = time.time()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -459,52 +503,61 @@ def run_once(args) -> int:
     image_path = output_dir / f"wow_frame_{ts}.png"
     bridge_txt = output_dir / "look_last_description.txt"
 
-    capture = capture_wow_frame(output_path=image_path, window_title=args.window_title)
+    try:
+        capture = capture_wow_frame(output_path=image_path, window_title=args.window_title)
 
-    predictions = []
-    if args.model_mode == "ollama":
-        description = describe_with_ollama(image_path, args.ollama_model)
-    elif args.model_mode == "local":
-        description, predictions = describe_with_local_weights(
-            image_path=image_path,
-            weights_path=Path(args.weights_path),
-            labels_path=Path(args.labels_path),
-            threshold=args.confidence_threshold,
-        )
-    elif args.model_mode == "joblib":
-        description, predictions = describe_with_joblib_model(
-            image_path=image_path,
-            model_dir=Path(args.model_dir),
-            args=args,
-        )
-    else:
-        description = describe_placeholder(image_path)
+        predictions = []
+        if args.model_mode == "ollama":
+            description = describe_with_ollama(image_path, args.ollama_model)
+        elif args.model_mode == "local":
+            description, predictions = describe_with_local_weights(
+                image_path=image_path,
+                weights_path=Path(args.weights_path),
+                labels_path=Path(args.labels_path),
+                threshold=args.confidence_threshold,
+            )
+        elif args.model_mode == "joblib":
+            description, predictions = describe_with_joblib_model(
+                image_path=image_path,
+                model_dir=Path(args.model_dir),
+                args=args,
+            )
+        else:
+            description = describe_placeholder(image_path)
 
-    command_text = build_command_text(description)
+        command_text = build_command_text(description)
 
-    payload = {
-        "captured_at": dt.datetime.now().isoformat(),
-        "image_path": str(image_path),
-        "capture_mode": capture.mode,
-        "width": capture.width,
-        "height": capture.height,
-        "description": description,
-        "look_set_command": command_text,
-        "model_mode": args.model_mode,
-        "predictions": [
-            {"label": label, "score": round(score, 4)} for (label, score) in predictions
-        ],
-    }
+        payload = {
+            "captured_at": dt.datetime.now().isoformat(),
+            "image_path": str(image_path),
+            "image_retention": "kept" if args.keep_screenshot else "delete_after_processing",
+            "capture_mode": capture.mode,
+            "width": capture.width,
+            "height": capture.height,
+            "description": description,
+            "look_set_command": command_text,
+            "model_mode": args.model_mode,
+            "predictions": [
+                {"label": label, "score": round(score, 4)} for (label, score) in predictions
+            ],
+        }
 
-    (output_dir / "look_last.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    bridge_txt.write_text(description + "\n", encoding="utf-8")
+        (output_dir / "look_last.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        bridge_txt.write_text(description + "\n", encoding="utf-8")
 
-    print("[LOOK] Capture mode:", capture.mode)
-    print("[LOOK] Image:", image_path)
-    print("[LOOK] Description:", description)
-    print("[LOOK] Paste this in WoW:")
-    print(command_text)
-    return 0
+        print("[LOOK] Capture mode:", capture.mode)
+        print("[LOOK] Image:", image_path)
+        print("[LOOK] Description:", description)
+        print("[LOOK] Paste this in WoW:")
+        print(command_text)
+        return 0
+    finally:
+        if not args.keep_screenshot and delete_capture_image(image_path):
+            print("[LOOK] Deleted temporary image:", image_path)
+        if not args.keep_screenshot:
+            deleted_jpgs = delete_fresh_wow_screenshots(args, started_at)
+            if deleted_jpgs:
+                print(f"[LOOK] Deleted {deleted_jpgs} WoW screenshot JPG(s)")
 
 
 def run_hotkey_loop(args) -> int:
@@ -517,7 +570,16 @@ def run_hotkey_loop(args) -> int:
     print("Hotkey:", args.hotkey)
     print("Press ESC to quit")
 
+    loop_started_at = time.time()
+    last_screenshot_cleanup_at = 0.0
     while True:
+        now = time.time()
+        if not args.keep_screenshot and now - last_screenshot_cleanup_at >= 0.5:
+            deleted_jpgs = delete_fresh_wow_screenshots(args, loop_started_at)
+            if deleted_jpgs:
+                print(f"[LOOK] Deleted {deleted_jpgs} WoW screenshot JPG(s)")
+            last_screenshot_cleanup_at = now
+
         if keyboard.is_pressed("esc"):
             print("Exiting hotkey loop")
             break
@@ -561,6 +623,19 @@ def parse_args(argv: list[str]):
     parser.add_argument("--joblib-bins", type=int, default=16, help="Histogram bins used by joblib feature extractor")
     parser.add_argument("--hotkey", default="ctrl+shift+l", help="Global hotkey for capture loop")
     parser.add_argument("--watch", action="store_true", help="Run hotkey loop")
+    parser.add_argument("--keep-screenshot", action="store_true", help="Keep captured image files after processing")
+    parser.add_argument("--wow-screenshots-dir", default="", help="WoW Screenshots directory for cleanup")
+    parser.add_argument(
+        "--wow-screenshot-only-fresh",
+        action="store_true",
+        help="Only delete WoW screenshot JPGs newer than the grace window (default: delete all)",
+    )
+    parser.add_argument(
+        "--wow-screenshot-grace-seconds",
+        type=float,
+        default=5.0,
+        help="With --wow-screenshot-only-fresh: delete JPGs modified this many seconds before capture start or later",
+    )
     return parser.parse_args(argv)
 
 

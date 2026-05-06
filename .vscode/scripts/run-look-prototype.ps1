@@ -11,7 +11,8 @@ param(
     [string]$Facing = "",
     [string]$Pitch = "",
     [string]$Zoom = "",
-    [switch]$Watch = $false
+    [switch]$Watch = $false,
+    [switch]$KeepScreenshot = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,6 +75,10 @@ if ($Mode -eq "joblib") {
 
 if ($Watch) {
     $args += "--watch"
+}
+
+if ($KeepScreenshot) {
+    $args += "--keep-screenshot"
 }
 
 Write-Host "Running /look prototype with $pythonCmd"
